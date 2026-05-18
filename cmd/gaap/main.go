@@ -1,0 +1,149 @@
+// Gaap is a model-agnostic multi-agent orchestrator on the blackboard pattern.
+// It coordinates heterogeneous agents through shared memory (Vassago).
+//
+// Usage:
+//
+//	gaap run "audit the codebase"
+//	gaap run --dry-run "review security posture"
+//	gaap run --addr=localhost:50051 --repo=/path/to/project "analyze the codebase"
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"log/slog"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/aj-nt/gaap"
+	"github.com/aj-nt/vassago-sdk/client"
+)
+
+func main() {
+	dryRun := flag.Bool("dry-run", false, "Show decomposition without dispatching tasks")
+	addr := flag.String("addr", "", "Vassago daemon address (e.g., localhost:50051)")
+	repo := flag.String("repo", "", "Repository path to analyze")
+	timeout := flag.Int("timeout", 0, "Max wait for workers in seconds (default: 300)")
+
+	flag.Parse()
+
+	// Check subcommands
+	args := flag.Args()
+	if len(args) < 1 {
+		printUsage()
+		os.Exit(1)
+	}
+
+	subcmd := args[0]
+	switch subcmd {
+	case "run":
+		run(args[1:], *dryRun, *addr, *repo, *timeout)
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown subcommand: %s\n", subcmd)
+		printUsage()
+		os.Exit(1)
+	}
+}
+
+func printUsage() {
+	fmt.Fprint(os.Stderr, `Gaap — Model-agnostic multi-agent orchestrator
+
+Usage:
+  gaap run [flags] <goal>
+
+Flags:
+  --dry-run       Show decomposition without dispatching tasks
+  --addr string   Vassago daemon address (default: localhost:50051)
+  --repo string   Repository path to analyze (default: current directory)
+  --timeout int   Max wait for workers in seconds (default: 300)
+`)
+}
+
+func run(args []string, dryRun bool, addr, repo string, timeout int) {
+	if len(args) < 1 {
+		slog.Error("Usage: gaap run <goal>")
+		os.Exit(1)
+	}
+	goal := args[0]
+
+	cfg := &gaap.Config{
+		DaemonAddr:      addr,
+		RepoPath:        repo,
+		MaxWaitSec:      timeout,
+		PollIntervalSec: 5,
+	}
+	if cfg.DaemonAddr == "" {
+		cfg.DaemonAddr = "localhost:50051"
+	}
+	if cfg.RepoPath == "" {
+		wd, _ := os.Getwd()
+		cfg.RepoPath = wd
+	}
+	if cfg.MaxWaitSec <= 0 {
+		cfg.MaxWaitSec = 300
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Handle SIGINT/SIGTERM
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		slog.Info("Received shutdown signal")
+		cancel()
+	}()
+
+	slog.Info("Gaap starting",
+		"goal", goal,
+		"daemon", cfg.DaemonAddr,
+		"repo", cfg.RepoPath,
+		"dry_run", dryRun,
+	)
+
+	// Connect to Vassago daemon
+	daemonClient, err := client.Connect(ctx, client.Config{Address: cfg.DaemonAddr})
+	if err != nil {
+		slog.Error("Failed to connect to Vassago daemon", "addr", cfg.DaemonAddr, "error", err)
+		os.Exit(1)
+	}
+	defer daemonClient.Close()
+
+	if err := daemonClient.HealthCheck(ctx); err != nil {
+		slog.Error("Vassago daemon health check failed", "error", err)
+		os.Exit(1)
+	}
+
+	// Build orchestrator
+	decomposer := gaap.NewDecomposer(nil) // defaults to StaticDecomposition
+
+	orchestrator := gaap.NewOrchestrator(ctx, cfg, daemonClient, decomposer)
+
+	if dryRun {
+		// Show decomposition without dispatching
+		tasks, err := decomposer.Decompose(ctx, goal, cfg.RepoPath)
+		if err != nil {
+			slog.Error("Decomposition failed", "error", err)
+			os.Exit(1)
+		}
+		fmt.Printf("\nDecomposition for: %s\n\n", goal)
+		for _, t := range tasks {
+			fmt.Printf("  %-35s [%-20s] %s\n", t.TaskID, t.AgentType, t.Status)
+			if len(t.ParentIDs) > 0 {
+				fmt.Printf("    depends on: %v\n", t.ParentIDs)
+			}
+		}
+		fmt.Println()
+		return
+	}
+
+	if err := orchestrator.Run(goal); err != nil {
+		slog.Error("Orchestrator failed", "error", err)
+		os.Exit(1)
+	}
+
+	slog.Info("Gaap complete", "goal", goal)
+}

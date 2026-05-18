@@ -1,22 +1,16 @@
-__pycache__/
-*.py[cod]
-*.so
-*.egg-info/
-dist/
-build/
-.eggs/
-*.egg
-.coverage
-coverage.xml
-htmlcov/
-.pytest_cache/
-.tox/
-.mypy_cache/
-.ruff_cache/
-.venv/
-venv/
-.env
-*.log
-.DS_Store
+# Binaries
+gaap
+*.exe
+*.test
+*.out
+
+# IDE
+.hermes/
 .idea/
 .vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
