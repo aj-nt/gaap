@@ -164,7 +164,7 @@ func TestWaitingStatePromotesChildWhenParentCompletes(t *testing.T) {
 	}
 }
 
-func TestWaitingStateTransitionsToDoneWhenAllTasksComplete(t *testing.T) {
+func TestWaitingStateTransitionsToSynthesizingWhenAllTasksComplete(t *testing.T) {
 	t.Parallel()
 	o := testOrchestrator()
 	o.dag = NewDAG()
@@ -180,10 +180,10 @@ func TestWaitingStateTransitionsToDoneWhenAllTasksComplete(t *testing.T) {
 		t.Fatalf("HandleEvent: %v", err)
 	}
 	if next == nil {
-		t.Fatal("expected transition to DoneState")
+		t.Fatal("expected transition to SynthesizingState")
 	}
-	if next.Name() != "done" {
-		t.Errorf("next state = %q, want done", next.Name())
+	if next.Name() != "synthesizing" {
+		t.Errorf("next state = %q, want synthesizing", next.Name())
 	}
 }
 

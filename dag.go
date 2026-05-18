@@ -6,12 +6,13 @@ import (
 
 // TaskNode represents a single task in the DAG with its status and parent dependencies.
 type TaskNode struct {
-	ID        string   `json:"task_id"`
-	ParentIDs []string `json:"parent_ids"`
-	Status    string   `json:"status"`
-	Goal      string   `json:"goal"`
-	AgentType string   `json:"agent_type"`
+	ID        string         `json:"task_id"`
+	ParentIDs []string       `json:"parent_ids"`
+	Status    string         `json:"status"`
+	Goal      string         `json:"goal"`
+	AgentType string         `json:"agent_type"`
 	Context   map[string]any `json:"context"`
+	Findings  map[string]any `json:"findings,omitempty"` // populated by workers after execution
 }
 
 // DAG is a directed acyclic graph of tasks with dependency tracking.

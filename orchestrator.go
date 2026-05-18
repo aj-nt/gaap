@@ -21,9 +21,11 @@ type Orchestrator struct {
 	ctx        context.Context
 	daemon     MnemoClient
 	decomposer *Decomposer
+	synthesis  *SynthesisEngine
 	dag        *DAG
 	state      OrchestratorState
 	goal       string
+	result     *SynthesisResult
 }
 
 // NewOrchestrator creates an orchestrator with the given config and daemon connection.
@@ -34,14 +36,16 @@ func NewOrchestrator(ctx context.Context, cfg *Config, daemon MnemoClient, decom
 	if cfg.MaxWaitSec <= 0 {
 		cfg.MaxWaitSec = 300
 	}
-	return &Orchestrator{
+	o := &Orchestrator{
 		cfg:        cfg,
 		ctx:        ctx,
 		daemon:     daemon,
 		decomposer: decomposer,
+		synthesis:  NewSynthesisEngine(nil), // schema-only by default; set later for LLM
 		dag:        NewDAG(),
 		state:      &IdleState{},
 	}
+	return o
 }
 
 // Run executes the orchestrator pipeline for a given goal.
@@ -88,6 +92,21 @@ func (o *Orchestrator) Run(goal string) error {
 	if o.state.Name() == "waiting" {
 		// Mark all leaf tasks as completed (simulation for testing)
 		o.simulateCompletions()
+	}
+
+	// Synthesizing completes synchronously and transitions to Done
+	if o.state.Name() == "synthesizing" {
+		transition, err := o.state.HandleEvent(o.ctx, o, Event{
+			Type: EventTasksComplete,
+		})
+		if err != nil {
+			return fmt.Errorf("synthesizing handler: %w", err)
+		}
+		if transition != nil {
+			if err := o.Transition(transition); err != nil {
+				return err
+			}
+		}
 	}
 
 	return nil

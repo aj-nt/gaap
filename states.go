@@ -14,6 +14,7 @@ const (
 	EventTaskCompleted
 	EventTaskFailed
 	EventTimeout
+	EventTasksComplete // fired when all tasks in the DAG are done
 )
 
 // Event is a pub/sub or timer event that drives state transitions.
@@ -117,7 +118,7 @@ func (s *PlanningState) HandleEvent(ctx context.Context, o *Orchestrator, evt Ev
 }
 
 // WaitingState monitors task completions and advances the DAG.
-// When all tasks are done, transitions to DoneState.
+// When all tasks are done, transitions to SynthesizingState.
 type WaitingState struct{}
 
 func (s *WaitingState) Name() string { return "waiting" }
@@ -148,12 +149,66 @@ func (s *WaitingState) HandleEvent(ctx context.Context, o *Orchestrator, evt Eve
 
 		// Check if all tasks are done.
 		if o.dag.AllTasksComplete() {
-			slog.Info("all tasks complete, transitioning to done")
-			return &DoneState{}, nil
+			slog.Info("all tasks complete, transitioning to synthesizing")
+			return &SynthesizingState{}, nil
 		}
 	}
 
 	return nil, nil // Stay waiting
+}
+
+// SynthesizingState collects task results, runs the synthesis engine,
+// and transitions to DoneState.
+type SynthesizingState struct{}
+
+func (s *SynthesizingState) Name() string { return "synthesizing" }
+
+func (s *SynthesizingState) Enter(ctx context.Context, o *Orchestrator) error {
+	slog.Info("synthesizing: collecting results and generating report",
+		"goal", o.goal,
+		"dag_size", o.dag.TaskCount(),
+	)
+
+	if o.synthesis == nil {
+		o.synthesis = NewSynthesisEngine(nil)
+	}
+
+	// Collect all task results from the DAG
+	results := make(map[string]*TaskResult)
+	for id, node := range o.dag.nodes {
+		results[id] = &TaskResult{
+			TaskID:    node.ID,
+			AgentType: node.AgentType,
+			Status:    node.Status,
+			Summary:   node.Goal, // fallback: use goal as summary
+			Findings:  node.Findings,
+		}
+	}
+
+	// Run synthesis
+	sr, err := o.synthesis.synthesizeResults(ctx, results)
+	if err != nil {
+		slog.Warn("synthesis failed, using empty result", "error", err)
+		sr = &SynthesisResult{
+			Title:            "Synthesis Failed",
+			ExecutiveSummary: "Unable to synthesize results. See individual task outputs.",
+		}
+	}
+	o.result = sr
+
+	slog.Info("synthesis complete",
+		"title", sr.Title,
+		"high_findings", len(sr.HighFindings),
+		"medium_findings", len(sr.MediumFindings),
+		"low_findings", len(sr.LowFindings),
+		"recommendations", len(sr.Recommendations),
+	)
+	return nil
+}
+
+func (s *SynthesizingState) HandleEvent(ctx context.Context, o *Orchestrator, evt Event) (OrchestratorState, error) {
+	// Synthesis completes synchronously — always transition to done.
+	return &DoneState{}, nil
 }
 
 // DoneState is terminal. The orchestrator has finished its work.
