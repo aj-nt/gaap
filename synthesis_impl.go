@@ -27,13 +27,26 @@ func schemaSynthesize(results map[string]*TaskResult) *SynthesisResult {
 		}
 		f := r.Findings
 
-		// Non-zero exit codes
+		// Non-zero exit codes (top-level — e.g., findings from simple workers)
 		if ec, ok := f["exit_code"].(float64); ok && ec != 0 {
 			highFindings = append(highFindings, Finding{
 				Title:   fmt.Sprintf("Tool exited with code %.0f", ec),
 				Sources: []string{tid},
 				Detail:  fmt.Sprintf("exit_code: %.0f", ec),
 			})
+		}
+
+		// Non-zero exit codes (nested — worker pattern: findings["tool_name"] = {"exit_code": 1, ...})
+		for _, v := range f {
+			if inner, ok := v.(map[string]any); ok {
+				if ec, ok := inner["exit_code"].(float64); ok && ec != 0 {
+					highFindings = append(highFindings, Finding{
+						Title:   fmt.Sprintf("Tool exited with code %.0f", ec),
+						Sources: []string{tid},
+						Detail:  fmt.Sprintf("exit_code: %.0f", ec),
+					})
+				}
+			}
 		}
 
 		// Bare panics
