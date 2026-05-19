@@ -1,0 +1,68 @@
+# .goreleaser.yml
+# https://goreleaser.com/customization/
+
+project_name: gaap
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: gaap
+    main: ./cmd/gaap
+    binary: gaap
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - arm64
+      - amd64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.Version={{.Version}} -X main.Commit={{.Commit}} -X main.BuildDate={{.Date}}
+    mod_timestamp: '{{ .CommitTimestamp }}'
+
+archives:
+  - id: default
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- if eq .Os "darwin" }}macOS{{ else }}{{ .Os }}{{ end }}_
+      {{- .Arch }}
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+      - "^refactor:"
+
+brews:
+  - name: gaap
+    repository:
+      owner: aj-nt
+      name: homebrew-gaap
+    directory: Formula
+    homepage: https://github.com/aj-nt/gaap
+    description: "Model-agnostic multi-agent orchestrator on the blackboard pattern."
+    license: Apache-2.0
+    install: |
+      bin.install "gaap"
+    test: |
+      assert_match "gaap version", shell_output("#{bin}/gaap version 2>&1", 1)

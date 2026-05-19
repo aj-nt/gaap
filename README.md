@@ -1,5 +1,7 @@
 # Gaap
 
+[![Go Report Card](https://goreportcard.com/badge/github.com/aj-nt/gaap)](https://goreportcard.com/report/github.com/aj-nt/gaap)
+
 Model-agnostic multi-agent orchestrator on the blackboard pattern. Coordinates heterogeneous agents through shared memory (Vassago).
 
 ## Thesis
@@ -28,12 +30,6 @@ vassago memory add memory agent my-agent '{"capabilities": [{"action": "static_a
 # Run a task
 gaap run "review the codebase for security issues"
 ```
-
-## Design
-
-See `docs/` for:
-- [Design Document](docs/design/multi-agent-orchestration.md) — system architecture, primitives, data model
-- [Architectural Patterns](docs/design/orchestrator-patterns.md) — software patterns (State, Template Method, Chain of Responsibility, Observer, Composite, etc.)
 
 ## License
 
