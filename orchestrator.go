@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 )
 
 // Config holds the orchestrator configuration.
@@ -88,10 +89,10 @@ func (o *Orchestrator) Run(goal string) error {
 		}
 	}
 
-	// Polling loop (simplified: single iteration for tests; real loop in CLI)
+	// Polling loop — query daemon for task completions, advance DAG.
+	// Falls back to simulation when daemon is unavailable (NullMnemo).
 	if o.state.Name() == "waiting" {
-		// Mark all leaf tasks as completed (simulation for testing)
-		o.simulateCompletions()
+		o.pollDaemon()
 	}
 
 	// Synthesizing completes synchronously and transitions to Done
@@ -112,8 +113,90 @@ func (o *Orchestrator) Run(goal string) error {
 	return nil
 }
 
+// pollDaemon queries the daemon for task completions, advancing the DAG when
+// tasks transition to done. Falls back to simulation (mark-all-done) when the
+// daemon is unavailable.
+func (o *Orchestrator) pollDaemon() {
+	// Detection: try one daemon query. If NullMnemo (returns "not connected"),
+	// fall back to instant simulation (used by tests and dry runs).
+	_, err := o.daemon.GetTask(o.ctx, "probe-detection")
+	if err != nil && err.Error() == "vassago not connected" {
+		slog.Info("polling: daemon unavailable, using simulation fallback")
+		o.simulateCompletions()
+		return
+	}
+
+	start := time.Now()
+	pollInterval := time.Duration(o.cfg.PollIntervalSec) * time.Second
+	maxWait := time.Duration(o.cfg.MaxWaitSec) * time.Second
+
+	slog.Info("polling: querying daemon for task completions",
+		"task_count", o.dag.TaskCount(),
+		"poll_interval_sec", o.cfg.PollIntervalSec,
+		"max_wait_sec", o.cfg.MaxWaitSec,
+	)
+
+	for {
+		// Query all dispatched leaf tasks
+		o.pollOnce()
+
+		// Check if all done
+		if o.dag.AllTasksComplete() {
+			return
+		}
+
+		if time.Since(start) > maxWait {
+			slog.Warn("polling: timeout waiting for workers",
+				"elapsed_sec", int(time.Since(start).Seconds()))
+			return
+		}
+
+		select {
+		case <-o.ctx.Done():
+			slog.Info("polling: context cancelled")
+			return
+		case <-time.After(pollInterval):
+		}
+	}
+}
+
+// pollOnce queries the daemon for each dispatched task, fires completion
+// events, and advances the DAG.
+func (o *Orchestrator) pollOnce() {
+	for _, node := range o.dag.nodes {
+		// Only query tasks that were dispatched (not synthesis tasks in the DAG)
+		if node.Status == "ready" || node.Status == "claimed" {
+			entry, err := o.daemon.GetTask(o.ctx, node.ID)
+			if err != nil {
+				slog.Warn("poll: failed to get task", "id", node.ID, "error", err)
+				continue
+			}
+			if entry == nil {
+				continue
+			}
+			if entry.Status == "done" {
+				node.Status = "done"
+				node.Findings = nil // workers publish results via memory, not here
+
+				evt := Event{
+					Type:    EventTaskCompleted,
+					Payload: map[string]any{"task_id": node.ID},
+				}
+				slog.Info("poll: task completed", "id", node.ID)
+				next, err := o.state.HandleEvent(o.ctx, o, evt)
+				if err != nil {
+					slog.Warn("completion handler error", "task_id", node.ID, "error", err)
+				}
+				if next != nil {
+					o.Transition(next)
+				}
+			}
+		}
+	}
+}
+
 // simulateCompletions marks all ready/leaf tasks as done and advances the DAG.
-// This is a testing aid; the real orchestrator polls via pub/sub or daemon queries.
+// Used by tests and when the daemon is unavailable (NullMnemo).
 func (o *Orchestrator) simulateCompletions() {
 	// First pass: mark all ready tasks as done.
 	// We walk the DAG's nodes map directly.
