@@ -189,7 +189,7 @@ func (o *Orchestrator) pollOnce() {
 					slog.Warn("completion handler error", "task_id", node.ID, "error", err)
 				}
 				if next != nil {
-					o.Transition(next)
+					_ = o.Transition(next)
 				}
 			}
 		}
@@ -223,7 +223,7 @@ func (o *Orchestrator) simulateCompletions() {
 				slog.Warn("completion handler error", "task_id", id, "error", err)
 			}
 			if next != nil {
-				o.Transition(next)
+				_ = o.Transition(next)
 			}
 		}
 	}
@@ -242,7 +242,7 @@ func (o *Orchestrator) simulateCompletions() {
 				slog.Warn("completion handler error", "task_id", id, "error", err)
 			}
 			if next != nil {
-				o.Transition(next)
+				_ = o.Transition(next)
 			}
 		}
 	}

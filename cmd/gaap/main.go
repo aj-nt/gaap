@@ -65,7 +65,7 @@ func runArgs() {
 	repo := fs.String("repo", "", "Repository path to analyze")
 	timeout := fs.Int("timeout", 0, "Max wait for workers in seconds (default: 300)")
 
-	fs.Parse(os.Args[2:])
+	_ = fs.Parse(os.Args[2:])
 
 	goal := fs.Arg(0)
 	if goal == "" {
