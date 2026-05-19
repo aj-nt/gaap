@@ -11,6 +11,8 @@ permissions:
 
 env:
   GOPRIVATE: github.com/aj-nt/*
+  GONOSUMCHECK: github.com/aj-nt/*
+  GONOSUMDB: github.com/aj-nt/*
 
 jobs:
   # ── Tests: race + vet + build ──
@@ -26,7 +28,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Configure git for private deps
-        run: git config --global url."https://${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
+        run: git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -52,7 +54,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Configure git for private deps
-        run: git config --global url."https://${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
+        run: git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -75,7 +77,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Configure git for private deps
-        run: git config --global url."https://${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
+        run: git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
