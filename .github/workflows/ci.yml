@@ -9,11 +9,6 @@ on:
 permissions:
   contents: read
 
-env:
-  GOPRIVATE: github.com/aj-nt/*
-  GONOSUMCHECK: github.com/aj-nt/*
-  GONOSUMDB: github.com/aj-nt/*
-
 jobs:
   # ── Tests: race + vet + build ──
   test:
@@ -21,31 +16,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: gaap
-
-      - name: Check out vassago-sdk (private dependency)
-        uses: actions/checkout@v4
-        with:
-          repository: aj-nt/vassago-sdk
-          path: vassago-sdk
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: gaap/go.mod
-
-      - name: Replace remote dependency with local
-        run: cd gaap && go mod edit -replace github.com/aj-nt/vassago-sdk=../vassago-sdk && go mod tidy
+          go-version-file: go.mod
 
       - name: Run tests with race detector
-        run: cd gaap && go test -race -timeout 120s -count=1 ./...
+        run: go test -race -timeout 120s -count=1 ./...
 
       - name: Run go vet
-        run: cd gaap && go vet ./...
+        run: go vet ./...
 
       - name: Check build
-        run: cd gaap && go build ./...
+        run: go build ./...
 
   # ── Lint ──
   lint:
@@ -53,29 +37,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: gaap
-
-      - name: Check out vassago-sdk (private dependency)
-        uses: actions/checkout@v4
-        with:
-          repository: aj-nt/vassago-sdk
-          path: vassago-sdk
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: gaap/go.mod
-
-      - name: Replace remote dependency with local
-        run: cd gaap && go mod edit -replace github.com/aj-nt/vassago-sdk=../vassago-sdk && go mod tidy
+          go-version-file: go.mod
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
           install-mode: "goinstall"
           args: --timeout=5m
-          working-directory: gaap
 
   # ── Security scan ──
   security:
@@ -83,25 +55,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: gaap
-
-      - name: Check out vassago-sdk (private dependency)
-        uses: actions/checkout@v4
-        with:
-          repository: aj-nt/vassago-sdk
-          path: vassago-sdk
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: gaap/go.mod
-
-      - name: Replace remote dependency with local
-        run: cd gaap && go mod edit -replace github.com/aj-nt/vassago-sdk=../vassago-sdk && go mod tidy
+          go-version-file: go.mod
 
       - name: Run govulncheck
         uses: golang/govulncheck-action@v1
         with:
-          go-version-file: gaap/go.mod
-          work-dir: gaap
+          go-version-file: go.mod
