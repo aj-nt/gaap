@@ -130,6 +130,12 @@ type StaticDecomposition struct {
 	Tasks []TaskSpec
 }
 
+// NewStaticDecomposition creates a StaticDecomposition strategy from a
+// predefined task list. Used in tests to define explicit DAGs.
+func NewStaticDecomposition(tasks []TaskSpec) DecomposerStrategy {
+	return &StaticDecomposition{Tasks: tasks}
+}
+
 func (s *StaticDecomposition) Decompose(ctx context.Context, goal, repoPath string) ([]TaskSpec, error) {
 	// Deep copy to avoid mutation of the static list across calls.
 	result := make([]TaskSpec, len(s.Tasks))

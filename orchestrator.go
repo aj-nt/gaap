@@ -18,15 +18,16 @@ type Config struct {
 // Orchestrator coordinates the full pipeline: decompose -> dispatch -> poll -> synthesize -> publish.
 // It uses the State Pattern internally; phases are encapsulated as state objects.
 type Orchestrator struct {
-	cfg        *Config
-	ctx        context.Context
-	daemon     MnemoClient
-	decomposer *Decomposer
-	synthesis  *SynthesisEngine
-	dag        *DAG
-	state      OrchestratorState
-	goal       string
-	result     *SynthesisResult
+	cfg             *Config
+	ctx             context.Context
+	daemon          MnemoClient
+	decomposer      *Decomposer
+	synthesis       *SynthesisEngine
+	dag             *DAG
+	state           OrchestratorState
+	goal            string
+	result          *SynthesisResult
+	breakerRegistry map[string]*CircuitBreaker
 }
 
 // NewOrchestrator creates an orchestrator with the given config and daemon connection.

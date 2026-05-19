@@ -94,6 +94,17 @@ func (s *PlanningState) Enter(ctx context.Context, o *Orchestrator) error {
 	// Dispatch leaf tasks (ready status, no parents) to the daemon
 	for _, t := range tasks {
 		if t.Status == "ready" && len(t.ParentIDs) == 0 {
+			// Circuit breaker: skip dispatch if this agent type is tripped
+			if o.breakerRegistry != nil {
+				if breaker, ok := o.breakerRegistry[t.AgentType]; ok {
+					if !breaker.AllowRequest() {
+						slog.Warn("circuit breaker open, skipping dispatch",
+							"agent_type", t.AgentType, "task_id", t.TaskID)
+						continue
+					}
+				}
+			}
+
 			ctxJSON := "{}"
 			if t.Context != nil {
 				// Marshal context for the daemon
