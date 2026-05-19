@@ -3,9 +3,14 @@
 //
 // Usage:
 //
-//	gaap run "audit the codebase"
-//	gaap run --dry-run "review security posture"
-//	gaap run --addr=localhost:50051 --repo=/path/to/project "analyze the codebase"
+//	gaap run [flags] <goal>
+//
+// Flags:
+//
+//	--dry-run       Show decomposition without dispatching tasks
+//	--addr string   Vassago daemon address (default: localhost:50051)
+//	--repo string   Repository path to analyze (default: current directory)
+//	--timeout int   Max wait for workers in seconds (default: 300)
 package main
 
 import (
@@ -23,24 +28,15 @@ import (
 )
 
 func main() {
-	dryRun := flag.Bool("dry-run", false, "Show decomposition without dispatching tasks")
-	addr := flag.String("addr", "", "Vassago daemon address (e.g., localhost:50051)")
-	repo := flag.String("repo", "", "Repository path to analyze")
-	timeout := flag.Int("timeout", 0, "Max wait for workers in seconds (default: 300)")
-
-	flag.Parse()
-
-	// Check subcommands
-	args := flag.Args()
-	if len(args) < 1 {
+	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(1)
 	}
 
-	subcmd := args[0]
+	subcmd := os.Args[1]
 	switch subcmd {
 	case "run":
-		run(args[1:], *dryRun, *addr, *repo, *timeout)
+		runArgs()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown subcommand: %s\n", subcmd)
 		printUsage()
@@ -62,12 +58,20 @@ Flags:
 `)
 }
 
-func run(args []string, dryRun bool, addr, repo string, timeout int) {
-	if len(args) < 1 {
+func runArgs() {
+	fs := flag.NewFlagSet("run", flag.ExitOnError)
+	dryRun := fs.Bool("dry-run", false, "Show decomposition without dispatching tasks")
+	addr := fs.String("addr", "", "Vassago daemon address (e.g., localhost:50051)")
+	repo := fs.String("repo", "", "Repository path to analyze")
+	timeout := fs.Int("timeout", 0, "Max wait for workers in seconds (default: 300)")
+
+	fs.Parse(os.Args[2:])
+
+	goal := fs.Arg(0)
+	if goal == "" {
 		slog.Error("Usage: gaap run <goal>")
 		os.Exit(1)
 	}
-	goal := args[0]
 
 	// LLM config — hardcoded defaults; flags come later
 	const (
@@ -78,9 +82,9 @@ func run(args []string, dryRun bool, addr, repo string, timeout int) {
 	)
 
 	cfg := &gaap.Config{
-		DaemonAddr:      addr,
-		RepoPath:        repo,
-		MaxWaitSec:      timeout,
+		DaemonAddr:      *addr,
+		RepoPath:        *repo,
+		MaxWaitSec:      *timeout,
 		PollIntervalSec: 5,
 	}
 	if cfg.DaemonAddr == "" {
@@ -110,7 +114,7 @@ func run(args []string, dryRun bool, addr, repo string, timeout int) {
 		"goal", goal,
 		"daemon", cfg.DaemonAddr,
 		"repo", cfg.RepoPath,
-		"dry_run", dryRun,
+		"dry_run", *dryRun,
 		"model", defaultModel,
 	)
 
@@ -145,7 +149,7 @@ func run(args []string, dryRun bool, addr, repo string, timeout int) {
 
 	orchestrator := gaap.NewOrchestrator(ctx, cfg, daemonClient, decomposer)
 
-	if dryRun {
+	if *dryRun {
 		tasks, err := decomposer.Decompose(ctx, goal, cfg.RepoPath)
 		if err != nil {
 			slog.Error("Decomposition failed", "error", err)

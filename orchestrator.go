@@ -175,7 +175,7 @@ func (o *Orchestrator) pollOnce() {
 			if entry == nil {
 				continue
 			}
-			if entry.Status == "done" {
+			if entry.Status == "done" || entry.Status == "dead_letter" {
 				node.Status = "done"
 
 				evt := Event{
