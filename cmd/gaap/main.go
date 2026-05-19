@@ -18,6 +18,7 @@ import (
 	"syscall"
 
 	"github.com/aj-nt/gaap"
+	"github.com/aj-nt/gaap/internal/ollama"
 	"github.com/aj-nt/vassago-sdk/client"
 )
 
@@ -68,6 +69,14 @@ func run(args []string, dryRun bool, addr, repo string, timeout int) {
 	}
 	goal := args[0]
 
+	// LLM config — hardcoded defaults; flags come later
+	const (
+		defaultOllamaURL = "http://localhost:11434/v1"
+		defaultModel     = "glm-5.1:cloud"
+		defaultMaxTokens = 2000
+		defaultTemp      = 0.1
+	)
+
 	cfg := &gaap.Config{
 		DaemonAddr:      addr,
 		RepoPath:        repo,
@@ -102,6 +111,7 @@ func run(args []string, dryRun bool, addr, repo string, timeout int) {
 		"daemon", cfg.DaemonAddr,
 		"repo", cfg.RepoPath,
 		"dry_run", dryRun,
+		"model", defaultModel,
 	)
 
 	// Connect to Vassago daemon
@@ -117,13 +127,25 @@ func run(args []string, dryRun bool, addr, repo string, timeout int) {
 		os.Exit(1)
 	}
 
-	// Build orchestrator
-	decomposer := gaap.NewDecomposer(nil) // defaults to StaticDecomposition
+	// Build LLM decomposer
+	ollamaClient := ollama.NewClient(ollama.Config{
+		BaseURL:     defaultOllamaURL,
+		Model:       defaultModel,
+		MaxTokens:   defaultMaxTokens,
+		Temperature: defaultTemp,
+		TimeoutSec:  120,
+	})
+
+	// Bridge ollama.Client.Chat ([]Message) → chatFn (ctx, prompt string)
+	chatFn := func(ctx context.Context, prompt string) (string, error) {
+		return ollamaClient.Chat([]ollama.Message{{Role: "user", Content: prompt}})
+	}
+
+	decomposer := gaap.NewDecomposer(gaap.NewLLMDecomposition(chatFn))
 
 	orchestrator := gaap.NewOrchestrator(ctx, cfg, daemonClient, decomposer)
 
 	if dryRun {
-		// Show decomposition without dispatching
 		tasks, err := decomposer.Decompose(ctx, goal, cfg.RepoPath)
 		if err != nil {
 			slog.Error("Decomposition failed", "error", err)

@@ -161,10 +161,11 @@ func (o *Orchestrator) pollDaemon() {
 }
 
 // pollOnce queries the daemon for each dispatched task, fires completion
-// events, and advances the DAG.
+// events, and advances the DAG. It also auto-completes synthesis tasks that
+// were promoted to ready (synthesis runs in-process, not on workers).
 func (o *Orchestrator) pollOnce() {
 	for _, node := range o.dag.nodes {
-		// Only query tasks that were dispatched (not synthesis tasks in the DAG)
+		// Only query tasks that were dispatched to the daemon.
 		if node.Status == "ready" || node.Status == "claimed" {
 			entry, err := o.daemon.GetTask(o.ctx, node.ID)
 			if err != nil {
@@ -176,7 +177,6 @@ func (o *Orchestrator) pollOnce() {
 			}
 			if entry.Status == "done" {
 				node.Status = "done"
-				node.Findings = nil // workers publish results via memory, not here
 
 				evt := Event{
 					Type:    EventTaskCompleted,
@@ -191,6 +191,16 @@ func (o *Orchestrator) pollOnce() {
 					o.Transition(next)
 				}
 			}
+		}
+	}
+
+	// Auto-complete synthesis tasks that were promoted to ready.
+	// Synthesis runs in-process after all leaves complete, so there's no
+	// daemon task to poll — we mark them done here to unblock the DAG.
+	for _, node := range o.dag.nodes {
+		if node.AgentType == "synthesis" && node.Status == "ready" {
+			node.Status = "done"
+			slog.Info("poll: synthesis task auto-completed (in-process)", "id", node.ID)
 		}
 	}
 }

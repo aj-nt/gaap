@@ -134,7 +134,7 @@ func (s *WaitingState) HandleEvent(ctx context.Context, o *Orchestrator, evt Eve
 		taskID, _ := evt.Payload["task_id"].(string)
 		if taskID != "" {
 			slog.Info("task completed, advancing DAG", "task_id", taskID)
-			// Promote any children whose parents are now all done.
+			// Promote children whose parents are now all done.
 			children := o.dag.ChildrenOf(taskID)
 			for _, child := range children {
 				if allDone, err := o.dag.AllParentsComplete(child.ID); err == nil && allDone {
