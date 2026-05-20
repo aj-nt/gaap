@@ -220,7 +220,7 @@ RULES:
 - Use head/tail to limit large output.
 - Never run destructive commands (rm -rf, git push --force, etc.).
 - Commands timeout after 60 seconds.
-- You have a budget of ~10 turns. After turn 8, start wrapping up.
+- You have a budget of ~20 turns. After turn 15, start wrapping up.
 - When you have enough data to answer, DONE: immediately.
 - Analyze output before issuing the next command.
 
