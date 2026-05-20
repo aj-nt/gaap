@@ -29,6 +29,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -147,39 +148,23 @@ func parseRunFlags(name string, args []string) (*runConfig, error) {
 
 	cfg := &runConfig{
 		Goal:            goal,
-		DaemonAddr:      *addr,
-		RepoPath:        *repo,
-		MaxWaitSec:      *timeout,
+		DaemonAddr:      envOr("GAAP_DAEMON_ADDR", *addr, "localhost:50051"),
+		RepoPath:        envOr("GAAP_REPO", *repo, ""),
+		MaxWaitSec:      atoiOr(envOr("GAAP_TIMEOUT", "", ""), *timeout, 300),
 		PollIntervalSec: 5,
 		DryRun:          *dryRun,
 		Subscribe:       *subscribe,
-		Model:           *model,
-		OllamaURL:       *ollamaURL,
-		MaxTokens:       *maxTokens,
-		Temperature:     *temperature,
-		APIKey:          *apiKey,
-		TLSCert:         *tlsCert,
-	}
-	if cfg.DaemonAddr == "" {
-		cfg.DaemonAddr = "localhost:50051"
-	}
-	if cfg.MaxWaitSec <= 0 {
-		cfg.MaxWaitSec = 300
-	}
-	if cfg.Model == "" {
-		cfg.Model = "glm-5.1:cloud"
-	}
-	if cfg.OllamaURL == "" {
-		cfg.OllamaURL = "http://localhost:11434/v1"
-	}
-	if cfg.MaxTokens <= 0 {
-		cfg.MaxTokens = 4096
-	}
-	if cfg.Temperature <= 0 {
-		cfg.Temperature = 0.1
+		Model:           envOr("GAAP_MODEL", *model, "glm-5.1:cloud"),
+		OllamaURL:       envOr("GAAP_OLLAMA_URL", *ollamaURL, "http://localhost:11434/v1"),
+		MaxTokens:       atoiOr(envOr("GAAP_MAX_TOKENS", "", ""), *maxTokens, 4096),
+		Temperature:     atofOr(envOr("GAAP_TEMPERATURE", "", ""), *temperature, 0.1),
+		APIKey:          envOr("GAAP_API_KEY", *apiKey, ""),
+		TLSCert:         envOr("GAAP_TLS_CERT", *tlsCert, ""),
 	}
 	if *agentTypes != "" {
 		cfg.AgentTypes = strings.Split(*agentTypes, ",")
+	} else if env := os.Getenv("GAAP_AGENT_TYPES"); env != "" {
+		cfg.AgentTypes = strings.Split(env, ",")
 	} else {
 		cfg.AgentTypes = []string{"static_analysis", "quality_scan"}
 	}
@@ -336,10 +321,16 @@ func run(args []string) error {
 
 // resumeConfig holds parsed flags for "gaap resume".
 type resumeConfig struct {
-	RunKey     string
-	DaemonAddr string
-	APIKey     string
-	TLSCert    string
+	RunKey          string
+	DaemonAddr      string
+	APIKey          string
+	TLSCert         string
+	Model           string
+	OllamaURL       string
+	MaxTokens       int
+	Temperature     float64
+	AgentTypes      []string
+	MaxWaitSec      int
 }
 
 // parseResumeFlags parses "gaap resume [--addr <daemon>] [--api-key <key>] [--tls-cert <path>] <run-key>".
@@ -350,6 +341,12 @@ func parseResumeFlags(name string, args []string) (*resumeConfig, error) {
 	addr := fs.String("addr", "", "Vassago daemon address (default: localhost:50051)")
 	apiKey := fs.String("api-key", "", "Vassago daemon API key (Bearer token)")
 	tlsCert := fs.String("tls-cert", "", "Path to TLS CA certificate for daemon connection")
+	model := fs.String("model", "", "LLM model name (default: glm-5.1:cloud)")
+	ollamaURL := fs.String("ollama-url", "", "Ollama base URL (default: http://localhost:11434/v1)")
+	maxTokens := fs.Int("max-tokens", 0, "Max tokens for LLM responses (default: 4096)")
+	temperature := fs.Float64("temperature", 0, "LLM temperature, 0.0-1.0 (default: 0.1)")
+	agentTypes := fs.String("agent-types", "", "Comma-separated agent types to dispatch (default: static_analysis,quality_scan)")
+	timeout := fs.Int("timeout", 0, "Max wait for workers in seconds (default: 300)")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -361,19 +358,63 @@ func parseResumeFlags(name string, args []string) (*resumeConfig, error) {
 	}
 
 	cfg := &resumeConfig{
-		RunKey:     runKey,
-		DaemonAddr: *addr,
-		APIKey:     *apiKey,
-		TLSCert:    *tlsCert,
+		RunKey:          runKey,
+		DaemonAddr:      envOr("GAAP_DAEMON_ADDR", *addr, "localhost:50051"),
+		APIKey:          envOr("GAAP_API_KEY", *apiKey, ""),
+		TLSCert:         envOr("GAAP_TLS_CERT", *tlsCert, ""),
+		Model:           envOr("GAAP_MODEL", *model, "glm-5.1:cloud"),
+		OllamaURL:       envOr("GAAP_OLLAMA_URL", *ollamaURL, "http://localhost:11434/v1"),
+		MaxTokens:       atoiOr(envOr("GAAP_MAX_TOKENS", "", ""), *maxTokens, 4096),
+		Temperature:     atofOr(envOr("GAAP_TEMPERATURE", "", ""), *temperature, 0.1),
+		MaxWaitSec:      atoiOr(envOr("GAAP_TIMEOUT", "", ""), *timeout, 300),
 	}
-	if cfg.DaemonAddr == "" {
-		cfg.DaemonAddr = "localhost:50051"
+	if *agentTypes != "" {
+		cfg.AgentTypes = strings.Split(*agentTypes, ",")
+	} else if env := os.Getenv("GAAP_AGENT_TYPES"); env != "" {
+		cfg.AgentTypes = strings.Split(env, ",")
+	} else {
+		cfg.AgentTypes = []string{"static_analysis", "quality_scan"}
 	}
 	return cfg, nil
 }
 
+// envOr returns the flag value if explicitly set, otherwise falls back to env var, then default.
+func envOr(envName, flagVal, defaultVal string) string {
+	if flagVal != "" {
+		return flagVal
+	}
+	if env := os.Getenv(envName); env != "" {
+		return env
+	}
+	return defaultVal
+}
+
+func atoiOr(envVal string, flagVal int, defaultVal int) int {
+	if flagVal != 0 {
+		return flagVal
+	}
+	if envVal != "" {
+		if v, err := strconv.Atoi(envVal); err == nil {
+			return v
+		}
+	}
+	return defaultVal
+}
+
+func atofOr(envVal string, flagVal float64, defaultVal float64) float64 {
+	if flagVal != 0 {
+		return flagVal
+	}
+	if envVal != "" {
+		if v, err := strconv.ParseFloat(envVal, 64); err == nil {
+			return v
+		}
+	}
+	return defaultVal
+}
+
 // resume loads a saved orchestration run from the daemon and resumes it
-// from the Waiting state.
+// from the Waiting state. Auto-workers are spawned if not --dry-run.
 func resume(args []string) error {
 	rc, err := parseResumeFlags("resume", args)
 	if err != nil {
@@ -391,7 +432,11 @@ func resume(args []string) error {
 		cancel()
 	}()
 
-	slog.Info("Gaap resuming", "run_key", rc.RunKey, "daemon", rc.DaemonAddr)
+	slog.Info("Gaap resuming",
+		"run_key", rc.RunKey,
+		"daemon", rc.DaemonAddr,
+		"model", rc.Model,
+	)
 
 	daemonClient, err := client.Connect(ctx, client.Config{
 		Address: rc.DaemonAddr,
@@ -415,10 +460,49 @@ func resume(args []string) error {
 	orchestratorCfg := &gaap.Config{
 		DaemonAddr:      rc.DaemonAddr,
 		RepoPath:        rs.RepoPath,
-		MaxWaitSec:      300,
+		MaxWaitSec:      rc.MaxWaitSec,
 		PollIntervalSec: 5,
 	}
 	orchestrator := gaap.NewOrchestrator(ctx, orchestratorCfg, daemonClient, nil)
+
+	// Build LLM decomposer for synthesis (not decomposition — DAG is already built)
+	ollamaClient := ollama.NewClient(ollama.Config{
+		BaseURL:     rc.OllamaURL,
+		Model:       rc.Model,
+		MaxTokens:   rc.MaxTokens,
+		Temperature: rc.Temperature,
+		TimeoutSec:  120,
+	})
+	chatFn := func(ctx context.Context, prompt string) (string, error) {
+		return ollamaClient.Chat([]ollama.Message{{Role: "user", Content: prompt}})
+	}
+	orchestrator.SetSynthesisChatFn(chatFn)
+
+	// Spawn auto-workers to execute dispatched tasks
+	wpCfg := worker.PoolConfig{
+		DaemonAddr:  rc.DaemonAddr,
+		AgentID:     "gaap-worker",
+		AgentName:   "gaap-worker",
+		AgentTypes:  rc.AgentTypes,
+		WorkerCount: 2,
+		PollSec:     2,
+		MaxTurns:    20,
+		RepoPath:    rs.RepoPath,
+		Ollama: ollama.Config{
+			BaseURL:     rc.OllamaURL,
+			Model:       rc.Model,
+			MaxTokens:   rc.MaxTokens,
+			Temperature: rc.Temperature,
+			TimeoutSec:  120,
+		},
+	}
+	pool, err := worker.NewPool(ctx, wpCfg, daemonClient)
+	if err != nil {
+		slog.Warn("Failed to create worker pool, running without auto-workers", "error", err)
+	} else {
+		orchestrator.SetWorkerPool(pool)
+		slog.Info("Auto-workers enabled", "agent_types", wpCfg.AgentTypes, "count", wpCfg.WorkerCount)
+	}
 
 	if err := orchestrator.Resume(rs); err != nil {
 		return fmt.Errorf("resume: %w", err)
