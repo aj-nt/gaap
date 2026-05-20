@@ -242,3 +242,70 @@ func TestParseResumeFlagsMissingKey(t *testing.T) {
 		t.Errorf("expected 'run key is required' in error, got %q", err.Error())
 	}
 }
+
+// TestRunFlagParseError verifies that run() returns an error when flag parsing fails.
+func TestRunFlagParseError(t *testing.T) {
+	t.Parallel()
+
+	err := run([]string{"--invalid-flag", "goal"})
+	if err == nil {
+		t.Fatal("expected error for invalid flag")
+	}
+	if !strings.Contains(err.Error(), "flag parsing") {
+		t.Errorf("expected 'flag parsing' in error, got %q", err.Error())
+	}
+}
+
+// TestRunMissingGoal verifies that run() returns an error when goal is missing.
+func TestRunMissingGoal(t *testing.T) {
+	t.Parallel()
+
+	err := run([]string{})
+	if err == nil {
+		t.Fatal("expected error for missing goal")
+	}
+	if !strings.Contains(err.Error(), "goal is required") {
+		t.Errorf("expected 'goal is required' in error, got %q", err.Error())
+	}
+}
+
+// TestResumeFlagParseError verifies that resume() returns an error when flag parsing fails.
+func TestResumeFlagParseError(t *testing.T) {
+	t.Parallel()
+
+	err := resume([]string{"--invalid-flag", "runstate_x"})
+	if err == nil {
+		t.Fatal("expected error for invalid flag")
+	}
+	if !strings.Contains(err.Error(), "flag parsing") {
+		t.Errorf("expected 'flag parsing' in error, got %q", err.Error())
+	}
+}
+
+// TestResumeMissingKey verifies that resume() returns an error when run key is missing.
+func TestResumeMissingKey(t *testing.T) {
+	t.Parallel()
+
+	err := resume([]string{})
+	if err == nil {
+		t.Fatal("expected error for missing run key")
+	}
+	if !strings.Contains(err.Error(), "run key is required") {
+		t.Errorf("expected 'run key is required' in error, got %q", err.Error())
+	}
+}
+
+// TestResumeInvalidDaemonAddr verifies that resume() returns an error when daemon is unreachable.
+// This covers the connection failure path in resume().
+func TestResumeInvalidDaemonAddr(t *testing.T) {
+	t.Parallel()
+
+	// Use an unreachable address to force a connection error.
+	err := resume([]string{"--addr", "127.0.0.1:19999", "runstate_test_key"})
+	if err == nil {
+		t.Fatal("expected error for unreachable daemon")
+	}
+	if !strings.Contains(err.Error(), "failed to connect") {
+		t.Errorf("expected 'failed to connect' in error, got %q", err.Error())
+	}
+}
