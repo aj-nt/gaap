@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"time"
 
 	"github.com/aj-nt/gaap/internal/worker"
+	pb "github.com/aj-nt/vassago-sdk/proto"
 )
 
 // Config holds the orchestrator configuration.
@@ -43,7 +45,12 @@ type Orchestrator struct {
 	result          *SynthesisResult
 	breakerRegistry map[string]*CircuitBreaker
 	workerPool      *worker.Pool
-	runKey          string // daemon key for persisted RunState
+	runKey          string
+
+	// subscribeFallbackToPoll controls the observer pattern: when true,
+	// subscribeDaemon() attempts gRPC subscription first, falling back to
+	// polling on failure. False (default) uses polling only (backward compat).
+	subscribeFallbackToPoll bool // daemon key for persisted RunState
 }
 
 // NewOrchestrator creates an orchestrator with the given config and daemon connection.
@@ -184,7 +191,15 @@ func (o *Orchestrator) runWaitingAndBeyond() error {
 			slog.Info("auto-workers started")
 		}
 
-		o.pollDaemon()
+		// Observer pattern: try gRPC subscription first, fall back to polling.
+		if o.subscribeFallbackToPoll {
+			if err := o.subscribeDaemon(); err != nil {
+				slog.Info("subscription failed, falling back to polling", "error", err)
+				o.pollDaemon()
+			}
+		} else {
+			o.pollDaemon()
+		}
 
 		// Stop workers
 		if workerStopCh != nil {
@@ -431,6 +446,147 @@ func (o *Orchestrator) simulateCompletions() {
 					slog.Warn("state transition failed", "error", err)
 				}
 			}
+		}
+	}
+}
+
+// subscribeDaemon opens a gRPC subscription for task status changes, replacing
+// polling with event-driven DAG advancement. On failure, returns an error so
+// the caller can fall back to polling. The subscription runs until the DAG is
+// complete or the context is cancelled.
+func (o *Orchestrator) subscribeDaemon() error {
+	stream, err := o.daemon.Subscribe(o.ctx, &pb.SubscribeRequest{
+		AgentId: "gaap-orchestrator",
+		Targets: []string{"task"},
+	})
+	if err != nil {
+		return fmt.Errorf("subscribe: %w", err)
+	}
+
+	slog.Info("subscribed to task events via gRPC stream")
+
+	// Track whether we received any task events. If the stream closes
+	// without delivering any, fail so the caller falls back to polling.
+	eventsReceived := false
+
+	done := make(chan error, 1)
+	go func() {
+		defer func() {
+			done <- nil
+		}()
+
+		for {
+			event, err := stream.Recv()
+			if err != nil {
+				if err == io.EOF {
+					slog.Info("subscription stream closed (io.EOF)")
+					return
+				}
+				done <- fmt.Errorf("subscription stream error: %w", err)
+				return
+			}
+
+			if event.Task == nil {
+				continue
+			}
+
+			eventsReceived = true
+
+			node, ok := o.dag.nodes[event.Task.Id]
+			if !ok {
+				continue // Not one of our tasks
+			}
+
+			oldStatus := node.Status
+			switch event.Task.Status {
+			case "done", "dead_letter":
+				node.Status = "done"
+
+				// Read worker results from daemon (same as pollOnce)
+				if event.Task.ResultKey != "" {
+					if mem, merr := o.daemon.GetMemory(o.ctx, event.Task.ResultKey); merr == nil && mem != nil {
+						var wr worker.ExecuteResult
+						if json.Unmarshal([]byte(mem.Content), &wr) == nil {
+							node.Findings = wr.Findings
+							node.Summary = wr.Summary
+						}
+					}
+				}
+
+				slog.Info("subscription: task completed",
+					"id", event.Task.Id,
+					"old_status", oldStatus,
+					"new_status", node.Status,
+				)
+
+				evt := Event{
+					Type:    EventTaskCompleted,
+					Payload: map[string]any{"task_id": event.Task.Id},
+				}
+				next, herr := o.state.HandleEvent(o.ctx, o, evt)
+				if herr != nil {
+					slog.Warn("completion handler error", "task_id", event.Task.Id, "error", herr)
+				}
+				if next != nil {
+					if terr := o.Transition(next); terr != nil {
+						slog.Warn("state transition failed", "error", terr)
+					}
+				}
+
+				// Also auto-complete synthesis tasks promoted to ready
+				for _, n := range o.dag.nodes {
+					if n.AgentType == "synthesis" && n.Status == "ready" {
+						n.Status = "done"
+						slog.Info("subscription: synthesis task auto-completed", "id", n.ID)
+						evt2 := Event{
+							Type:    EventTaskCompleted,
+							Payload: map[string]any{"task_id": n.ID},
+						}
+						next2, herr2 := o.state.HandleEvent(o.ctx, o, evt2)
+						if herr2 != nil {
+							slog.Warn("synthesis handler error", "task_id", n.ID, "error", herr2)
+						}
+						if next2 != nil {
+							if terr := o.Transition(next2); terr != nil {
+								slog.Warn("state transition failed", "error", terr)
+							}
+						}
+					}
+				}
+
+				if o.dag.AllTasksComplete() {
+					return
+				}
+			}
+		}
+	}()
+
+	// Wait for completion or context cancellation
+	start := time.Now()
+	maxWait := time.Duration(o.cfg.MaxWaitSec) * time.Second
+
+	for {
+		if o.dag.AllTasksComplete() {
+			return nil
+		}
+		if time.Since(start) > maxWait {
+			return fmt.Errorf("subscription timed out after %v", maxWait)
+		}
+		select {
+		case err := <-done:
+			if err != nil {
+				return err
+			}
+			// Stream closed cleanly. If we received task events, success.
+			// If not (NullMnemo or hub not available), fail so caller falls back.
+			if !eventsReceived {
+				return fmt.Errorf("subscription stream closed without receiving any task events")
+			}
+			return nil
+		case <-o.ctx.Done():
+			return fmt.Errorf("context cancelled: %w", o.ctx.Err())
+		case <-time.After(500 * time.Millisecond):
+			// Periodic check for AllTasksComplete
 		}
 	}
 }
