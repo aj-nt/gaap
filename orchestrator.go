@@ -377,20 +377,7 @@ func (o *Orchestrator) pollOnce() {
 					}
 				}
 
-				evt := Event{
-					Type:    EventTaskCompleted,
-					Payload: map[string]any{"task_id": node.ID},
-				}
-				slog.Info("poll: task completed", "id", node.ID)
-				next, err := o.state.HandleEvent(o.ctx, o, evt)
-				if err != nil {
-					slog.Warn("completion handler error", "task_id", node.ID, "error", err)
-				}
-				if next != nil {
-					if err := o.Transition(next); err != nil {
-						slog.Warn("state transition failed", "error", err)
-					}
-				}
+				o.fireTaskCompleted(node.ID, "poll")
 			}
 		}
 	}
@@ -402,20 +389,26 @@ func (o *Orchestrator) pollOnce() {
 	for _, node := range o.dag.nodes {
 		if node.AgentType == "synthesis" && node.Status == "ready" {
 			node.Status = "done"
-			slog.Info("poll: synthesis task auto-completed (in-process)", "id", node.ID)
-			evt := Event{
-				Type:    EventTaskCompleted,
-				Payload: map[string]any{"task_id": node.ID},
-			}
-			next, err := o.state.HandleEvent(o.ctx, o, evt)
-			if err != nil {
-				slog.Warn("synthesis completion handler error", "task_id", node.ID, "error", err)
-			}
-			if next != nil {
-				if err := o.Transition(next); err != nil {
-					slog.Warn("state transition failed", "error", err)
-				}
-			}
+			o.fireTaskCompleted(node.ID, "poll:synthesis")
+		}
+	}
+}
+
+// fireTaskCompleted fires a task completion event through the state machine.
+// Extracted from pollOnce, simulateCompletions, and subscribeDaemon.
+func (o *Orchestrator) fireTaskCompleted(taskID, logPrefix string) {
+	slog.Info(logPrefix+": task completed", "id", taskID)
+	evt := Event{
+		Type:    EventTaskCompleted,
+		Payload: map[string]any{"task_id": taskID},
+	}
+	next, err := o.state.HandleEvent(o.ctx, o, evt)
+	if err != nil {
+		slog.Warn("completion handler error", "task_id", taskID, "error", err)
+	}
+	if next != nil {
+		if err := o.Transition(next); err != nil {
+			slog.Warn("state transition failed", "error", err)
 		}
 	}
 }
@@ -427,19 +420,7 @@ func (o *Orchestrator) simulateCompletions() {
 	for id, node := range o.dag.nodes {
 		if node.Status == "ready" && len(node.ParentIDs) == 0 {
 			node.Status = "done"
-			evt := Event{
-				Type:    EventTaskCompleted,
-				Payload: map[string]any{"task_id": id},
-			}
-			next, err := o.state.HandleEvent(o.ctx, o, evt)
-			if err != nil {
-				slog.Warn("completion handler error", "task_id", id, "error", err)
-			}
-			if next != nil {
-				if err := o.Transition(next); err != nil {
-					slog.Warn("state transition failed", "error", err)
-				}
-			}
+			o.fireTaskCompleted(id, "sim")
 		}
 	}
 
@@ -448,19 +429,7 @@ func (o *Orchestrator) simulateCompletions() {
 	for id, node := range o.dag.nodes {
 		if node.Status == "ready" {
 			node.Status = "done"
-			evt := Event{
-				Type:    EventTaskCompleted,
-				Payload: map[string]any{"task_id": id},
-			}
-			next, err := o.state.HandleEvent(o.ctx, o, evt)
-			if err != nil {
-				slog.Warn("completion handler error", "task_id", id, "error", err)
-			}
-			if next != nil {
-				if err := o.Transition(next); err != nil {
-					slog.Warn("state transition failed", "error", err)
-				}
-			}
+			o.fireTaskCompleted(id, "sim")
 		}
 	}
 }
@@ -533,39 +502,13 @@ func (o *Orchestrator) subscribeDaemon() error {
 					"old_status", oldStatus,
 					"new_status", node.Status,
 				)
-
-				evt := Event{
-					Type:    EventTaskCompleted,
-					Payload: map[string]any{"task_id": event.Task.Id},
-				}
-				next, herr := o.state.HandleEvent(o.ctx, o, evt)
-				if herr != nil {
-					slog.Warn("completion handler error", "task_id", event.Task.Id, "error", herr)
-				}
-				if next != nil {
-					if terr := o.Transition(next); terr != nil {
-						slog.Warn("state transition failed", "error", terr)
-					}
-				}
+				o.fireTaskCompleted(event.Task.Id, "sub")
 
 				// Also auto-complete synthesis tasks promoted to ready
 				for _, n := range o.dag.nodes {
 					if n.AgentType == "synthesis" && n.Status == "ready" {
 						n.Status = "done"
-						slog.Info("subscription: synthesis task auto-completed", "id", n.ID)
-						evt2 := Event{
-							Type:    EventTaskCompleted,
-							Payload: map[string]any{"task_id": n.ID},
-						}
-						next2, herr2 := o.state.HandleEvent(o.ctx, o, evt2)
-						if herr2 != nil {
-							slog.Warn("synthesis handler error", "task_id", n.ID, "error", herr2)
-						}
-						if next2 != nil {
-							if terr := o.Transition(next2); terr != nil {
-								slog.Warn("state transition failed", "error", terr)
-							}
-						}
+						o.fireTaskCompleted(n.ID, "sub:synthesis")
 					}
 				}
 

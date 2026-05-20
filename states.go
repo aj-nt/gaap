@@ -22,6 +22,9 @@ const (
 	EventTasksComplete // fired when all tasks in the DAG are done
 )
 
+// sepLine is the width of separator lines in state output reports.
+var sepLine = strings.Repeat("=", 60)
+
 // Event is a pub/sub or timer event that drives state transitions.
 type Event struct {
 	Type    EventType
@@ -315,9 +318,9 @@ func (s *FailedState) Enter(ctx context.Context, o *Orchestrator) error {
 	)
 
 	// Print a clear failure header
-	fmt.Printf("\n%s\n", strings.Repeat("=", 60))
+	fmt.Printf("\n%s\n", sepLine)
 	fmt.Printf("  ORCHESTRATION FAILED\n")
-	fmt.Printf("%s\n\n", strings.Repeat("=", 60))
+	fmt.Printf("%s\n\n", sepLine)
 	fmt.Printf("Goal: %s\n", o.goal)
 	fmt.Printf("Completed: %d  |  Dead-lettered: %d  |  Still pending: %d\n\n", completed, deadLettered, stillWaiting)
 
@@ -395,9 +398,9 @@ func formatSynthesisReport(sr *SynthesisResult) string {
 	var b strings.Builder
 
 	b.WriteString("\n")
-	b.WriteString(strings.Repeat("=", 60))
+	b.WriteString(sepLine)
 	b.WriteString(fmt.Sprintf("\n  %s\n", sr.Title))
-	b.WriteString(strings.Repeat("=", 60))
+	b.WriteString(sepLine)
 	b.WriteString(fmt.Sprintf("\n\n%s\n\n", sr.ExecutiveSummary))
 
 	// Findings by severity
@@ -464,7 +467,7 @@ func formatSynthesisReport(sr *SynthesisResult) string {
 		}
 	}
 
-	b.WriteString(strings.Repeat("=", 60))
+	b.WriteString(sepLine)
 	b.WriteString("\n")
 	return b.String()
 }
