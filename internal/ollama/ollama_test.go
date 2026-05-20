@@ -58,7 +58,7 @@ func TestChat_Success(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
-		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"Hello from test"}}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"Hello from test"}}]}`))
 	}))
 	defer srv.Close()
 
@@ -81,7 +81,7 @@ func TestChat_Success(t *testing.T) {
 func TestChat_Non200StatusCode(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(500)
-		w.Write([]byte(`{"error":"internal server error"}`))
+		_, _ = w.Write([]byte(`{"error":"internal server error"}`))
 	}))
 	defer srv.Close()
 
@@ -102,7 +102,7 @@ func TestChat_MalformedJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
-		w.Write([]byte(`not-json`))
+		_, _ = w.Write([]byte(`not-json`))
 	}))
 	defer srv.Close()
 

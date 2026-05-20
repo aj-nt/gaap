@@ -381,7 +381,7 @@ func (s *FailedState) Enter(ctx context.Context, o *Orchestrator) error {
 			"dead_letter_ids": deadLetterIDs,
 		}
 		b, _ := json.Marshal(payload)
-		o.daemon.AddMemory(ctx, "memory", "orchestration_failed", "failed_"+runKey,
+		_, _ = o.daemon.AddMemory(ctx, "memory", "orchestration_failed", "failed_"+runKey,
 			string(b), 3, "gaap-orchestrator")
 	}
 
