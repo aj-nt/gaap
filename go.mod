@@ -3,7 +3,7 @@ module github.com/aj-nt/gaap
 go 1.26.3
 
 require (
-	github.com/aj-nt/vassago-sdk v0.3.0
+	github.com/aj-nt/vassago-sdk v0.4.0
 	github.com/google/uuid v1.6.0
 )
 
@@ -15,5 +15,3 @@ require (
 	google.golang.org/grpc v1.81.1 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
-
-replace github.com/aj-nt/vassago-sdk => ../vassago-sdk
