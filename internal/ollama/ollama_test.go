@@ -123,7 +123,7 @@ func TestChat_EmptyChoices(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
-		w.Write([]byte(`{"choices":[]}`))
+		_, _ = w.Write([]byte(`{"choices":[]}`))
 	}))
 	defer srv.Close()
 
@@ -147,7 +147,7 @@ func TestChat_EmptyContentWithReasoning(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
-		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"","reasoning":"I think the answer is 42"}}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"","reasoning":"I think the answer is 42"}}]}`))
 	}))
 	defer srv.Close()
 
@@ -171,7 +171,7 @@ func TestChat_EmptyContentWithReasoningContent(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
-		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","reasoning_content":"DeepSeek reasoning here"}}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","reasoning_content":"DeepSeek reasoning here"}}]}`))
 	}))
 	defer srv.Close()
 
