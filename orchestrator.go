@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/aj-nt/gaap/internal/worker"
 )
 
 // Config holds the orchestrator configuration.
@@ -17,6 +19,8 @@ type Config struct {
 
 // Orchestrator coordinates the full pipeline: decompose -> dispatch -> poll -> synthesize -> publish.
 // It uses the State Pattern internally; phases are encapsulated as state objects.
+// When a WorkerPool is configured, workers execute dispatched tasks concurrently — making
+// the orchestrator self-contained rather than requiring external worker processes.
 type Orchestrator struct {
 	cfg             *Config
 	ctx             context.Context
@@ -28,6 +32,7 @@ type Orchestrator struct {
 	goal            string
 	result          *SynthesisResult
 	breakerRegistry map[string]*CircuitBreaker
+	workerPool      *worker.Pool
 }
 
 // NewOrchestrator creates an orchestrator with the given config and daemon connection.
@@ -48,6 +53,13 @@ func NewOrchestrator(ctx context.Context, cfg *Config, daemon MnemoClient, decom
 		state:      &IdleState{},
 	}
 	return o
+}
+
+// SetWorkerPool configures a worker pool that executes dispatched tasks in-process.
+// When set, the orchestrator starts workers before the polling phase and stops them
+// when all tasks complete. Nil disables auto-workers (requires external worker processes).
+func (o *Orchestrator) SetWorkerPool(pool *worker.Pool) {
+	o.workerPool = pool
 }
 
 // Run executes the orchestrator pipeline for a given goal.
@@ -91,9 +103,24 @@ func (o *Orchestrator) Run(goal string) error {
 	}
 
 	// Polling loop — query daemon for task completions, advance DAG.
+	// Workers (if configured) execute tasks concurrently; pollOnce checks status.
 	// Falls back to simulation when daemon is unavailable (NullMnemo).
 	if o.state.Name() == "waiting" {
+		// Start workers if configured
+		var workerStopCh chan struct{}
+		if o.workerPool != nil {
+			workerStopCh = make(chan struct{})
+			go o.workerPool.Run(o.ctx, workerStopCh)
+			slog.Info("auto-workers started")
+		}
+
 		o.pollDaemon()
+
+		// Stop workers
+		if workerStopCh != nil {
+			close(workerStopCh)
+			slog.Info("auto-workers stopped")
+		}
 	}
 
 	// Synthesizing completes synchronously and transitions to Done
@@ -197,11 +224,23 @@ func (o *Orchestrator) pollOnce() {
 
 	// Auto-complete synthesis tasks that were promoted to ready.
 	// Synthesis runs in-process after all leaves complete, so there's no
-	// daemon task to poll — we mark them done here to unblock the DAG.
+	// daemon task to poll -- we mark them done and fire completion events
+	// so the state machine can advance.
 	for _, node := range o.dag.nodes {
 		if node.AgentType == "synthesis" && node.Status == "ready" {
 			node.Status = "done"
 			slog.Info("poll: synthesis task auto-completed (in-process)", "id", node.ID)
+			evt := Event{
+				Type:    EventTaskCompleted,
+				Payload: map[string]any{"task_id": node.ID},
+			}
+			next, err := o.state.HandleEvent(o.ctx, o, evt)
+			if err != nil {
+				slog.Warn("synthesis completion handler error", "task_id", node.ID, "error", err)
+			}
+			if next != nil {
+				_ = o.Transition(next)
+			}
 		}
 	}
 }

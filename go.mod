@@ -2,7 +2,10 @@ module github.com/aj-nt/gaap
 
 go 1.25.0
 
-require github.com/aj-nt/vassago-sdk v0.3.0
+require (
+	github.com/aj-nt/vassago-sdk v0.3.0
+	github.com/google/uuid v1.6.0
+)
 
 require (
 	golang.org/x/net v0.51.0 // indirect

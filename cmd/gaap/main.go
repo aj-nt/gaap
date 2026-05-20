@@ -24,6 +24,7 @@ import (
 
 	"github.com/aj-nt/gaap"
 	"github.com/aj-nt/gaap/internal/ollama"
+	"github.com/aj-nt/gaap/internal/worker"
 	"github.com/aj-nt/vassago-sdk/client"
 )
 
@@ -148,6 +149,36 @@ func runArgs() {
 	decomposer := gaap.NewDecomposer(gaap.NewLLMDecomposition(chatFn))
 
 	orchestrator := gaap.NewOrchestrator(ctx, cfg, daemonClient, decomposer)
+
+	// Auto-workers: spawn worker pool to execute tasks in-process.
+	// When the orchestrator dispatches tasks, workers claim and execute them
+	// concurrently — the orchestrator polls for completions.
+	if !*dryRun {
+		wpCfg := worker.PoolConfig{
+			DaemonAddr:  cfg.DaemonAddr,
+			AgentID:     "gaap-worker",
+			AgentName:   "gaap-worker",
+			AgentTypes:  []string{"static_analysis", "quality_scan"},
+			WorkerCount: 2,
+			PollSec:     2,
+			MaxTurns:    15,
+			RepoPath:    cfg.RepoPath,
+			Ollama: ollama.Config{
+				BaseURL:     defaultOllamaURL,
+				Model:       defaultModel,
+				MaxTokens:   defaultMaxTokens,
+				Temperature: defaultTemp,
+				TimeoutSec:  120,
+			},
+		}
+		pool, err := worker.NewPool(ctx, wpCfg, daemonClient)
+		if err != nil {
+			slog.Warn("Failed to create worker pool, running without auto-workers", "error", err)
+		} else {
+			orchestrator.SetWorkerPool(pool)
+			slog.Info("Auto-workers enabled", "agent_types", wpCfg.AgentTypes, "count", wpCfg.WorkerCount)
+		}
+	}
 
 	if *dryRun {
 		tasks, err := decomposer.Decompose(ctx, goal, cfg.RepoPath)
