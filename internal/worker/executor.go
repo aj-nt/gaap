@@ -78,6 +78,13 @@ var blockedPatterns = []string{
 	"eval ", "exec ",
 }
 
+// ChatClient is the interface the executor uses to communicate with an LLM.
+// This abstraction enables testing the execution loop with mock implementations.
+type ChatClient interface {
+	Chat(messages []ollama.Message) (string, error)
+	Model() string
+}
+
 // commandAllowed checks whether a shell command string is safe to execute.
 // Returns nil if allowed, or an error explaining why it was blocked.
 func commandAllowed(shellCmd string) error {
@@ -107,16 +114,16 @@ func commandAllowed(shellCmd string) error {
 
 // Executor runs a single task via the CMD:/DONE:/FAIL: protocol.
 type Executor struct {
-	ollama   *ollama.Client
+	llm      ChatClient
 	maxTurns int
 }
 
 // NewExecutor creates a task executor with the given LLM config.
-func NewExecutor(ollamaClient *ollama.Client, maxTurns int) *Executor {
+func NewExecutor(llm ChatClient, maxTurns int) *Executor {
 	if maxTurns <= 0 {
 		maxTurns = 20
 	}
-	return &Executor{ollama: ollamaClient, maxTurns: maxTurns}
+	return &Executor{llm: llm, maxTurns: maxTurns}
 }
 
 // ExecuteResult is the result of executing a task.
@@ -165,7 +172,7 @@ func (e *Executor) Execute(ctx context.Context, task *client.TaskEntry, repoPath
 		default:
 		}
 
-		text, err := e.ollama.Chat(messages)
+		text, err := e.llm.Chat(messages)
 		if err != nil {
 			return &ExecuteResult{
 				TaskID:     task.Id,
@@ -221,7 +228,7 @@ func (e *Executor) Execute(ctx context.Context, task *client.TaskEntry, repoPath
 				Status:      "success",
 				Summary:     summary,
 				Findings:    findings,
-				Model:       e.ollama.Model(),
+				Model:       e.llm.Model(),
 				LLMTurns:    turn,
 				DurationMs:  time.Since(t0).Milliseconds(),
 				CompletedAt: time.Now().Unix(),
@@ -235,28 +242,28 @@ func (e *Executor) Execute(ctx context.Context, task *client.TaskEntry, repoPath
 				Status:     "failed",
 				Error:      reason,
 				Findings:   findings,
-				Model:      e.ollama.Model(),
-				LLMTurns:   turn,
-				DurationMs: time.Since(t0).Milliseconds(),
-			}
-
-		default:
-			messages = append(messages, ollama.Message{
-				Role:    "user",
-				Content: "Respond with CMD:, DONE:, or FAIL:",
-			})
+			Model:      e.llm.Model(),
+			LLMTurns:   turn,
+			DurationMs: time.Since(t0).Milliseconds(),
 		}
-	}
 
-	return &ExecuteResult{
-		TaskID:     task.Id,
-		Status:     "failed",
-		Error:      fmt.Sprintf("Exceeded %d turns without DONE/FAIL", e.maxTurns),
-		Findings:   findings,
-		Model:      e.ollama.Model(),
-		LLMTurns:   e.maxTurns,
-		DurationMs: time.Since(t0).Milliseconds(),
+	default:
+		messages = append(messages, ollama.Message{
+			Role:    "user",
+			Content: "Respond with CMD:, DONE:, or FAIL:",
+		})
 	}
+}
+
+return &ExecuteResult{
+	TaskID:     task.Id,
+	Status:     "failed",
+	Error:      fmt.Sprintf("Exceeded %d turns without DONE/FAIL", e.maxTurns),
+	Findings:   findings,
+	Model:      e.llm.Model(),
+	LLMTurns:   e.maxTurns,
+	DurationMs: time.Since(t0).Milliseconds(),
+}
 }
 
 // cmdOutput holds the result of running a shell command.
