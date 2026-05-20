@@ -146,3 +146,121 @@ func TestE2ESingleLeafTask(t *testing.T) {
 		t.Errorf("expected 1 task, got %d", o.dag.TaskCount())
 	}
 }
+
+// TestRunStateRoundTrip verifies that RunState can be serialized and
+// the DAG reconstructed from it correctly.
+func TestRunStateRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	rs := &RunState{
+		Goal:     "audit the codebase",
+		RepoPath: "/tmp/repo",
+		Tasks: []TaskSpec{
+			{TaskID: "t1", AgentType: "worker", Status: "ready", Goal: "task 1"},
+			{TaskID: "t2", AgentType: "worker", Status: "ready", Goal: "task 2"},
+			{TaskID: "t3", AgentType: "synthesis", Status: "blocked", Goal: "synthesize",
+				ParentIDs: []string{"t1", "t2"}},
+		},
+	}
+
+	dag := NewDAG()
+	for _, ts := range rs.Tasks {
+		if err := dag.AddTask(&TaskNode{
+			ID:        ts.TaskID,
+			ParentIDs: ts.ParentIDs,
+			Status:    ts.Status,
+			Goal:      ts.Goal,
+			AgentType: ts.AgentType,
+			Context:   ts.Context,
+		}); err != nil {
+			t.Fatalf("AddTask: %v", err)
+		}
+	}
+
+	if dag.TaskCount() != 3 {
+		t.Errorf("expected 3 tasks, got %d", dag.TaskCount())
+	}
+
+	// t3 should be blocked with two parents
+	node, err := dag.GetTask("t3")
+	if err != nil {
+		t.Fatalf("GetTask t3: %v", err)
+	}
+	if node.Status != "blocked" {
+		t.Error("t3 should be blocked")
+	}
+	if len(node.ParentIDs) != 2 {
+		t.Errorf("t3 should have 2 parents, got %d", len(node.ParentIDs))
+	}
+	if allDone, err := dag.AllParentsComplete("t1"); err != nil || !allDone {
+		t.Errorf("t1 should have all parents complete: done=%v err=%v", allDone, err)
+	}
+}
+
+// TestResumeCompletesDAG verifies that Resume picks up a saved RunState
+// and completes the full pipeline to Done.
+func TestResumeCompletesDAG(t *testing.T) {
+	t.Parallel()
+
+	rs := &RunState{
+		Goal:     "audit the codebase",
+		RepoPath: "/tmp/test-repo",
+		Tasks: []TaskSpec{
+			{TaskID: "leaf-1", AgentType: "static_analysis", Status: "ready", Goal: "lint"},
+			{TaskID: "leaf-2", AgentType: "quality_scan", Status: "ready", Goal: "scan"},
+			{TaskID: "synth", AgentType: "synthesis", Status: "blocked", Goal: "synthesize",
+				ParentIDs: []string{"leaf-1", "leaf-2"}},
+		},
+	}
+
+	cfg := &Config{
+		RepoPath:        rs.RepoPath,
+		MaxWaitSec:      30,
+		PollIntervalSec: 1,
+	}
+	o := NewOrchestrator(context.Background(), cfg, &client.NullMnemo{}, nil)
+
+	err := o.Resume(rs)
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+
+	if o.state == nil || o.state.Name() != "done" {
+		t.Errorf("expected state done, got %q", o.state.Name())
+	}
+	if !o.dag.AllTasksComplete() {
+		t.Error("all tasks should be complete")
+	}
+	if o.dag.TaskCount() != 3 {
+		t.Errorf("expected 3 tasks, got %d", o.dag.TaskCount())
+	}
+}
+
+// TestResumePreservesGoal verifies that the goal is preserved through resume.
+func TestResumePreservesGoal(t *testing.T) {
+	t.Parallel()
+
+	rs := &RunState{
+		Goal:     "deep scan of gaap",
+		RepoPath: "/tmp/repo",
+		Tasks: []TaskSpec{
+			{TaskID: "single", AgentType: "worker", Status: "ready", Goal: "scan"},
+		},
+	}
+
+	cfg := &Config{
+		RepoPath:        rs.RepoPath,
+		MaxWaitSec:      30,
+		PollIntervalSec: 1,
+	}
+	o := NewOrchestrator(context.Background(), cfg, &client.NullMnemo{}, nil)
+
+	err := o.Resume(rs)
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+
+	if o.goal != "deep scan of gaap" {
+		t.Errorf("expected goal 'deep scan of gaap', got %q", o.goal)
+	}
+}

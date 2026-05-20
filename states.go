@@ -125,6 +125,15 @@ func (s *PlanningState) Enter(ctx context.Context, o *Orchestrator) error {
 	}
 
 	slog.Info("planning: tasks created in DAG", "count", o.dag.TaskCount())
+
+	// Save run state to daemon for crash-recovery via gaap resume.
+	// Ignore errors from NullMnemo in tests.
+	runKey := fmt.Sprintf("runstate_%s_%s",
+		strings.ReplaceAll(sanitizeGoal(o.goal), " ", "-"),
+		uuid.New().String()[:8])
+	if err := o.SaveRunState(ctx, runKey); err != nil {
+		slog.Warn("planning: failed to save run state", "error", err)
+	}
 	return nil
 }
 

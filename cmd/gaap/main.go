@@ -53,6 +53,11 @@ func main() {
 			slog.Error(err.Error())
 			os.Exit(1)
 		}
+	case "resume":
+		if err := resume(os.Args[2:]); err != nil {
+			slog.Error(err.Error())
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown subcommand: %s\n", subcmd)
 		printUsage()
@@ -65,6 +70,7 @@ func printUsage() {
 
 Usage:
   gaap run [flags] <goal>
+  gaap resume [--addr <daemon>] <run-key>
   gaap version
 
 Run flags:
@@ -272,5 +278,89 @@ func run(args []string) error {
 	}
 
 	slog.Info("Gaap complete", "goal", rc.Goal)
+	return nil
+}
+
+// resumeConfig holds parsed flags for "gaap resume".
+type resumeConfig struct {
+	RunKey     string
+	DaemonAddr string
+}
+
+// parseResumeFlags parses "gaap resume [--addr <daemon>] <run-key>".
+func parseResumeFlags(name string, args []string) (*resumeConfig, error) {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	addr := fs.String("addr", "", "Vassago daemon address (default: localhost:50051)")
+
+	if err := fs.Parse(args); err != nil {
+		return nil, err
+	}
+
+	runKey := fs.Arg(0)
+	if runKey == "" {
+		return nil, fmt.Errorf("run key is required")
+	}
+
+	cfg := &resumeConfig{
+		RunKey:     runKey,
+		DaemonAddr: *addr,
+	}
+	if cfg.DaemonAddr == "" {
+		cfg.DaemonAddr = "localhost:50051"
+	}
+	return cfg, nil
+}
+
+// resume loads a saved orchestration run from the daemon and resumes it
+// from the Waiting state.
+func resume(args []string) error {
+	rc, err := parseResumeFlags("resume", args)
+	if err != nil {
+		return fmt.Errorf("flag parsing: %w", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		slog.Info("Received shutdown signal")
+		cancel()
+	}()
+
+	slog.Info("Gaap resuming", "run_key", rc.RunKey, "daemon", rc.DaemonAddr)
+
+	daemonClient, err := client.Connect(ctx, client.Config{Address: rc.DaemonAddr})
+	if err != nil {
+		return fmt.Errorf("failed to connect to Vassago daemon at %s: %w", rc.DaemonAddr, err)
+	}
+	defer daemonClient.Close()
+
+	if err := daemonClient.HealthCheck(ctx); err != nil {
+		return fmt.Errorf("Vassago daemon health check failed: %w", err)
+	}
+
+	rs, err := gaap.LoadRunState(ctx, daemonClient, rc.RunKey)
+	if err != nil {
+		return fmt.Errorf("load run state: %w", err)
+	}
+
+	orchestratorCfg := &gaap.Config{
+		DaemonAddr:      rc.DaemonAddr,
+		RepoPath:        rs.RepoPath,
+		MaxWaitSec:      300,
+		PollIntervalSec: 5,
+	}
+	orchestrator := gaap.NewOrchestrator(ctx, orchestratorCfg, daemonClient, nil)
+
+	if err := orchestrator.Resume(rs); err != nil {
+		return fmt.Errorf("resume: %w", err)
+	}
+
+	slog.Info("Gaap resume complete", "run_key", rc.RunKey)
 	return nil
 }

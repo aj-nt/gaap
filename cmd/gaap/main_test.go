@@ -195,3 +195,50 @@ func TestVersionInfo(t *testing.T) {
 		t.Errorf("expected 'gaap version v0.1.0', got %q", result)
 	}
 }
+
+// --- resume subcommand ---
+
+// TestParseResumeFlagsValid verifies parsing of gaap resume <run-key>.
+func TestParseResumeFlagsValid(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := parseResumeFlags("resume", []string{"runstate_my-run"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.RunKey != "runstate_my-run" {
+		t.Errorf("expected RunKey 'runstate_my-run', got %q", cfg.RunKey)
+	}
+	if cfg.DaemonAddr != "localhost:50051" {
+		t.Errorf("expected default addr, got %q", cfg.DaemonAddr)
+	}
+}
+
+// TestParseResumeFlagsWithAddr verifies --addr flag on resume.
+func TestParseResumeFlagsWithAddr(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := parseResumeFlags("resume", []string{"--addr", "studio:50051", "runstate_x"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.RunKey != "runstate_x" {
+		t.Errorf("expected RunKey 'runstate_x', got %q", cfg.RunKey)
+	}
+	if cfg.DaemonAddr != "studio:50051" {
+		t.Errorf("expected addr 'studio:50051', got %q", cfg.DaemonAddr)
+	}
+}
+
+// TestParseResumeFlagsMissingKey verifies error when run key is missing.
+func TestParseResumeFlagsMissingKey(t *testing.T) {
+	t.Parallel()
+
+	_, err := parseResumeFlags("resume", []string{})
+	if err == nil {
+		t.Fatal("expected error for missing run key")
+	}
+	if !strings.Contains(err.Error(), "run key is required") {
+		t.Errorf("expected 'run key is required' in error, got %q", err.Error())
+	}
+}

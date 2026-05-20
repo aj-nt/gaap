@@ -18,6 +18,15 @@ type Config struct {
 	PollIntervalSec int    `yaml:"poll_interval_sec"`
 }
 
+// RunState is a serializable snapshot of an orchestrator run that can be
+// stored to and loaded from the daemon. It captures just enough to rebuild
+// the DAG and resume from the Waiting state after an orchestrator crash.
+type RunState struct {
+	Goal     string     `json:"goal"`
+	RepoPath string     `json:"repo_path"`
+	Tasks    []TaskSpec `json:"tasks"`
+}
+
 // Orchestrator coordinates the full pipeline: decompose -> dispatch -> poll -> synthesize -> publish.
 // It uses the State Pattern internally; phases are encapsulated as state objects.
 // When a WorkerPool is configured, workers execute dispatched tasks concurrently — making
@@ -34,6 +43,7 @@ type Orchestrator struct {
 	result          *SynthesisResult
 	breakerRegistry map[string]*CircuitBreaker
 	workerPool      *worker.Pool
+	runKey          string // daemon key for persisted RunState
 }
 
 // NewOrchestrator creates an orchestrator with the given config and daemon connection.
@@ -111,6 +121,57 @@ func (o *Orchestrator) Run(goal string) error {
 		}
 	}
 
+	return o.runWaitingAndBeyond()
+}
+
+// Resume rebuilds the orchestrator's DAG from a saved RunState, skips the plan
+// phase, and resumes from the Waiting state. This implements crash recovery:
+// the daemon still has all task state; we just need to reconnect the DAG and
+// continue polling.
+func (o *Orchestrator) Resume(rs *RunState) error {
+	if rs == nil {
+		return fmt.Errorf("run state is nil")
+	}
+	if rs.Goal == "" {
+		return fmt.Errorf("run state has no goal")
+	}
+
+	o.goal = rs.Goal
+	if rs.RepoPath != "" {
+		o.cfg.RepoPath = rs.RepoPath
+	}
+
+	// Rebuild DAG from saved task specs.
+	o.dag = NewDAG()
+	for _, t := range rs.Tasks {
+		err := o.dag.AddTask(&TaskNode{
+			ID:        t.TaskID,
+			ParentIDs: t.ParentIDs,
+			Status:    t.Status,
+			Goal:      t.Goal,
+			AgentType: t.AgentType,
+			Context:   t.Context,
+		})
+		if err != nil {
+			return fmt.Errorf("resume: add task %s: %w", t.TaskID, err)
+		}
+	}
+
+	slog.Info("orchestrator resuming from saved state",
+		"goal", o.goal,
+		"repo", o.cfg.RepoPath,
+		"task_count", o.dag.TaskCount(),
+	)
+
+	// Jump directly to Waiting state — planning and dispatch are already done.
+	o.state = &WaitingState{}
+
+	return o.runWaitingAndBeyond()
+}
+
+// runWaitingAndBeyond runs the shared post-planning pipeline: start workers,
+// poll daemon, synthesize, publish result.
+func (o *Orchestrator) runWaitingAndBeyond() error {
 	// Polling loop — query daemon for task completions, advance DAG.
 	// Workers (if configured) execute tasks concurrently; pollOnce checks status.
 	// Falls back to simulation when daemon is unavailable (NullMnemo).
@@ -148,6 +209,64 @@ func (o *Orchestrator) Run(goal string) error {
 	}
 
 	return nil
+}
+
+// SaveRunState persists the orchestrator's current DAG as a RunState to the
+// daemon. This allows crash recovery via Resume(). The returned key is the
+// daemon memory key that can be passed to gaap resume.
+func (o *Orchestrator) SaveRunState(ctx context.Context, runKey string) error {
+	rs := &RunState{
+		Goal:     o.goal,
+		RepoPath: o.cfg.RepoPath,
+		Tasks:    make([]TaskSpec, 0, len(o.dag.nodes)),
+	}
+	for _, node := range o.dag.nodes {
+		rs.Tasks = append(rs.Tasks, TaskSpec{
+			TaskID:    node.ID,
+			ParentIDs: node.ParentIDs,
+			Status:    node.Status,
+			Goal:      node.Goal,
+			AgentType: node.AgentType,
+			Context:   node.Context,
+		})
+	}
+
+	payload, err := json.Marshal(rs)
+	if err != nil {
+		return fmt.Errorf("marshal run state: %w", err)
+	}
+
+	_, err = o.daemon.AddMemory(ctx, "memory", "orchestration_run", runKey,
+		string(payload), 5, "gaap-orchestrator")
+	if err != nil {
+		return fmt.Errorf("save run state to daemon: %w", err)
+	}
+
+	o.runKey = runKey
+	slog.Info("run state saved to daemon", "key", runKey, "task_count", len(rs.Tasks))
+	return nil
+}
+
+// RunKey returns the saved daemon key for this run state.
+func (o *Orchestrator) RunKey() string {
+	return o.runKey
+}
+
+// LoadRunState fetches a RunState from the daemon by key.
+func LoadRunState(ctx context.Context, daemon MnemoClient, runKey string) (*RunState, error) {
+	entry, err := daemon.GetMemory(ctx, runKey)
+	if err != nil {
+		return nil, fmt.Errorf("get run state from daemon: %w", err)
+	}
+	if entry == nil {
+		return nil, fmt.Errorf("run state not found: %s", runKey)
+	}
+
+	var rs RunState
+	if err := json.Unmarshal([]byte(entry.Content), &rs); err != nil {
+		return nil, fmt.Errorf("parse run state JSON: %w", err)
+	}
+	return &rs, nil
 }
 
 // pollDaemon queries the daemon for task completions, advancing the DAG when
