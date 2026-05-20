@@ -208,6 +208,14 @@ func (o *Orchestrator) runWaitingAndBeyond() error {
 			o.pollDaemon()
 		}
 
+		// Check if we timed out with pending tasks — transition to Failed.
+		if !o.dag.AllTasksComplete() && o.state.Name() == "waiting" {
+			slog.Warn("orchestration incomplete after wait phase, transitioning to failed")
+			if err := o.Transition(&FailedState{}); err != nil {
+				return fmt.Errorf("failed transition: %w", err)
+			}
+		}
+
 		// Stop workers
 		if workerStopCh != nil {
 			close(workerStopCh)

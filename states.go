@@ -282,6 +282,114 @@ func (s *DoneState) HandleEvent(ctx context.Context, o *Orchestrator, evt Event)
 	return nil, nil
 }
 
+// FailedState is terminal. The orchestrator timed out or all dispatched tasks dead-lettered.
+// It synthesizes partial results (if any completed) and reports the failure clearly.
+type FailedState struct{}
+
+func (s *FailedState) Name() string { return "failed" }
+
+func (s *FailedState) Enter(ctx context.Context, o *Orchestrator) error {
+	// Count what happened
+	completed := 0
+	deadLettered := 0
+	stillWaiting := 0
+	var deadLetterIDs []string
+
+	for _, node := range o.dag.nodes {
+		switch node.Status {
+		case "done":
+			completed++
+		case "dead_letter":
+			deadLettered++
+			deadLetterIDs = append(deadLetterIDs, node.ID)
+		default:
+			stillWaiting++
+		}
+	}
+
+	slog.Warn("orchestration failed — not all tasks completed",
+		"goal", o.goal,
+		"completed", completed,
+		"dead_letter", deadLettered,
+		"still_waiting", stillWaiting,
+	)
+
+	// Print a clear failure header
+	fmt.Printf("\n%s\n", strings.Repeat("=", 60))
+	fmt.Printf("  ORCHESTRATION FAILED\n")
+	fmt.Printf("%s\n\n", strings.Repeat("=", 60))
+	fmt.Printf("Goal: %s\n", o.goal)
+	fmt.Printf("Completed: %d  |  Dead-lettered: %d  |  Still pending: %d\n\n", completed, deadLettered, stillWaiting)
+
+	if len(deadLetterIDs) > 0 {
+		fmt.Println("Dead-lettered tasks:")
+		for _, id := range deadLetterIDs {
+			fmt.Printf("  - %s\n", id)
+		}
+		fmt.Println()
+	}
+
+	// Run partial synthesis if anything completed
+	if completed > 0 {
+		fmt.Println("Partial synthesis (completed results only):")
+
+		if o.synthesis == nil {
+			o.synthesis = NewSynthesisEngine(nil)
+		}
+
+		results := make(map[string]*TaskResult)
+		for id, node := range o.dag.nodes {
+			if node.Status != "done" {
+				continue
+			}
+			summary := node.Summary
+			if summary == "" {
+				summary = node.Goal
+			}
+			results[id] = &TaskResult{
+				TaskID:    node.ID,
+				AgentType: node.AgentType,
+				Status:    node.Status,
+				Summary:   summary,
+				Findings:  node.Findings,
+			}
+		}
+
+		sr, err := o.synthesis.synthesizeResults(ctx, results)
+		if err != nil {
+			slog.Warn("partial synthesis failed", "error", err)
+		} else {
+			o.result = sr
+			report := formatSynthesisReport(sr)
+			fmt.Println(report)
+		}
+	} else {
+		fmt.Println("No tasks completed — no synthesis possible.")
+	}
+
+	// Persist failure state to daemon for inspection
+	runKey := o.RunKey()
+	if runKey != "" {
+		payload := map[string]any{
+			"goal":           o.goal,
+			"completed":      completed,
+			"dead_letter":    deadLettered,
+			"still_waiting":  stillWaiting,
+			"dead_letter_ids": deadLetterIDs,
+		}
+		b, _ := json.Marshal(payload)
+		o.daemon.AddMemory(ctx, "memory", "orchestration_failed", "failed_"+runKey,
+			string(b), 3, "gaap-orchestrator")
+	}
+
+	return nil
+}
+
+func (s *FailedState) HandleEvent(ctx context.Context, o *Orchestrator, evt Event) (OrchestratorState, error) {
+	// Terminal state — no transitions.
+	return nil, nil
+}
+
 // formatSynthesisReport renders the synthesis result as a human-readable text report.
 func formatSynthesisReport(sr *SynthesisResult) string {
 	var b strings.Builder
