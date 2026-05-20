@@ -11,6 +11,14 @@
 //	--addr string   Vassago daemon address (default: localhost:50051)
 //	--repo string   Repository path to analyze (default: current directory)
 //	--timeout int   Max wait for workers in seconds (default: 300)
+//	--subscribe     Enable push-based task updates via gRPC (falls back to polling)
+//	--agent-types string  Comma-separated agent types (default: static_analysis,quality_scan)
+//	--api-key string      Vassago daemon API key (Bearer token)
+//	--tls-cert string     Path to TLS CA certificate for daemon connection
+//	--model string        LLM model name (default: glm-5.1:cloud)
+//	--ollama-url string   Ollama base URL (default: http://localhost:11434/v1)
+//	--max-tokens int      Max tokens for LLM responses (default: 4096)
+//	--temperature float   LLM temperature, 0.0-1.0 (default: 0.1)
 package main
 
 import (
@@ -71,7 +79,7 @@ func printUsage() {
 
 Usage:
   gaap run [flags] <goal>
-  gaap resume [--addr <daemon>] <run-key>
+  gaap resume [--addr <daemon>] [--api-key <key>] [--tls-cert <path>] <run-key>
   gaap version
 
 Run flags:
@@ -79,10 +87,14 @@ Run flags:
   --addr string     Vassago daemon address (default: localhost:50051)
   --repo string     Repository path to analyze (default: current directory)
   --timeout int     Max wait for workers in seconds (default: 300)
-  --model string    LLM model name (default: glm-5.1:cloud)
-  --ollama-url string  Ollama base URL (default: http://localhost:11434/v1)
-  --max-tokens int  Max tokens for LLM responses (default: 4096)
-  --temperature float  LLM temperature, 0.0-1.0 (default: 0.1)
+  --subscribe       Enable push-based task updates via gRPC (falls back to polling)
+  --agent-types string  Comma-separated agent types (default: static_analysis,quality_scan)
+  --api-key string      Vassago daemon API key (Bearer token)
+  --tls-cert string     Path to TLS CA certificate for daemon connection
+  --model string        LLM model name (default: glm-5.1:cloud)
+  --ollama-url string   Ollama base URL (default: http://localhost:11434/v1)
+  --max-tokens int      Max tokens for LLM responses (default: 4096)
+  --temperature float   LLM temperature, 0.0-1.0 (default: 0.1)
 `)
 }
 
@@ -330,12 +342,14 @@ type resumeConfig struct {
 	TLSCert    string
 }
 
-// parseResumeFlags parses "gaap resume [--addr <daemon>] <run-key>".
+// parseResumeFlags parses "gaap resume [--addr <daemon>] [--api-key <key>] [--tls-cert <path>] <run-key>".
 func parseResumeFlags(name string, args []string) (*resumeConfig, error) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
 	addr := fs.String("addr", "", "Vassago daemon address (default: localhost:50051)")
+	apiKey := fs.String("api-key", "", "Vassago daemon API key (Bearer token)")
+	tlsCert := fs.String("tls-cert", "", "Path to TLS CA certificate for daemon connection")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -349,6 +363,8 @@ func parseResumeFlags(name string, args []string) (*resumeConfig, error) {
 	cfg := &resumeConfig{
 		RunKey:     runKey,
 		DaemonAddr: *addr,
+		APIKey:     *apiKey,
+		TLSCert:    *tlsCert,
 	}
 	if cfg.DaemonAddr == "" {
 		cfg.DaemonAddr = "localhost:50051"

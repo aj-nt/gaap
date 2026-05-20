@@ -2,10 +2,25 @@
 
 All notable changes to Gaap.
 
-## [Unreleased]
+## [v0.2.0] — 2026-05-20
 
-Gaap is a model-agnostic multi-agent orchestrator on the blackboard pattern. Coordinates heterogeneous
-agents through shared memory (Vassago). Not yet released.
+Production-readiness release. Fills all identified release and production gaps.
+
+### Security
+- **TLS support** — vassago daemon now wires transportCredentials(); gaap CLI has `--tls-cert` flag
+- **Bearer token auth** — new `cauth` package in vassago-sdk v0.5.0; `--api-key` flag on CLI
+- **Worker heartbeat** — 15s heartbeat during task execution prevents orphan recovery from stealing claims
+
+### Reliability
+- **Integration tests against live daemon** — `orchestrator_daemon_test.go` uses bufconn for full gRPC wire-path testing (happy path + dead-letter/FailedState)
+- **Config-driven agent registry** — `--agent-types` flag builds catalog dynamically; pool, decomposer, and LLM prompt all driven from same list
+
+### Deps
+- vassago-sdk upgraded to v0.5.0 (cauth, TLS, Bearer token)
+
+## [v0.1.0] — 2026-05-20
+
+First release. Multi-agent orchestrator with blackboard coordination, DAG planning, synthesis, and circuit breaker.
 
 ### Core -- Orchestrator
 
@@ -48,7 +63,7 @@ agents through shared memory (Vassago). Not yet released.
 
 ### Development
 
-- **108 tests** — all passing with `-race` (race detector)
+- **123 tests** — all passing with `-race` (race detector)
 - **2 CI workflows** — test+vet+build on push/PR + goreleaser on tag
 - **Apache 2.0** licensed
-- Depends on `vassago-sdk` v0.4.0 (public, normal `go get`)
+- Depends on `vassago-sdk` v0.5.0 (public, normal `go get`)
