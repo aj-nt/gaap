@@ -178,6 +178,25 @@ func (p *Pool) workerLoop(ctx context.Context, stopCh <-chan struct{}, agentType
 
 		slog.Info("worker: executing task", "id", tid, "type", agentType, "goal", truncate(claimed.Goal, 100))
 
+		// Heartbeat during task execution — prevents orphan recovery
+		// from resetting this claim if execution takes a while.
+		hbCtx, hbCancel := context.WithCancel(ctx)
+		defer hbCancel()
+		go func() {
+			ticker := time.NewTicker(15 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-hbCtx.Done():
+					return
+				case <-ticker.C:
+					if err := p.mnemo.Heartbeat(hbCtx, p.agentID); err != nil {
+						slog.Warn("worker: heartbeat failed", "agent_id", p.agentID, "error", err)
+					}
+				}
+			}
+		}()
+
 		result := p.exec.Execute(ctx, claimed, p.cfg.RepoPath)
 		resultKey := fmt.Sprintf("result_%s_%s", tid, uuid.New().String()[:8])
 
