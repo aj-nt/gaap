@@ -29,6 +29,15 @@ import (
 	"github.com/aj-nt/vassago-sdk/client"
 )
 
+// Version is set at build time by -ldflags "-X main.Version=...".
+// Defaults to "dev" for local builds.
+var Version = "dev"
+
+// versionInfo returns the gaap version string.
+func versionInfo() string {
+	return "gaap version " + Version
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		printUsage()
@@ -37,6 +46,8 @@ func main() {
 
 	subcmd := os.Args[1]
 	switch subcmd {
+	case "version":
+		fmt.Println(versionInfo())
 	case "run":
 		if err := run(os.Args[2:]); err != nil {
 			slog.Error(err.Error())
@@ -54,12 +65,17 @@ func printUsage() {
 
 Usage:
   gaap run [flags] <goal>
+  gaap version
 
-Flags:
-  --dry-run       Show decomposition without dispatching tasks
-  --addr string   Vassago daemon address (default: localhost:50051)
-  --repo string   Repository path to analyze (default: current directory)
-  --timeout int   Max wait for workers in seconds (default: 300)
+Run flags:
+  --dry-run         Show decomposition without dispatching tasks
+  --addr string     Vassago daemon address (default: localhost:50051)
+  --repo string     Repository path to analyze (default: current directory)
+  --timeout int     Max wait for workers in seconds (default: 300)
+  --model string    LLM model name (default: glm-5.1:cloud)
+  --ollama-url string  Ollama base URL (default: http://localhost:11434/v1)
+  --max-tokens int  Max tokens for LLM responses (default: 4096)
+  --temperature float  LLM temperature, 0.0-1.0 (default: 0.1)
 `)
 }
 
@@ -71,6 +87,10 @@ type runConfig struct {
 	MaxWaitSec      int
 	PollIntervalSec int
 	DryRun          bool
+	Model           string
+	OllamaURL       string
+	MaxTokens       int
+	Temperature     float64
 }
 
 // parseRunFlags parses the flag set for "gaap run [flags] <goal>".
@@ -84,6 +104,10 @@ func parseRunFlags(name string, args []string) (*runConfig, error) {
 	addr := fs.String("addr", "", "Vassago daemon address (e.g., localhost:50051)")
 	repo := fs.String("repo", "", "Repository path to analyze")
 	timeout := fs.Int("timeout", 0, "Max wait for workers in seconds (default: 300)")
+	model := fs.String("model", "", "LLM model name (default: glm-5.1:cloud)")
+	ollamaURL := fs.String("ollama-url", "", "Ollama base URL (default: http://localhost:11434/v1)")
+	maxTokens := fs.Int("max-tokens", 0, "Max tokens for LLM responses (default: 4096)")
+	temperature := fs.Float64("temperature", 0, "LLM temperature, 0.0-1.0 (default: 0.1)")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -101,12 +125,28 @@ func parseRunFlags(name string, args []string) (*runConfig, error) {
 		MaxWaitSec:      *timeout,
 		PollIntervalSec: 5,
 		DryRun:          *dryRun,
+		Model:           *model,
+		OllamaURL:       *ollamaURL,
+		MaxTokens:       *maxTokens,
+		Temperature:     *temperature,
 	}
 	if cfg.DaemonAddr == "" {
 		cfg.DaemonAddr = "localhost:50051"
 	}
 	if cfg.MaxWaitSec <= 0 {
 		cfg.MaxWaitSec = 300
+	}
+	if cfg.Model == "" {
+		cfg.Model = "glm-5.1:cloud"
+	}
+	if cfg.OllamaURL == "" {
+		cfg.OllamaURL = "http://localhost:11434/v1"
+	}
+	if cfg.MaxTokens <= 0 {
+		cfg.MaxTokens = 4096
+	}
+	if cfg.Temperature <= 0 {
+		cfg.Temperature = 0.1
 	}
 	return cfg, nil
 }
@@ -121,14 +161,6 @@ func run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("flag parsing: %w", err)
 	}
-
-	// LLM config — hardcoded defaults; flags come later
-	const (
-		defaultOllamaURL = "http://localhost:11434/v1"
-		defaultModel     = "glm-5.1:cloud"
-		defaultMaxTokens = 4096
-		defaultTemp      = 0.1
-	)
 
 	if rc.RepoPath == "" {
 		wd, _ := os.Getwd()
@@ -152,7 +184,7 @@ func run(args []string) error {
 		"daemon", rc.DaemonAddr,
 		"repo", rc.RepoPath,
 		"dry_run", rc.DryRun,
-		"model", defaultModel,
+		"model", rc.Model,
 	)
 
 	// Connect to Vassago daemon
@@ -168,10 +200,10 @@ func run(args []string) error {
 
 	// Build LLM decomposer
 	ollamaClient := ollama.NewClient(ollama.Config{
-		BaseURL:     defaultOllamaURL,
-		Model:       defaultModel,
-		MaxTokens:   defaultMaxTokens,
-		Temperature: defaultTemp,
+		BaseURL:     rc.OllamaURL,
+		Model:       rc.Model,
+		MaxTokens:   rc.MaxTokens,
+		Temperature: rc.Temperature,
 		TimeoutSec:  120,
 	})
 
@@ -203,10 +235,10 @@ func run(args []string) error {
 			MaxTurns:    20,
 			RepoPath:    rc.RepoPath,
 			Ollama: ollama.Config{
-				BaseURL:     defaultOllamaURL,
-				Model:       defaultModel,
-				MaxTokens:   defaultMaxTokens,
-				Temperature: defaultTemp,
+				BaseURL:     rc.OllamaURL,
+				Model:       rc.Model,
+				MaxTokens:   rc.MaxTokens,
+				Temperature: rc.Temperature,
 				TimeoutSec:  120,
 			},
 		}

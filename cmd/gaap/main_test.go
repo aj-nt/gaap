@@ -28,6 +28,18 @@ func TestParseRunFlagsDefaults(t *testing.T) {
 	if cfg.DryRun {
 		t.Error("expected DryRun=false by default")
 	}
+	if cfg.Model != "glm-5.1:cloud" {
+		t.Errorf("expected default model 'glm-5.1:cloud', got %q", cfg.Model)
+	}
+	if cfg.OllamaURL != "http://localhost:11434/v1" {
+		t.Errorf("expected default ollama URL, got %q", cfg.OllamaURL)
+	}
+	if cfg.MaxTokens != 4096 {
+		t.Errorf("expected default max tokens 4096, got %d", cfg.MaxTokens)
+	}
+	if cfg.Temperature != 0.1 {
+		t.Errorf("expected default temperature 0.1, got %v", cfg.Temperature)
+	}
 }
 
 // TestParseRunFlagsExplicit verifies that all flags are parsed when set.
@@ -39,6 +51,10 @@ func TestParseRunFlagsExplicit(t *testing.T) {
 		"--addr", "192.168.1.1:50051",
 		"--repo", "/srv/repos/gaap",
 		"--timeout", "600",
+		"--model", "deepseek-v4-pro:cloud",
+		"--ollama-url", "http://studio:11434/v1",
+		"--max-tokens", "8192",
+		"--temperature", "0.3",
 		"deep scan",
 	})
 	if err != nil {
@@ -59,6 +75,18 @@ func TestParseRunFlagsExplicit(t *testing.T) {
 	}
 	if !cfg.DryRun {
 		t.Error("expected DryRun=true when --dry-run is set")
+	}
+	if cfg.Model != "deepseek-v4-pro:cloud" {
+		t.Errorf("expected model, got %q", cfg.Model)
+	}
+	if cfg.OllamaURL != "http://studio:11434/v1" {
+		t.Errorf("expected ollama URL, got %q", cfg.OllamaURL)
+	}
+	if cfg.MaxTokens != 8192 {
+		t.Errorf("expected max-tokens 8192, got %d", cfg.MaxTokens)
+	}
+	if cfg.Temperature != 0.3 {
+		t.Errorf("expected temperature 0.3, got %v", cfg.Temperature)
 	}
 }
 
@@ -98,29 +126,72 @@ func TestParseRunFlagsInvalidTimeout(t *testing.T) {
 	}
 }
 
+// TestParseRunFlagsInvalidMaxTokens verifies error on non-numeric max-tokens.
+func TestParseRunFlagsInvalidMaxTokens(t *testing.T) {
+	t.Parallel()
+
+	_, err := parseRunFlags("run", []string{"--max-tokens", "abc", "goal"})
+	if err == nil {
+		t.Fatal("expected error for non-numeric max-tokens")
+	}
+	if !strings.Contains(err.Error(), "max-tokens") {
+		t.Errorf("expected 'max-tokens' in error, got %q", err.Error())
+	}
+}
+
 // TestRunConfigEquality verifies that two configs with the same fields are equal.
 // This guards against future field additions breaking tests silently.
 func TestRunConfigEquality(t *testing.T) {
 	t.Parallel()
 
 	a := runConfig{
-		Goal:          "scan",
-		DaemonAddr:    "localhost:50051",
-		RepoPath:      "/tmp/repo",
-		MaxWaitSec:    300,
+		Goal:            "scan",
+		DaemonAddr:      "localhost:50051",
+		RepoPath:        "/tmp/repo",
+		MaxWaitSec:      300,
 		PollIntervalSec: 5,
-		DryRun:        false,
+		DryRun:          false,
+		Model:           "glm-5.1:cloud",
+		OllamaURL:       "http://localhost:11434/v1",
+		MaxTokens:       4096,
+		Temperature:     0.1,
 	}
 	b := runConfig{
-		Goal:          "scan",
-		DaemonAddr:    "localhost:50051",
-		RepoPath:      "/tmp/repo",
-		MaxWaitSec:    300,
+		Goal:            "scan",
+		DaemonAddr:      "localhost:50051",
+		RepoPath:        "/tmp/repo",
+		MaxWaitSec:      300,
 		PollIntervalSec: 5,
-		DryRun:        false,
+		DryRun:          false,
+		Model:           "glm-5.1:cloud",
+		OllamaURL:       "http://localhost:11434/v1",
+		MaxTokens:       4096,
+		Temperature:     0.1,
 	}
 
 	if !reflect.DeepEqual(a, b) {
 		t.Error("identical configs should be equal")
+	}
+}
+
+// TestVersionInfo verifies that versionInfo() returns the version string
+// when Version is set.
+func TestVersionInfo(t *testing.T) {
+	t.Parallel()
+
+	// When Version is "dev" (default), it should return "gaap version dev".
+	result := versionInfo()
+	if !strings.Contains(result, "gaap version") {
+		t.Errorf("versionInfo() should contain 'gaap version', got %q", result)
+	}
+
+	// Set a release version and verify it appears.
+	old := Version
+	Version = "v0.1.0"
+	defer func() { Version = old }()
+
+	result = versionInfo()
+	if result != "gaap version v0.1.0" {
+		t.Errorf("expected 'gaap version v0.1.0', got %q", result)
 	}
 }
