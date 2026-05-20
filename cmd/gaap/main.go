@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/aj-nt/gaap"
@@ -98,6 +99,9 @@ type runConfig struct {
 	OllamaURL       string
 	MaxTokens       int
 	Temperature     float64
+	AgentTypes      []string
+	APIKey          string
+	TLSCert         string
 }
 
 // parseRunFlags parses the flag set for "gaap run [flags] <goal>".
@@ -116,6 +120,9 @@ func parseRunFlags(name string, args []string) (*runConfig, error) {
 	maxTokens := fs.Int("max-tokens", 0, "Max tokens for LLM responses (default: 4096)")
 	temperature := fs.Float64("temperature", 0, "LLM temperature, 0.0-1.0 (default: 0.1)")
 	subscribe := fs.Bool("subscribe", false, "Use gRPC subscription for push-based task updates (falls back to polling)")
+	agentTypes := fs.String("agent-types", "", "Comma-separated agent types to dispatch (default: static_analysis,quality_scan)")
+	apiKey := fs.String("api-key", "", "Vassago daemon API key (Bearer token)")
+	tlsCert := fs.String("tls-cert", "", "Path to TLS CA certificate for daemon connection")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -138,6 +145,8 @@ func parseRunFlags(name string, args []string) (*runConfig, error) {
 		OllamaURL:       *ollamaURL,
 		MaxTokens:       *maxTokens,
 		Temperature:     *temperature,
+		APIKey:          *apiKey,
+		TLSCert:         *tlsCert,
 	}
 	if cfg.DaemonAddr == "" {
 		cfg.DaemonAddr = "localhost:50051"
@@ -156,6 +165,11 @@ func parseRunFlags(name string, args []string) (*runConfig, error) {
 	}
 	if cfg.Temperature <= 0 {
 		cfg.Temperature = 0.1
+	}
+	if *agentTypes != "" {
+		cfg.AgentTypes = strings.Split(*agentTypes, ",")
+	} else {
+		cfg.AgentTypes = []string{"static_analysis", "quality_scan"}
 	}
 	return cfg, nil
 }
@@ -197,7 +211,11 @@ func run(args []string) error {
 	)
 
 	// Connect to Vassago daemon
-	daemonClient, err := client.Connect(ctx, client.Config{Address: rc.DaemonAddr})
+	daemonClient, err := client.Connect(ctx, client.Config{
+		Address: rc.DaemonAddr,
+		APIKey:  rc.APIKey,
+		TLSCert: rc.TLSCert,
+	})
 	if err != nil {
 		return fmt.Errorf("failed to connect to Vassago daemon at %s: %w", rc.DaemonAddr, err)
 	}
@@ -221,7 +239,21 @@ func run(args []string) error {
 		return ollamaClient.Chat([]ollama.Message{{Role: "user", Content: prompt}})
 	}
 
-	decomposer := gaap.NewDecomposer(gaap.NewLLMDecomposition(chatFn))
+	// Build agent catalog from CLI agent types
+	catalog := make(map[string]gaap.AgentSpec)
+	for _, at := range rc.AgentTypes {
+		if spec, ok := gaap.DefaultAgentCatalog[at]; ok {
+			catalog[at] = spec
+		}
+	}
+	// Always include synthesis regardless of CLI types
+	if _, ok := catalog["synthesis"]; !ok {
+		if spec, ok := gaap.DefaultAgentCatalog["synthesis"]; ok {
+			catalog["synthesis"] = spec
+		}
+	}
+
+	decomposer := gaap.NewDecomposer(gaap.NewLLMDecomposition(chatFn, catalog))
 
 	orchestratorCfg := &gaap.Config{
 		DaemonAddr:      rc.DaemonAddr,
@@ -244,7 +276,7 @@ func run(args []string) error {
 			DaemonAddr:  rc.DaemonAddr,
 			AgentID:     "gaap-worker",
 			AgentName:   "gaap-worker",
-			AgentTypes:  []string{"static_analysis", "quality_scan"},
+			AgentTypes:  rc.AgentTypes,
 			WorkerCount: 2,
 			PollSec:     2,
 			MaxTurns:    20,
@@ -294,6 +326,8 @@ func run(args []string) error {
 type resumeConfig struct {
 	RunKey     string
 	DaemonAddr string
+	APIKey     string
+	TLSCert    string
 }
 
 // parseResumeFlags parses "gaap resume [--addr <daemon>] <run-key>".
@@ -343,7 +377,11 @@ func resume(args []string) error {
 
 	slog.Info("Gaap resuming", "run_key", rc.RunKey, "daemon", rc.DaemonAddr)
 
-	daemonClient, err := client.Connect(ctx, client.Config{Address: rc.DaemonAddr})
+	daemonClient, err := client.Connect(ctx, client.Config{
+		Address: rc.DaemonAddr,
+		APIKey:  rc.APIKey,
+		TLSCert: rc.TLSCert,
+	})
 	if err != nil {
 		return fmt.Errorf("failed to connect to Vassago daemon at %s: %w", rc.DaemonAddr, err)
 	}

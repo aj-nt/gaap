@@ -44,7 +44,7 @@ func TestLLMDecompositionProducesValidDAG(t *testing.T) {
 		return string(b), nil
 	}
 
-	strategy := NewLLMDecomposition(chatFn)
+	strategy := NewLLMDecomposition(chatFn, nil)
 	tasks, err := strategy.Decompose(context.Background(), "audit the codebase", "/tmp/test")
 	if err != nil {
 		t.Fatalf("Decompose: %v", err)
@@ -77,7 +77,7 @@ func TestLLMDecompositionFallsBackOnLLMFailure(t *testing.T) {
 		return "", context.DeadlineExceeded
 	}
 
-	strategy := NewLLMDecomposition(chatFn)
+	strategy := NewLLMDecomposition(chatFn, nil)
 	tasks, err := strategy.Decompose(context.Background(), "audit codebase", "/tmp/test")
 	// The strategy itself should not return an error — the Decomposer wrapper
 	// handles fallback. But the LLMDecomposition strategy should report the failure.
@@ -94,7 +94,7 @@ func TestLLMDecompositionFallsBackOnBadJSON(t *testing.T) {
 		return "not json at all", nil
 	}
 
-	strategy := NewLLMDecomposition(chatFn)
+	strategy := NewLLMDecomposition(chatFn, nil)
 	_, err := strategy.Decompose(context.Background(), "audit", "/tmp/test")
 	if err == nil {
 		t.Fatal("expected error from invalid JSON")
@@ -108,7 +108,7 @@ func TestLLMDecompositionRejectsEmptyTaskList(t *testing.T) {
 		return "[]", nil
 	}
 
-	strategy := NewLLMDecomposition(chatFn)
+	strategy := NewLLMDecomposition(chatFn, nil)
 	_, err := strategy.Decompose(context.Background(), "audit", "/tmp/test")
 	if err == nil {
 		t.Fatal("expected error for empty task list")
@@ -132,7 +132,7 @@ func TestLLMDecompositionRejectsUnknownAgentType(t *testing.T) {
 		return string(b), nil
 	}
 
-	strategy := NewLLMDecomposition(chatFn)
+	strategy := NewLLMDecomposition(chatFn, nil)
 	_, err := strategy.Decompose(context.Background(), "audit", "/tmp/test")
 	if err == nil {
 		t.Fatal("expected error for unknown agent type")
@@ -156,7 +156,7 @@ func TestLLMDecompositionCleansFencedJSON(t *testing.T) {
 		return "```json\n" + string(b) + "\n```", nil
 	}
 
-	strategy := NewLLMDecomposition(chatFn)
+	strategy := NewLLMDecomposition(chatFn, nil)
 	tasks, err := strategy.Decompose(context.Background(), "audit", "/tmp/test")
 	if err != nil {
 		t.Fatalf("Decompose (fenced JSON): %v", err)

@@ -15,10 +15,14 @@ type LLMDecomposition struct {
 }
 
 // NewLLMDecomposition creates an LLM-powered decomposition strategy.
-func NewLLMDecomposition(chatFn func(ctx context.Context, prompt string) (string, error)) *LLMDecomposition {
+// If catalog is nil, falls back to defaultAgentCatalog.
+func NewLLMDecomposition(chatFn func(ctx context.Context, prompt string) (string, error), catalog map[string]AgentSpec) *LLMDecomposition {
+	if catalog == nil {
+		catalog = DefaultAgentCatalog
+	}
 	return &LLMDecomposition{
 		chatFn:  chatFn,
-		catalog: defaultAgentCatalog,
+		catalog: catalog,
 	}
 }
 
@@ -30,8 +34,9 @@ type AgentSpec struct {
 	Produces    string   `json:"produces"`
 }
 
-// defaultAgentCatalog is the hardcoded capability catalog for code review agents.
-var defaultAgentCatalog = map[string]AgentSpec{
+// DefaultAgentCatalog is the built-in capability catalog for code review agents.
+// Callers can extend or override it by passing a custom catalog to NewLLMDecomposition.
+var DefaultAgentCatalog = map[string]AgentSpec{
 	"static_analysis": {
 		Description: "Runs static analysis tools: golangci-lint, gosec, govulncheck",
 		Tools:       []string{"golangci-lint", "gosec", "govulncheck"},

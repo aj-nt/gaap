@@ -59,7 +59,7 @@ func TestE2EWithRealDaemonAndWorkers(t *testing.T) {
 		PollIntervalSec: 2,
 	}
 
-	decomposer := NewDecomposer(NewLLMDecomposition(chatFn))
+	decomposer := NewDecomposer(NewLLMDecomposition(chatFn, nil))
 	orchestrator := NewOrchestrator(ctx, cfg, daemonClient, decomposer)
 	orchestrator.SetSynthesisChatFn(chatFn)
 
