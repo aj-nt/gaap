@@ -1,6 +1,6 @@
 module github.com/aj-nt/gaap
 
-go 1.25.0
+go 1.26.3
 
 require (
 	github.com/aj-nt/vassago-sdk v0.3.0

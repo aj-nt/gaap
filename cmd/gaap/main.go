@@ -162,7 +162,7 @@ func runArgs() {
 			AgentTypes:  []string{"static_analysis", "quality_scan"},
 			WorkerCount: 2,
 			PollSec:     2,
-			MaxTurns:    15,
+			MaxTurns:    20,
 			RepoPath:    cfg.RepoPath,
 			Ollama: ollama.Config{
 				BaseURL:     defaultOllamaURL,

@@ -238,7 +238,9 @@ func (o *Orchestrator) pollOnce() {
 					slog.Warn("completion handler error", "task_id", node.ID, "error", err)
 				}
 				if next != nil {
-					_ = o.Transition(next)
+					if err := o.Transition(next); err != nil {
+						slog.Warn("state transition failed", "error", err)
+					}
 				}
 			}
 		}
@@ -261,7 +263,9 @@ func (o *Orchestrator) pollOnce() {
 				slog.Warn("synthesis completion handler error", "task_id", node.ID, "error", err)
 			}
 			if next != nil {
-				_ = o.Transition(next)
+				if err := o.Transition(next); err != nil {
+					slog.Warn("state transition failed", "error", err)
+				}
 			}
 		}
 	}
@@ -271,7 +275,6 @@ func (o *Orchestrator) pollOnce() {
 // Used by tests and when the daemon is unavailable (NullMnemo).
 func (o *Orchestrator) simulateCompletions() {
 	// First pass: mark all ready tasks as done.
-	// We walk the DAG's nodes map directly.
 	for id, node := range o.dag.nodes {
 		if node.Status == "ready" && len(node.ParentIDs) == 0 {
 			node.Status = "done"
@@ -284,7 +287,9 @@ func (o *Orchestrator) simulateCompletions() {
 				slog.Warn("completion handler error", "task_id", id, "error", err)
 			}
 			if next != nil {
-				_ = o.Transition(next)
+				if err := o.Transition(next); err != nil {
+					slog.Warn("state transition failed", "error", err)
+				}
 			}
 		}
 	}
@@ -303,7 +308,9 @@ func (o *Orchestrator) simulateCompletions() {
 				slog.Warn("completion handler error", "task_id", id, "error", err)
 			}
 			if next != nil {
-				_ = o.Transition(next)
+				if err := o.Transition(next); err != nil {
+					slog.Warn("state transition failed", "error", err)
+				}
 			}
 		}
 	}

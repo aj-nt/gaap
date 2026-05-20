@@ -23,7 +23,7 @@ type Executor struct {
 // NewExecutor creates a task executor with the given LLM config.
 func NewExecutor(ollamaClient *ollama.Client, maxTurns int) *Executor {
 	if maxTurns <= 0 {
-		maxTurns = 15
+		maxTurns = 20
 	}
 	return &Executor{ollama: ollamaClient, maxTurns: maxTurns}
 }
