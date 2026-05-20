@@ -16,6 +16,6 @@ Gaap is a model-agnostic multi-agent orchestrator on the blackboard pattern. Not
 
 ### Development
 
-- **72 tests** -- all passing
-- **1 CI workflow** -- test+vet+build on push/PR
+- **97 tests** -- all passing with `-race` (race detector)
+- **2 CI workflows** -- test+vet+build on push/PR + goreleaser on tag
 - **Apache 2.0** licensed
