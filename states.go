@@ -2,7 +2,12 @@ package gaap
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"log/slog"
+	"strings"
+
+	"github.com/google/uuid"
 )
 
 // EventType categorizes events in the orchestrator event loop.
@@ -233,10 +238,136 @@ func (s *DoneState) Name() string { return "done" }
 
 func (s *DoneState) Enter(ctx context.Context, o *Orchestrator) error {
 	slog.Info("orchestrator done", "goal", o.goal, "dag_size", o.dag.TaskCount())
+
+	// Print the synthesis report to stdout for human consumption.
+	if o.result != nil {
+		report := formatSynthesisReport(o.result)
+		fmt.Println(report) // stdout — captured by CLI or terminal
+	}
+
+	// Persist the synthesis report to the daemon for downstream consumption.
+	if o.result != nil {
+		payload, err := json.Marshal(o.result)
+		if err != nil {
+			slog.Warn("failed to marshal synthesis result", "error", err)
+		} else {
+			reportKey := fmt.Sprintf("synthesis_%s_%s",
+				strings.ReplaceAll(sanitizeGoal(o.goal), " ", "-"),
+				uuid.New().String()[:8],
+			)
+			_, err := o.daemon.AddMemory(ctx, "memory", "synthesis_report", reportKey,
+				string(payload), 3, "gaap-orchestrator")
+			if err != nil {
+				slog.Warn("failed to persist synthesis report to daemon", "error", err)
+			} else {
+				slog.Info("synthesis report persisted", "key", reportKey)
+			}
+		}
+	}
+
 	return nil
 }
 
 func (s *DoneState) HandleEvent(ctx context.Context, o *Orchestrator, evt Event) (OrchestratorState, error) {
 	// Terminal state — no transitions.
 	return nil, nil
+}
+
+// formatSynthesisReport renders the synthesis result as a human-readable text report.
+func formatSynthesisReport(sr *SynthesisResult) string {
+	var b strings.Builder
+
+	b.WriteString("\n")
+	b.WriteString(strings.Repeat("=", 60))
+	b.WriteString(fmt.Sprintf("\n  %s\n", sr.Title))
+	b.WriteString(strings.Repeat("=", 60))
+	b.WriteString(fmt.Sprintf("\n\n%s\n\n", sr.ExecutiveSummary))
+
+	// Findings by severity
+	for _, section := range []struct {
+		severity string
+		items    []Finding
+	}{
+		{"HIGH", sr.HighFindings},
+		{"MEDIUM", sr.MediumFindings},
+		{"LOW", sr.LowFindings},
+	} {
+		if len(section.items) == 0 {
+			continue
+		}
+		b.WriteString(fmt.Sprintf("--- %s SEVERITY (%d findings) ---\n\n", section.severity, len(section.items)))
+		for i, f := range section.items {
+			b.WriteString(fmt.Sprintf("%d. %s\n", i+1, f.Title))
+			if f.Location != "" {
+				b.WriteString(fmt.Sprintf("   Location: %s\n", f.Location))
+			}
+			if f.Detail != "" {
+				b.WriteString(fmt.Sprintf("   %s\n", f.Detail))
+			}
+			if len(f.Sources) > 0 {
+				b.WriteString(fmt.Sprintf("   Source(s): %s\n", strings.Join(f.Sources, ", ")))
+			}
+			b.WriteString("\n")
+		}
+	}
+
+	// Cross-reference insights
+	if len(sr.CrossRefInsights) > 0 {
+		b.WriteString("--- CROSS-REFERENCE INSIGHTS ---\n\n")
+		for i, ci := range sr.CrossRefInsights {
+			b.WriteString(fmt.Sprintf("%d. Pattern: %s\n", i+1, ci.Pattern))
+			b.WriteString(fmt.Sprintf("   Root Cause: %s\n", ci.RootCause))
+			b.WriteString(fmt.Sprintf("   Recommendation: %s\n", ci.Recommend))
+			if len(ci.Locations) > 0 {
+				b.WriteString(fmt.Sprintf("   Affected: %s\n", strings.Join(ci.Locations, ", ")))
+			}
+			b.WriteString("\n")
+		}
+	}
+
+	// Codebase health
+	if len(sr.CodebaseHealth) > 0 {
+		b.WriteString("--- CODEBASE HEALTH ---\n\n")
+		for k, v := range sr.CodebaseHealth {
+			b.WriteString(fmt.Sprintf("  %s: %s\n", k, v))
+		}
+		b.WriteString("\n")
+	}
+
+	// Recommendations
+	if len(sr.Recommendations) > 0 {
+		b.WriteString("--- TOP RECOMMENDATIONS ---\n\n")
+		for i, r := range sr.Recommendations {
+			b.WriteString(fmt.Sprintf("%d. [Priority %d] %s\n", i+1, r.Priority, r.Action))
+			b.WriteString(fmt.Sprintf("   Effort: %s | Impact: %s\n", r.Effort, r.Impact))
+			if r.Rationale != "" {
+				b.WriteString(fmt.Sprintf("   Rationale: %s\n", r.Rationale))
+			}
+			b.WriteString("\n")
+		}
+	}
+
+	b.WriteString(strings.Repeat("=", 60))
+	b.WriteString("\n")
+	return b.String()
+}
+
+// sanitizeGoal strips characters unsafe for memory keys.
+func sanitizeGoal(goal string) string {
+	s := goal
+	// Keep only alphanumeric, spaces, hyphens, underscores
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
+			r == ' ' || r == '-' || r == '_' {
+			b.WriteRune(r)
+		}
+	}
+	result := b.String()
+	// Limit length
+	const maxLen = 40
+	if len(result) > maxLen {
+		result = result[:maxLen]
+	}
+	return result
 }
