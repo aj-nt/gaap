@@ -43,7 +43,7 @@ func TestE2EWithRealDaemonAndWorkers(t *testing.T) {
 	ollamaClient := ollama.NewClient(ollama.Config{
 		BaseURL:     "http://localhost:11434/v1",
 		Model:       envOrDefault("GAAP_MODEL", "glm-5.1:cloud"),
-		MaxTokens:   2000,
+		MaxTokens:   4096,
 		Temperature: 0.1,
 		TimeoutSec:  120,
 	})
@@ -61,6 +61,7 @@ func TestE2EWithRealDaemonAndWorkers(t *testing.T) {
 
 	decomposer := NewDecomposer(NewLLMDecomposition(chatFn))
 	orchestrator := NewOrchestrator(ctx, cfg, daemonClient, decomposer)
+	orchestrator.SetSynthesisChatFn(chatFn)
 
 	// Wire up auto-workers
 	wpCfg := worker.PoolConfig{

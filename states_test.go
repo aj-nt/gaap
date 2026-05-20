@@ -155,8 +155,8 @@ func TestWaitingStatePromotesChildWhenParentCompletes(t *testing.T) {
 	}
 	// Should still be waiting — not all tasks done (synth is still blocked and needs to be promoted)
 	if next != nil && next.Name() != "waiting" {
-			_ = next // valid: stay in waiting or transition — key is DAG advancement
-		}
+		_ = next // valid: stay in waiting or transition — key is DAG advancement
+	}
 	// Verify synthesis was promoted
 	synth, _ := o.dag.GetTask("synth")
 	if synth.Status != "ready" {

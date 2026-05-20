@@ -9,7 +9,7 @@ import (
 type EventType int
 
 const (
-	EventGoalReceived  EventType = iota
+	EventGoalReceived EventType = iota
 	EventTasksCreated
 	EventTaskCompleted
 	EventTaskFailed
@@ -187,11 +187,15 @@ func (s *SynthesizingState) Enter(ctx context.Context, o *Orchestrator) error {
 	// Collect all task results from the DAG
 	results := make(map[string]*TaskResult)
 	for id, node := range o.dag.nodes {
+		summary := node.Summary
+		if summary == "" {
+			summary = node.Goal // fallback: use goal if no worker summary
+		}
 		results[id] = &TaskResult{
 			TaskID:    node.ID,
 			AgentType: node.AgentType,
 			Status:    node.Status,
-			Summary:   node.Goal, // fallback: use goal as summary
+			Summary:   summary,
 			Findings:  node.Findings,
 		}
 	}

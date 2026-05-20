@@ -78,7 +78,7 @@ func runArgs() {
 	const (
 		defaultOllamaURL = "http://localhost:11434/v1"
 		defaultModel     = "glm-5.1:cloud"
-		defaultMaxTokens = 2000
+		defaultMaxTokens = 4096
 		defaultTemp      = 0.1
 	)
 
@@ -149,6 +149,7 @@ func runArgs() {
 	decomposer := gaap.NewDecomposer(gaap.NewLLMDecomposition(chatFn))
 
 	orchestrator := gaap.NewOrchestrator(ctx, cfg, daemonClient, decomposer)
+	orchestrator.SetSynthesisChatFn(chatFn) // LLM synthesis with schema fallback
 
 	// Auto-workers: spawn worker pool to execute tasks in-process.
 	// When the orchestrator dispatches tasks, workers claim and execute them

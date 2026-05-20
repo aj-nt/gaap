@@ -47,9 +47,9 @@ func TestSynthesisEngineLLMFailureFallsBackToSchema(t *testing.T) {
 	engine := NewSynthesisEngine(chatFn)
 	results := map[string]*TaskResult{
 		"t1": {
-			TaskID:    "t1",
-			Status:    "done",
-			Findings:  map[string]any{"exit_code": float64(1)},
+			TaskID:   "t1",
+			Status:   "done",
+			Findings: map[string]any{"exit_code": float64(1)},
 		},
 	}
 
@@ -72,9 +72,9 @@ func TestSynthesisEngineNilLLMUsesSchema(t *testing.T) {
 	engine := NewSynthesisEngine(nil)
 	results := map[string]*TaskResult{
 		"t1": {
-			TaskID:    "t1",
-			Status:    "done",
-			Findings:  map[string]any{"bare_panics": float64(2)},
+			TaskID:   "t1",
+			Status:   "done",
+			Findings: map[string]any{"bare_panics": float64(2)},
 		},
 	}
 

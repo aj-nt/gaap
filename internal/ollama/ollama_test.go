@@ -34,8 +34,8 @@ func TestNewClient_SetsDefaults(t *testing.T) {
 
 func TestNewClient_ZeroTimeoutDefaults(t *testing.T) {
 	c := NewClient(Config{
-		BaseURL:   "http://localhost:11434/v1",
-		Model:     "test",
+		BaseURL:    "http://localhost:11434/v1",
+		Model:      "test",
 		TimeoutSec: 0,
 	})
 	// TimeoutSec=0 should still create a client (caller sets defaults first)

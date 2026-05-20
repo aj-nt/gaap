@@ -200,10 +200,10 @@ func hardcodedDecompose(goal, repoPath, reason string) []TaskSpec {
 			Goal:      fmt.Sprintf("Synthesize static analysis and quality scan results for %s into a unified audit report", repoPath),
 			AgentType: "synthesis",
 			Context: map[string]any{
-				"source_path":    repoPath,
-				"original_goal":  goal,
+				"source_path":     repoPath,
+				"original_goal":   goal,
 				"fallback_reason": reason,
-				"dependents":     []string{leaf1ID, leaf2ID},
+				"dependents":      []string{leaf1ID, leaf2ID},
 			},
 		},
 	}

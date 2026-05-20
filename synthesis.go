@@ -2,6 +2,7 @@ package gaap
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/aj-nt/vassago-sdk/client"
 )
@@ -27,10 +28,10 @@ type Finding struct {
 
 // CrossRefInsight represents a pattern discovered across multiple agent results.
 type CrossRefInsight struct {
-	Pattern     string   `json:"pattern"`
-	Locations   []string `json:"affected_locations"`
-	RootCause   string   `json:"root_cause"`
-	Recommend   string   `json:"recommendation"`
+	Pattern   string   `json:"pattern"`
+	Locations []string `json:"affected_locations"`
+	RootCause string   `json:"root_cause"`
+	Recommend string   `json:"recommendation"`
 }
 
 // Recommendation is an actionable step prioritized by impact and effort.
@@ -113,6 +114,9 @@ func (e *SynthesisEngine) synthesizeResults(ctx context.Context, results map[str
 		result, err := e.llm.Synthesize(ctx, results)
 		if err == nil && result != nil {
 			return result, nil
+		}
+		if err != nil {
+			slog.Warn("LLM synthesis failed, falling back to schema", "error", err)
 		}
 	}
 	return e.fallback.Synthesize(ctx, results)

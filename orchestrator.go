@@ -2,6 +2,7 @@ package gaap
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
@@ -53,6 +54,14 @@ func NewOrchestrator(ctx context.Context, cfg *Config, daemon MnemoClient, decom
 		state:      &IdleState{},
 	}
 	return o
+}
+
+// SetSynthesisChatFn configures the LLM-based synthesis strategy.
+// When set, the synthesis engine will attempt LLM synthesis first,
+// falling back to schema-based cross-reference on failure.
+// Pass nil to use schema-only synthesis.
+func (o *Orchestrator) SetSynthesisChatFn(chatFn func(ctx context.Context, prompt string) (string, error)) {
+	o.synthesis = NewSynthesisEngine(chatFn)
 }
 
 // SetWorkerPool configures a worker pool that executes dispatched tasks in-process.
@@ -205,6 +214,19 @@ func (o *Orchestrator) pollOnce() {
 			}
 			if entry.Status == "done" || entry.Status == "dead_letter" {
 				node.Status = "done"
+
+				// Read the worker's result from the daemon.
+				// Workers store ExecuteResult JSON and pass the memory UUID
+				// via CompleteTask; ResultKey now holds that UUID.
+				if entry.ResultKey != "" {
+					if mem, err := o.daemon.GetMemory(o.ctx, entry.ResultKey); err == nil && mem != nil {
+						var wr worker.ExecuteResult
+						if json.Unmarshal([]byte(mem.Content), &wr) == nil {
+							node.Findings = wr.Findings
+							node.Summary = wr.Summary
+						}
+					}
+				}
 
 				evt := Event{
 					Type:    EventTaskCompleted,

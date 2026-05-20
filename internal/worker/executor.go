@@ -30,16 +30,16 @@ func NewExecutor(ollamaClient *ollama.Client, maxTurns int) *Executor {
 
 // ExecuteResult is the result of executing a task.
 type ExecuteResult struct {
-	TaskID      string           `json:"task_id"`
-	AgentType   string           `json:"agent_type,omitempty"`
-	Status      string           `json:"status"`
-	Summary     string           `json:"summary,omitempty"`
-	Error       string           `json:"error,omitempty"`
-	Findings    map[string]any   `json:"findings"`
-	Model       string           `json:"model,omitempty"`
-	LLMTurns    int              `json:"llm_turns"`
-	DurationMs  int64            `json:"duration_ms"`
-	CompletedAt int64            `json:"completed_at,omitempty"`
+	TaskID      string         `json:"task_id"`
+	AgentType   string         `json:"agent_type,omitempty"`
+	Status      string         `json:"status"`
+	Summary     string         `json:"summary,omitempty"`
+	Error       string         `json:"error,omitempty"`
+	Findings    map[string]any `json:"findings"`
+	Model       string         `json:"model,omitempty"`
+	LLMTurns    int            `json:"llm_turns"`
+	DurationMs  int64          `json:"duration_ms"`
+	CompletedAt int64          `json:"completed_at,omitempty"`
 }
 
 // Execute runs the CMD:/DONE:/FAIL: protocol against a task from the daemon.

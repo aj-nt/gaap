@@ -12,7 +12,8 @@ type TaskNode struct {
 	Goal      string         `json:"goal"`
 	AgentType string         `json:"agent_type"`
 	Context   map[string]any `json:"context"`
-	Findings  map[string]any `json:"findings,omitempty"` // populated by workers after execution
+	Findings  map[string]any `json:"findings,omitempty"` // structured findings from worker execution
+	Summary   string         `json:"summary,omitempty"`  // natural-language summary from DONE: line (maps to worker ExecuteResult.Summary)
 }
 
 // DAG is a directed acyclic graph of tasks with dependency tracking.

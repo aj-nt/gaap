@@ -181,15 +181,21 @@ func (p *Pool) workerLoop(ctx context.Context, stopCh <-chan struct{}, agentType
 		result := p.exec.Execute(ctx, claimed, p.cfg.RepoPath)
 		resultKey := fmt.Sprintf("result_%s_%s", tid, uuid.New().String()[:8])
 
-		// Post result to memory blackboard
+		// Post result to memory blackboard — capture the auto-assigned UUID
+		// so the orchestrator can fetch it back via GetMemory(id).
 		resultJSON, _ := json.Marshal(result)
-		if _, err := p.mnemo.AddMemory(ctx, "memory", "task_result", resultKey,
-			string(resultJSON), 4, p.agentID); err != nil {
+		memEntry, err := p.mnemo.AddMemory(ctx, "memory", "task_result", resultKey,
+			string(resultJSON), 4, p.agentID)
+		if err != nil {
 			slog.Warn("worker: failed to store result", "id", tid, "error", err)
+		}
+		resultUUID := resultKey // fallback: use key if AddMemory failed
+		if memEntry != nil && memEntry.Id != "" {
+			resultUUID = memEntry.Id
 		}
 
 		if result.Status == "success" {
-			if _, err := p.mnemo.CompleteTask(ctx, tid, resultKey); err != nil {
+			if _, err := p.mnemo.CompleteTask(ctx, tid, resultUUID); err != nil {
 				slog.Warn("worker: failed to complete task", "id", tid, "error", err)
 			}
 			p.mu.Lock()
@@ -204,6 +210,7 @@ func (p *Pool) workerLoop(ctx context.Context, stopCh <-chan struct{}, agentType
 			p.mu.Unlock()
 		}
 
+		// Delete from active jobs
 		p.mu.Lock()
 		delete(p.activeJobs, tid)
 		p.mu.Unlock()
