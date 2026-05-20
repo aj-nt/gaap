@@ -93,6 +93,7 @@ type runConfig struct {
 	MaxWaitSec      int
 	PollIntervalSec int
 	DryRun          bool
+	Subscribe       bool
 	Model           string
 	OllamaURL       string
 	MaxTokens       int
@@ -114,6 +115,7 @@ func parseRunFlags(name string, args []string) (*runConfig, error) {
 	ollamaURL := fs.String("ollama-url", "", "Ollama base URL (default: http://localhost:11434/v1)")
 	maxTokens := fs.Int("max-tokens", 0, "Max tokens for LLM responses (default: 4096)")
 	temperature := fs.Float64("temperature", 0, "LLM temperature, 0.0-1.0 (default: 0.1)")
+	subscribe := fs.Bool("subscribe", false, "Use gRPC subscription for push-based task updates (falls back to polling)")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -131,6 +133,7 @@ func parseRunFlags(name string, args []string) (*runConfig, error) {
 		MaxWaitSec:      *timeout,
 		PollIntervalSec: 5,
 		DryRun:          *dryRun,
+		Subscribe:       *subscribe,
 		Model:           *model,
 		OllamaURL:       *ollamaURL,
 		MaxTokens:       *maxTokens,
@@ -228,6 +231,12 @@ func run(args []string) error {
 	}
 	orchestrator := gaap.NewOrchestrator(ctx, orchestratorCfg, daemonClient, decomposer)
 	orchestrator.SetSynthesisChatFn(chatFn) // LLM synthesis with schema fallback
+
+	// Enable push-based task updates via gRPC subscription (with polling fallback).
+	if rc.Subscribe {
+		orchestrator.SetSubscribeFallbackToPoll(true)
+		slog.Info("Observer mode: gRPC subscription enabled with polling fallback")
+	}
 
 	// Auto-workers: spawn worker pool to execute tasks in-process.
 	if !rc.DryRun {

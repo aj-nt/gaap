@@ -88,6 +88,13 @@ func (o *Orchestrator) SetWorkerPool(pool *worker.Pool) {
 	o.workerPool = pool
 }
 
+// SetSubscribeFallbackToPoll enables or disables the observer pattern (push-based
+// task status updates via gRPC subscription). When enabled, the orchestrator attempts
+// subscription first and falls back to polling on failure. Defaults to false (polling only).
+func (o *Orchestrator) SetSubscribeFallbackToPoll(enabled bool) {
+	o.subscribeFallbackToPoll = enabled
+}
+
 // Run executes the orchestrator pipeline for a given goal.
 func (o *Orchestrator) Run(goal string) error {
 	if goal == "" {
