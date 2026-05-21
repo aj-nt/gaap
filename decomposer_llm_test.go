@@ -168,3 +168,39 @@ func TestLLMDecompositionCleansFencedJSON(t *testing.T) {
 		t.Errorf("task ID = %q, want task_static", tasks[0].TaskID)
 	}
 }
+
+func TestLLMDecompositionAcceptsFileAnalysisAgentType(t *testing.T) {
+	t.Parallel()
+
+	chatFn := func(ctx context.Context, prompt string) (string, error) {
+		tasks := []TaskSpec{
+			{
+				TaskID:    "task_file",
+				ParentIDs: []string{},
+				Status:    "ready",
+				Goal:      "Read and summarize /tmp/release_review.md",
+				AgentType: "file_analysis",
+				Context: map[string]any{
+					"source_path": "/tmp/release_review.md",
+				},
+			},
+		}
+		b, _ := json.Marshal(tasks)
+		return string(b), nil
+	}
+
+	strategy := NewLLMDecomposition(chatFn, nil)
+	tasks, err := strategy.Decompose(context.Background(), "summarize /tmp/release_review.md", "/tmp")
+	if err != nil {
+		t.Fatalf("Decompose (file_analysis): %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	if tasks[0].AgentType != "file_analysis" {
+		t.Errorf("AgentType = %q, want file_analysis", tasks[0].AgentType)
+	}
+	if tasks[0].Goal != "Read and summarize /tmp/release_review.md" {
+		t.Errorf("Goal = %q, want 'Read and summarize /tmp/release_review.md'", tasks[0].Goal)
+	}
+}
