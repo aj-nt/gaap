@@ -33,7 +33,7 @@ func TestE2EWithRealDaemonAndWorkers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect to daemon at %s: %v", addr, err)
 	}
-	defer daemonClient.Close()
+	defer func() { _ = daemonClient.Close() }()
 
 	if err := daemonClient.HealthCheck(ctx); err != nil {
 		t.Fatalf("daemon health check: %v", err)

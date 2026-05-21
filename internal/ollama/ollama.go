@@ -98,7 +98,7 @@ func (c *Client) Chat(messages []Message) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("http request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {

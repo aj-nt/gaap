@@ -25,10 +25,6 @@ type testDaemon struct {
 	autoComplete bool // if true, tasks become "done" on AddTask/ClaimTask
 }
 
-func newTestDaemon() *testDaemon {
-	return &testDaemon{tasks: make(map[string]*pb.TaskEntry), autoComplete: true}
-}
-
 func (td *testDaemon) AddTask(_ context.Context, req *pb.AddTaskRequest) (*pb.TaskEntry, error) {
 	td.mu.Lock()
 	defer td.mu.Unlock()
@@ -151,10 +147,10 @@ func setupDaemonWithAutoComplete(t *testing.T, auto bool) (client.MnemoClient, f
 	lis := bufconn.Listen(256 * 1024)
 	s := grpc.NewServer()
 	pb.RegisterVassagoServer(s, td)
-	go s.Serve(lis)
+	go func() { _ = s.Serve(lis) }()
 	t.Cleanup(s.Stop)
 
-	conn, err := grpc.Dial("bufnet",
+	conn, err := grpc.NewClient("passthrough:///bufnet",
 		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
 			return lis.DialContext(ctx)
 		}),
@@ -163,7 +159,7 @@ func setupDaemonWithAutoComplete(t *testing.T, auto bool) (client.MnemoClient, f
 	if err != nil {
 		t.Fatalf("dial bufconn: %v", err)
 	}
-	t.Cleanup(func() { conn.Close() })
+	t.Cleanup(func() { _ = conn.Close() })
 
 	return client.NewClientFromConn(conn), func() { s.Stop() }
 }

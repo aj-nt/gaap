@@ -216,10 +216,10 @@ func run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to Vassago daemon at %s: %w", rc.DaemonAddr, err)
 	}
-	defer daemonClient.Close()
+	defer func() { _ = daemonClient.Close() }()
 
 	if err := daemonClient.HealthCheck(ctx); err != nil {
-		return fmt.Errorf("Vassago daemon health check failed: %w", err)
+		return fmt.Errorf("vassago daemon health check failed: %w", err)
 	}
 
 	// Build LLM decomposer
@@ -446,10 +446,10 @@ func resume(args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to Vassago daemon at %s: %w", rc.DaemonAddr, err)
 	}
-	defer daemonClient.Close()
+	defer func() { _ = daemonClient.Close() }()
 
 	if err := daemonClient.HealthCheck(ctx); err != nil {
-		return fmt.Errorf("Vassago daemon health check failed: %w", err)
+		return fmt.Errorf("vassago daemon health check failed: %w", err)
 	}
 
 	rs, err := gaap.LoadRunState(ctx, daemonClient, rc.RunKey)

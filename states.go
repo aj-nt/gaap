@@ -399,9 +399,9 @@ func formatSynthesisReport(sr *SynthesisResult) string {
 
 	b.WriteString("\n")
 	b.WriteString(sepLine)
-	b.WriteString(fmt.Sprintf("\n  %s\n", sr.Title))
+	fmt.Fprintf(&b, "\n  %s\n", sr.Title)
 	b.WriteString(sepLine)
-	b.WriteString(fmt.Sprintf("\n\n%s\n\n", sr.ExecutiveSummary))
+	fmt.Fprintf(&b, "\n\n%s\n\n", sr.ExecutiveSummary)
 
 	// Findings by severity
 	for _, section := range []struct {
@@ -415,7 +415,7 @@ func formatSynthesisReport(sr *SynthesisResult) string {
 		if len(section.items) == 0 {
 			continue
 		}
-		b.WriteString(fmt.Sprintf("--- %s SEVERITY (%d findings) ---\n\n", section.severity, len(section.items)))
+		fmt.Fprintf(&b, "--- %s SEVERITY (%d findings) ---\n\n", section.severity, len(section.items))
 		for i, f := range section.items {
 			b.WriteString(fmt.Sprintf("%d. %s\n", i+1, f.Title))
 			if f.Location != "" {
