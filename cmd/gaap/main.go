@@ -12,7 +12,7 @@
 //	--repo string   Repository path to analyze (default: current directory)
 //	--timeout int   Max wait for workers in seconds (default: 300)
 //	--subscribe     Enable push-based task updates via gRPC (falls back to polling)
-//	--agent-types string  Comma-separated agent types (default: static_analysis,quality_scan)
+//  --agent-types string  Comma-separated agent types (default: static_analysis,quality_scan,file_analysis)
 //	--api-key string      Vassago daemon API key (Bearer token)
 //	--tls-cert string     Path to TLS CA certificate for daemon connection
 //	--model string        LLM model name (default: glm-5.1:cloud)
@@ -89,7 +89,7 @@ Run flags:
   --repo string     Repository path to analyze (default: current directory)
   --timeout int     Max wait for workers in seconds (default: 300)
   --subscribe       Enable push-based task updates via gRPC (falls back to polling)
-  --agent-types string  Comma-separated agent types (default: static_analysis,quality_scan)
+  --agent-types string  Comma-separated agent types (default: static_analysis,quality_scan,file_analysis)
   --api-key string      Vassago daemon API key (Bearer token)
   --tls-cert string     Path to TLS CA certificate for daemon connection
   --model string        LLM model name (default: glm-5.1:cloud)
@@ -133,7 +133,7 @@ func parseRunFlags(name string, args []string) (*runConfig, error) {
 	maxTokens := fs.Int("max-tokens", 0, "Max tokens for LLM responses (default: 4096)")
 	temperature := fs.Float64("temperature", 0, "LLM temperature, 0.0-1.0 (default: 0.1)")
 	subscribe := fs.Bool("subscribe", false, "Use gRPC subscription for push-based task updates (falls back to polling)")
-	agentTypes := fs.String("agent-types", "", "Comma-separated agent types to dispatch (default: static_analysis,quality_scan)")
+	agentTypes := fs.String("agent-types", "", "Comma-separated agent types to dispatch (default: static_analysis,quality_scan,file_analysis)")
 	apiKey := fs.String("api-key", "", "Vassago daemon API key (Bearer token)")
 	tlsCert := fs.String("tls-cert", "", "Path to TLS CA certificate for daemon connection")
 
@@ -166,7 +166,7 @@ func parseRunFlags(name string, args []string) (*runConfig, error) {
 	} else if env := os.Getenv("GAAP_AGENT_TYPES"); env != "" {
 		cfg.AgentTypes = strings.Split(env, ",")
 	} else {
-		cfg.AgentTypes = []string{"static_analysis", "quality_scan"}
+		cfg.AgentTypes = []string{"static_analysis", "quality_scan", "file_analysis"}
 	}
 	return cfg, nil
 }
@@ -345,7 +345,7 @@ func parseResumeFlags(name string, args []string) (*resumeConfig, error) {
 	ollamaURL := fs.String("ollama-url", "", "Ollama base URL (default: http://localhost:11434/v1)")
 	maxTokens := fs.Int("max-tokens", 0, "Max tokens for LLM responses (default: 4096)")
 	temperature := fs.Float64("temperature", 0, "LLM temperature, 0.0-1.0 (default: 0.1)")
-	agentTypes := fs.String("agent-types", "", "Comma-separated agent types to dispatch (default: static_analysis,quality_scan)")
+	agentTypes := fs.String("agent-types", "", "Comma-separated agent types to dispatch (default: static_analysis,quality_scan,file_analysis)")
 	timeout := fs.Int("timeout", 0, "Max wait for workers in seconds (default: 300)")
 
 	if err := fs.Parse(args); err != nil {
@@ -373,7 +373,7 @@ func parseResumeFlags(name string, args []string) (*resumeConfig, error) {
 	} else if env := os.Getenv("GAAP_AGENT_TYPES"); env != "" {
 		cfg.AgentTypes = strings.Split(env, ",")
 	} else {
-		cfg.AgentTypes = []string{"static_analysis", "quality_scan"}
+		cfg.AgentTypes = []string{"static_analysis", "quality_scan", "file_analysis"}
 	}
 	return cfg, nil
 }
