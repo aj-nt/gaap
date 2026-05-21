@@ -408,3 +408,30 @@ func TestCommandAllowedExactPatterns(t *testing.T) {
 		t.Errorf("'grep -rn' should not be blocked by 'rm ' pattern: %v", err)
 	}
 }
+
+// TestBuildExecutionPromptFileGoal verifies that when context contains
+// a source_path pointing to a file, the prompt tells the worker to
+// read the target file directly rather than discovering the project.
+func TestBuildExecutionPromptFileGoal(t *testing.T) {
+	t.Parallel()
+
+	goal := "Read and summarize /tmp/release_review.md"
+	contextStr := `{"source_path": "/tmp/release_review.md"}`
+
+	prompt := buildExecutionPrompt(goal, contextStr)
+
+	// Should tell the worker to read the file directly
+	if !strings.Contains(prompt, "/tmp/release_review.md") {
+		t.Error("prompt should mention the target file path")
+	}
+
+	// Should NOT use project-discovery language when target is a file
+	if strings.Contains(prompt, "repository directory") {
+		t.Error("prompt should not mention 'repository directory' for file goals")
+	}
+	if strings.Contains(prompt, "Your first command MUST read or inspect the file directly") {
+		// Good — this is the correct file-goal prompt
+	} else {
+		t.Error("prompt should instruct worker to read the file directly")
+	}
+}
