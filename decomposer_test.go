@@ -145,3 +145,42 @@ func TestDecomposerContextPropagation(t *testing.T) {
 		t.Errorf("source_path = %v, want /my/repo", task.Context["source_path"])
 	}
 }
+
+func TestDecomposerShortCircuitsFileGoal(t *testing.T) {
+	t.Parallel()
+
+	// A strategy that returns code-review tasks — the decomposer
+	// should ignore it and short-circuit for file-goal goals.
+	strategy := &StaticDecomposition{
+		Tasks: []TaskSpec{
+			{TaskID: "audit-1", AgentType: "static_analysis", Status: "ready",
+				Goal: "run lint"},
+			{TaskID: "audit-2", AgentType: "quality_scan", Status: "ready",
+				Goal: "scan quality"},
+			{TaskID: "synth", AgentType: "synthesis", Status: "blocked",
+				Goal: "synthesize", ParentIDs: []string{"audit-1", "audit-2"}},
+		},
+	}
+	d := NewDecomposer(strategy)
+
+	result, err := d.Decompose(context.Background(), "summarize /tmp/release_review.md", "/tmp")
+	if err != nil {
+		t.Fatalf("Decompose: %v", err)
+	}
+
+	// Should return exactly 1 file_analysis task, not the 3 code-review tasks
+	if len(result) != 1 {
+		t.Fatalf("expected 1 file_analysis task for file goal, got %d", len(result))
+	}
+	if result[0].AgentType != "file_analysis" {
+		t.Errorf("AgentType = %q, want file_analysis", result[0].AgentType)
+	}
+	if result[0].Status != "ready" {
+		t.Errorf("Status = %q, want ready", result[0].Status)
+	}
+	// source_path should be the file, not the repo path fallback
+	sp, ok := result[0].Context["source_path"].(string)
+	if !ok || sp != "/tmp/release_review.md" {
+		t.Errorf("source_path = %v, want /tmp/release_review.md", result[0].Context["source_path"])
+	}
+}

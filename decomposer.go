@@ -39,11 +39,18 @@ func NewDecomposer(strategy DecomposerStrategy) *Decomposer {
 }
 
 // Decompose runs the full decomposition pipeline.
+// If the goal references a specific file path, the pipeline short-circuits
+// to a single file_analysis task — LLM-based decomposition is skipped.
 func (d *Decomposer) Decompose(ctx context.Context, goal, repoPath string) ([]TaskSpec, error) {
 	// Step 1: Validate input
 	goal = strings.TrimSpace(goal)
 	if goal == "" {
 		return nil, fmt.Errorf("goal must not be empty")
+	}
+
+	// Step 1.5: Short-circuit file goals — no LLM decomposition needed.
+	if filePath := extractFilePathFromGoal(goal); filePath != "" {
+		return d.fileGoalTask(goal, filePath), nil
 	}
 
 	// Step 2: Build prompt (embedded in strategy call)
@@ -97,6 +104,56 @@ func (d *Decomposer) Decompose(ctx context.Context, goal, repoPath string) ([]Ta
 }
 
 // validateTaskDAG checks a task list for structural validity.
+
+// extractFilePathFromGoal scans a goal string for a file path.
+// Returns the first path ending in a known file extension, or "" if none found.
+func extractFilePathFromGoal(goal string) string {
+	for ext := range fileExtensions {
+		idx := strings.Index(goal, ext)
+		if idx < 0 {
+			continue
+		}
+		// Back up to find the start of the path (whitespace-bounded)
+		end := idx + len(ext)
+		start := idx
+		for start > 0 && goal[start-1] != ' ' && goal[start-1] != '\t' && goal[start-1] != '"' && goal[start-1] != '\'' {
+			start--
+		}
+		return goal[start:end]
+	}
+	return ""
+}
+
+// fileGoalTask returns a single file_analysis task for file-specific goals.
+// The strategy is bypassed entirely — a file goal needs no decomposition.
+func (d *Decomposer) fileGoalTask(goal, filePath string) []TaskSpec {
+	prefix := generatePrefix()
+	return []TaskSpec{
+		{
+			TaskID:    prefix + "_file_analysis",
+			ParentIDs: nil,
+			Status:    "ready",
+			Goal:      goal,
+			AgentType: "file_analysis",
+			Context: map[string]any{
+				"source_path": filePath,
+			},
+		},
+	}
+}
+
+// fileExtensions is the set of extensions that indicate a file path rather
+// than a directory in goals and context.source_path.
+var fileExtensions = map[string]bool{
+	".md": true, ".txt": true, ".go": true, ".py": true, ".js": true,
+	".ts": true, ".yaml": true, ".yml": true, ".json": true, ".toml": true,
+	".cfg": true, ".ini": true, ".env": true, ".proto": true, ".rs": true,
+	".c": true, ".h": true, ".cpp": true, ".java": true, ".rb": true,
+	".csv": true, ".log": true, ".xml": true, ".html": true, ".css": true,
+	".sql": true, ".sh": true, ".ps1": true, ".tf": true, ".hcl": true,
+	".mod": true, ".sum": true,
+}
+
 func validateTaskDAG(tasks []TaskSpec) error {
 	taskIDs := make(map[string]bool)
 	for _, t := range tasks {
