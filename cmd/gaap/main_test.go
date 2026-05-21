@@ -343,8 +343,8 @@ func TestParseResumeFlagsDefaults(t *testing.T) {
 	if cfg.Temperature != 0.1 {
 		t.Errorf("expected default temperature 0.1, got %v", cfg.Temperature)
 	}
-	if len(cfg.AgentTypes) != 2 || cfg.AgentTypes[0] != "static_analysis" {
-		t.Errorf("expected default agent types, got %v", cfg.AgentTypes)
+	if len(cfg.AgentTypes) != 3 || cfg.AgentTypes[0] != "static_analysis" || cfg.AgentTypes[2] != "file_analysis" {
+		t.Errorf("expected default agent types with file_analysis, got %v", cfg.AgentTypes)
 	}
 }
 

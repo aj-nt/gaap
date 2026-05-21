@@ -316,7 +316,54 @@ func runCommand(shellCmd, repoPath string) cmdOutput {
 }
 
 // buildExecutionPrompt constructs the system+user prompt for task execution.
+// If context.source_path points to a file (not a directory), the prompt
+// directs the worker to read the target file directly in the first turn.
 func buildExecutionPrompt(goal, contextStr string) string {
+	// Detect file-specific goals from context
+	var isFileGoal bool
+	if contextStr != "" {
+		var ctx map[string]any
+		if json.Unmarshal([]byte(contextStr), &ctx) == nil {
+			if sp, ok := ctx["source_path"].(string); ok && sp != "" {
+				isFileGoal = looksLikeFilePath(sp)
+			}
+		}
+	}
+
+	if isFileGoal {
+		return fmt.Sprintf(`You are an autonomous worker agent executing a task on a specific file.
+
+Your job: read and process the target file. The file path is in the CONTEXT below.
+Your first command MUST read or inspect the file directly — do NOT search the
+filesystem, discover the project, or run find. Start with cat, head, or file.
+
+PROTOCOL — respond with exactly one of these on each turn:
+CMD: <shell command>
+DONE: <summary of what you accomplished>
+FAIL: <reason>
+
+RULES:
+- One command per CMD: line. Keep commands focused.
+- First command: read the target file directly (cat, head, file, or wc).
+- Use head/tail to limit large output.
+- Never run destructive commands. Only analysis and inspection tools.
+- Commands timeout after 60 seconds.
+- You have a budget of 10 turns. After turn 7, start wrapping up.
+- When you have enough data to answer, DONE: immediately.
+- Analyze output before issuing the next command.
+- If a command is blocked, try a different approach — don't retry the same one.
+
+AVAILABLE TOOLS: cat, head, tail, wc, grep, file, stat, echo, which
+
+CONTEXT:
+%s
+
+GOAL:
+%s
+
+Start now: read the target file.`, contextStr, goal)
+	}
+
 	return fmt.Sprintf(`You are an autonomous worker agent executing a task.
 
 Your job: accomplish the goal using shell commands. You have terminal access
@@ -347,7 +394,31 @@ CONTEXT:
 GOAL:
 %s
 
-Start now: output your first CMD: line.`, contextStr, goal)
+Start now: output your first CMD: line.`, contextStr, goal) 
+}
+
+// fileExtensions is the set of extensions that indicate a file path rather
+// than a directory in goals and context.source_path.
+var fileExtensions = map[string]bool{
+	".md": true, ".txt": true, ".go": true, ".py": true, ".js": true,
+	".ts": true, ".yaml": true, ".yml": true, ".json": true, ".toml": true,
+	".cfg": true, ".ini": true, ".env": true, ".proto": true, ".rs": true,
+	".c": true, ".h": true, ".cpp": true, ".java": true, ".rb": true,
+	".csv": true, ".log": true, ".xml": true, ".html": true, ".css": true,
+	".sql": true, ".sh": true, ".ps1": true, ".tf": true, ".hcl": true,
+	".mod": true, ".sum": true,
+}
+
+// looksLikeFilePath returns true if the path appears to reference a specific
+// file rather than a directory or project root.
+func looksLikeFilePath(path string) bool {
+	path = strings.TrimSpace(path)
+	for ext := range fileExtensions {
+		if strings.HasSuffix(path, ext) {
+			return true
+		}
+	}
+	return false
 }
 
 func truncate(s string, maxLen int) string {

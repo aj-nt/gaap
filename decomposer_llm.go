@@ -55,6 +55,12 @@ var DefaultAgentCatalog = map[string]AgentSpec{
 		Languages:   []string{},
 		Produces:    "Cross-referenced synthesis report with prioritized findings and recommendations",
 	},
+	"file_analysis": {
+		Description: "Reads and analyzes a specific file or set of files. First step is to read the target file directly. Do NOT discover the project first.",
+		Tools:       []string{"cat", "head", "tail", "wc", "grep", "file", "stat"},
+		Languages:   []string{},
+		Produces:    "Summary, analysis, or extraction from the specified file(s)",
+	},
 }
 
 var decomposePrompt = `You are an orchestrator that decomposes high-level goals into concrete, executable tasks for specialized AI agents.
@@ -71,12 +77,14 @@ AVAILABLE AGENT TYPES:
 %s
 
 RULES:
-1. Leaf tasks (static_analysis, quality_scan) run in parallel. Set parent_ids=[] and status="ready".
-2. The final task must be agent_type="synthesis" with parent_ids listing all leaf task_ids, status="blocked".
-3. The synthesis task should NOT re-run analysis — it reads results from the blackboard.
-4. context.repo_path must be the absolute path to the repository.
-5. context.dependents on synthesis tasks must list the task_ids it depends on (for blackboard lookup).
-6. Every task must produce results under a predictable key. Use context.output_key.
+1. Detect the goal type FIRST. If the goal references a specific file path (ends in .md, .txt, .go, .py, .yaml, etc.), use file_analysis agent type. If the goal references a directory or project, use static_analysis + quality_scan + synthesis.
+2. For file goals: one task, agent_type="file_analysis", context.source_path set to the exact file path.
+3. For codebase goals: leaf tasks (static_analysis, quality_scan) run in parallel. Set parent_ids=[] and status="ready".
+4. The final synthesis task must have agent_type="synthesis" with parent_ids listing all leaf task_ids, status="blocked".
+5. The synthesis task should NOT re-run analysis — it reads results from the blackboard.
+6. context.source_path must be the absolute path to the repository or target file.
+7. context.dependents on synthesis tasks must list the task_ids it depends on (for blackboard lookup).
+8. Every task must produce results under a predictable key. Use context.output_key.
 
 GOAL: %s
 
