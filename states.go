@@ -162,6 +162,8 @@ func (s *WaitingState) HandleEvent(ctx context.Context, o *Orchestrator, evt Eve
 		taskID, _ := evt.Payload["task_id"].(string)
 		if taskID != "" {
 			slog.Info("task completed, advancing DAG", "task_id", taskID)
+			// trace-emitter: audience-scoped digests after every DAG advance
+			o.emitDigests(ctx)
 			// Promote children whose parents are now all done.
 			children := o.dag.ChildrenOf(taskID)
 			for _, child := range children {
@@ -374,10 +376,10 @@ func (s *FailedState) Enter(ctx context.Context, o *Orchestrator) error {
 	runKey := o.RunKey()
 	if runKey != "" {
 		payload := map[string]any{
-			"goal":           o.goal,
-			"completed":      completed,
-			"dead_letter":    deadLettered,
-			"still_waiting":  stillWaiting,
+			"goal":            o.goal,
+			"completed":       completed,
+			"dead_letter":     deadLettered,
+			"still_waiting":   stillWaiting,
 			"dead_letter_ids": deadLetterIDs,
 		}
 		b, _ := json.Marshal(payload)
