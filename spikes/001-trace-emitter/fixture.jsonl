@@ -1,0 +1,20 @@
+{"ts": 1, "type": "run_meta", "run_id": "a1b2c3", "goal": "Audit the vassago/internal/grpc package for code quality", "repo": "/Users/aj/Documents/repos/vassago"}
+{"ts": 2, "type": "task_declared", "task_id": "T1", "goal": "Run static security analysis on internal/grpc", "agent_type": "security-scan", "parents": []}
+{"ts": 3, "type": "task_declared", "task_id": "T2", "goal": "golangci-lint review of internal/grpc", "agent_type": "style-review", "parents": []}
+{"ts": 4, "type": "task_declared", "task_id": "T3", "goal": "Run govulncheck on go.mod dependencies", "agent_type": "dep-audit", "parents": []}
+{"ts": 5, "type": "task_declared", "task_id": "T4", "goal": "Cross-review error handling patterns from T1+T3 findings", "agent_type": "doc-review", "parents": ["T1", "T3"]}
+{"ts": 6, "type": "task_declared", "task_id": "T5", "goal": "Synthesize all findings into a report", "agent_type": "synthesis", "parents": ["T1", "T2", "T3", "T4"]}
+{"ts": 7, "type": "task_status", "task_id": "T1", "from": "ready", "to": "claimed", "worker": "w-01"}
+{"ts": 8, "type": "task_status", "task_id": "T2", "from": "ready", "to": "claimed", "worker": "w-02"}
+{"ts": 9, "type": "task_status", "task_id": "T3", "from": "ready", "to": "claimed", "worker": "w-03"}
+{"ts": 10, "type": "result_published", "task_id": "T1", "status": "done", "summary": "3 findings: [HIGH] SQL string concatenation in auth interceptor query builder line 142; [MED] TLS cert validation skipped in test transport; [LOW] error messages leak internal file paths", "error": ""}
+{"ts": 11, "type": "task_status", "task_id": "T1", "from": "claimed", "to": "done", "worker": "w-01"}
+{"ts": 12, "type": "task_status", "task_id": "T2", "from": "claimed", "to": "done", "worker": "w-02"}
+{"ts": 13, "type": "result_published", "task_id": "T2", "status": "done", "summary": "13 golangci-lint issues: 7 errcheck, 4 staticcheck, 2 revive; worst: unchecked resp.Body.Close in stream.go", "error": ""}
+{"ts": 14, "type": "task_status", "task_id": "T3", "from": "claimed", "to": "failed", "worker": "w-03"}
+{"ts": 15, "type": "result_published", "task_id": "T3", "status": "failed", "summary": "", "error": "govulncheck: network timeout after 30s fetching vulnerability DB"}
+{"ts": 16, "type": "dag_snapshot", "matrix": {"T1": "done", "T2": "done", "T3": "failed", "T4": "waiting(parents T1,T3; T3 failed)", "T5": "waiting(parents T1,T2,T3,T4)", "edges": {"T4": ["T1", "T3"], "T5": ["T1", "T2", "T3", "T4"]}, "circuit_breakers": {"dep-audit": "half-open (2 failures in 5m window)"}, "leases": {"w-01": "T1 renewed 3x", "w-02": "expired"}, "dead_letters": []}}
+{"ts": 17, "type": "heartbeat", "worker": "w-01", "ts_wall": "2026-09-15T14:22:31Z"}
+{"ts": 18, "type": "worker_lease_renewed", "worker": "w-01", "ttl_s": 300}
+{"ts": 19, "type": "heartbeat", "worker": "w-03", "ts_wall": "2026-09-15T14:22:44Z"}
+{"ts": 20, "type": "dag_snapshot", "matrix": {"T1": "done", "T2": "done", "T3": "failed", "T4": "waiting(parents T1,T3; T3 failed)", "T5": "waiting(parents T1,T2,T3,T4)", "edges": {"T4": ["T1", "T3"], "T5": ["T1", "T2", "T3", "T4"]}, "circuit_breakers": {"dep-audit": "half-open (2 failures in 5m window)"}, "leases": {"w-01": "active ttl 300s", "w-02": "expired", "w-03": "active ttl 120s"}, "dead_letters": []}}

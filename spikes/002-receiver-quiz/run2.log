@@ -1,0 +1,44 @@
+
+=== ARM [digest] — context 861 chars ===
+  Q1 PASS  5
+  Q2 FAIL  T4, T5
+  Q3 FAIL  HIGH
+  Q4 PASS  govulncheck
+  Q5 PASS  13
+  Q6 PASS  stuck
+  Q8 FAIL  T3
+  Q10 FAIL  NOT IN FEED
+  --> digest: 4/8
+
+=== ARM [raw] — context 3268 chars ===
+  Q1 PASS  5
+  Q2 FAIL  T4
+  Q3 PASS  SQL
+  Q4 PASS  govulncheck
+  Q5 PASS  13
+  Q6 PASS  stuck
+  Q7 PASS  3
+  Q8 FAIL  T3
+  Q9 PASS  done
+  Q10 PASS  Yes, dep-audit (half-open).
+  --> raw: 8/10
+
+=== ARM [board] — context 1027 chars ===
+  Q1 PASS  5
+  Q2 FAIL  T4
+  Q3 PASS  SQL
+  Q4 PASS  govulncheck
+  Q5 PASS  13
+  Q6 PASS  stuck
+  Q7 PASS  3
+  Q8 FAIL  T3
+  Q9 PASS  done
+  Q10 FAIL  NOT IN FEED
+  --> board: 7/10
+
+=== HEAD-TO-HEAD ===
+arm        score    ctx chars 
+digest     4/8     861
+raw        8/10     3268
+board      7/10     1027
+EXIT:0

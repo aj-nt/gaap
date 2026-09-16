@@ -1,0 +1,166 @@
+[
+  {
+    "arm": "digest",
+    "score": 4,
+    "total": 8,
+    "context_chars": 861,
+    "detail": [
+      [
+        "Q1",
+        true,
+        "5"
+      ],
+      [
+        "Q2",
+        false,
+        "T4, T5"
+      ],
+      [
+        "Q3",
+        false,
+        "HIGH"
+      ],
+      [
+        "Q4",
+        true,
+        "govulncheck"
+      ],
+      [
+        "Q5",
+        true,
+        "13"
+      ],
+      [
+        "Q6",
+        true,
+        "stuck"
+      ],
+      [
+        "Q8",
+        false,
+        "T3"
+      ],
+      [
+        "Q10",
+        false,
+        "NOT IN FEED"
+      ]
+    ]
+  },
+  {
+    "arm": "raw",
+    "score": 8,
+    "total": 10,
+    "context_chars": 3268,
+    "detail": [
+      [
+        "Q1",
+        true,
+        "5"
+      ],
+      [
+        "Q2",
+        false,
+        "T4"
+      ],
+      [
+        "Q3",
+        true,
+        "SQL"
+      ],
+      [
+        "Q4",
+        true,
+        "govulncheck"
+      ],
+      [
+        "Q5",
+        true,
+        "13"
+      ],
+      [
+        "Q6",
+        true,
+        "stuck"
+      ],
+      [
+        "Q7",
+        true,
+        "3"
+      ],
+      [
+        "Q8",
+        false,
+        "T3"
+      ],
+      [
+        "Q9",
+        true,
+        "done"
+      ],
+      [
+        "Q10",
+        true,
+        "Yes, dep-audit (half-open)."
+      ]
+    ]
+  },
+  {
+    "arm": "board",
+    "score": 7,
+    "total": 10,
+    "context_chars": 1027,
+    "detail": [
+      [
+        "Q1",
+        true,
+        "5"
+      ],
+      [
+        "Q2",
+        false,
+        "T4"
+      ],
+      [
+        "Q3",
+        true,
+        "SQL"
+      ],
+      [
+        "Q4",
+        true,
+        "govulncheck"
+      ],
+      [
+        "Q5",
+        true,
+        "13"
+      ],
+      [
+        "Q6",
+        true,
+        "stuck"
+      ],
+      [
+        "Q7",
+        true,
+        "3"
+      ],
+      [
+        "Q8",
+        false,
+        "T3"
+      ],
+      [
+        "Q9",
+        true,
+        "done"
+      ],
+      [
+        "Q10",
+        false,
+        "NOT IN FEED"
+      ]
+    ]
+  }
+]
