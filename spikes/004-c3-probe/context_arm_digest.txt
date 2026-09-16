@@ -1,0 +1,10 @@
+PIPELINE DIGEST [observer] — goal: Audit the vassago/internal/grpc package for code quality and fix critical findin
+tasks=8
+ANOMALIES: dep-audit breaker open (2 failures)
+  [FAIL] T3 (dep-audit): Run govulncheck on go.mod dependencies
+  [FAIL] T4 (dep-audit): Retry govulncheck on go.mod dependencies
+  [BLOCKED] T7 (synthesis): Synthesize all findings into a report — blocked by T1,T2,T5,T6
+  [BLOCKED] T8 (test-verify): Verify T6's fix passes the auth interceptor test suite — blocked by T6
+  [BLOCKED] T5 (doc-review): Cross-review error handling patterns from T1+T3 findings — blocked by T3
+  [OK] T1 (security-scan): Run static security analysis on internal/grpc — 4 findings: [HIGH] SQL string concatenation in auth interceptor query builder line 142; [MED] TLS cert validation skipped in test transport; [MED] unbounded ret
+  [...1 lower-priority line(s) dropped, full text on board]

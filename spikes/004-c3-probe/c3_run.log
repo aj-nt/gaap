@@ -1,0 +1,44 @@
+=== ARM [none] — 284 chars ===
+  Q1 PASS  SQL string concatenation vulnerability
+  Q2 PASS  T1
+  Q3 PASS  NOT IN FEED
+  Q4 PASS  NOT IN FEED.
+  Q5 PASS  NOT IN FEED.
+  Q6 PASS  NOT IN FEED
+  Q7 PASS  NOT IN FEED
+  Q8 PASS  NOT IN FEED.
+  Q9 PASS  NOT IN FEED
+  --> none: 9/9
+=== ARM [digest] — 1209 chars ===
+  Q1 PASS  SQL string concatenation vulnerability
+  Q2 PASS  T1
+  Q3 PASS  tripped
+  Q4 PASS  T3
+  Q5 PASS  TLS cert validation skipped in test transport
+  Q6 FAIL  NOT IN FEED
+  Q7 PASS  T8
+  Q8 PASS  8
+  Q9 PASS  T7
+  --> digest: 8/9
+=== ARM [raw] — 2039 chars ===
+  Q1 PASS  SQL string concatenation vulnerability
+  Q2 PASS  T1
+  Q3 PASS  tripped
+  Q4 PASS  T3
+  Q5 PASS  TLS cert validation skipped in test transport
+  Q6 FAIL  NOT IN FEED
+  Q7 PASS  T8
+  Q8 PASS  8
+  Q9 PASS  T5, T7
+  --> raw: 8/9
+
+=== SUMMARY ===
+none     9/9
+digest   8/9
+raw      8/9
+
+Non-sanity (Q3-Q9) — the C3 metric:
+none     7/7
+digest   6/7
+raw      6/7
+EXIT:0

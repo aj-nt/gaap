@@ -1,0 +1,164 @@
+[
+  {
+    "arm": "none",
+    "qid": "Q1",
+    "ok": true,
+    "answer": "SQL string concatenation vulnerability"
+  },
+  {
+    "arm": "none",
+    "qid": "Q2",
+    "ok": true,
+    "answer": "T1"
+  },
+  {
+    "arm": "none",
+    "qid": "Q3",
+    "ok": true,
+    "answer": "NOT IN FEED"
+  },
+  {
+    "arm": "none",
+    "qid": "Q4",
+    "ok": true,
+    "answer": "NOT IN FEED."
+  },
+  {
+    "arm": "none",
+    "qid": "Q5",
+    "ok": true,
+    "answer": "NOT IN FEED."
+  },
+  {
+    "arm": "none",
+    "qid": "Q6",
+    "ok": true,
+    "answer": "NOT IN FEED"
+  },
+  {
+    "arm": "none",
+    "qid": "Q7",
+    "ok": true,
+    "answer": "NOT IN FEED"
+  },
+  {
+    "arm": "none",
+    "qid": "Q8",
+    "ok": true,
+    "answer": "NOT IN FEED."
+  },
+  {
+    "arm": "none",
+    "qid": "Q9",
+    "ok": true,
+    "answer": "NOT IN FEED"
+  },
+  {
+    "arm": "digest",
+    "qid": "Q1",
+    "ok": true,
+    "answer": "SQL string concatenation vulnerability"
+  },
+  {
+    "arm": "digest",
+    "qid": "Q2",
+    "ok": true,
+    "answer": "T1"
+  },
+  {
+    "arm": "digest",
+    "qid": "Q3",
+    "ok": true,
+    "answer": "tripped"
+  },
+  {
+    "arm": "digest",
+    "qid": "Q4",
+    "ok": true,
+    "answer": "T3"
+  },
+  {
+    "arm": "digest",
+    "qid": "Q5",
+    "ok": true,
+    "answer": "TLS cert validation skipped in test transport"
+  },
+  {
+    "arm": "digest",
+    "qid": "Q6",
+    "ok": false,
+    "answer": "NOT IN FEED"
+  },
+  {
+    "arm": "digest",
+    "qid": "Q7",
+    "ok": true,
+    "answer": "T8"
+  },
+  {
+    "arm": "digest",
+    "qid": "Q8",
+    "ok": true,
+    "answer": "8"
+  },
+  {
+    "arm": "digest",
+    "qid": "Q9",
+    "ok": true,
+    "answer": "T7"
+  },
+  {
+    "arm": "raw",
+    "qid": "Q1",
+    "ok": true,
+    "answer": "SQL string concatenation vulnerability"
+  },
+  {
+    "arm": "raw",
+    "qid": "Q2",
+    "ok": true,
+    "answer": "T1"
+  },
+  {
+    "arm": "raw",
+    "qid": "Q3",
+    "ok": true,
+    "answer": "tripped"
+  },
+  {
+    "arm": "raw",
+    "qid": "Q4",
+    "ok": true,
+    "answer": "T3"
+  },
+  {
+    "arm": "raw",
+    "qid": "Q5",
+    "ok": true,
+    "answer": "TLS cert validation skipped in test transport"
+  },
+  {
+    "arm": "raw",
+    "qid": "Q6",
+    "ok": false,
+    "answer": "NOT IN FEED"
+  },
+  {
+    "arm": "raw",
+    "qid": "Q7",
+    "ok": true,
+    "answer": "T8"
+  },
+  {
+    "arm": "raw",
+    "qid": "Q8",
+    "ok": true,
+    "answer": "8"
+  },
+  {
+    "arm": "raw",
+    "qid": "Q9",
+    "ok": true,
+    "answer": "T5, T7"
+  }
+]
