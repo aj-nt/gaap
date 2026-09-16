@@ -76,6 +76,9 @@ func (o *Orchestrator) buildDigest(audience string) string {
 	}
 
 	if audience != "orchestrator" {
+		if anoms := breakerAnomalies(o); anoms != "" {
+			lines = append(lines, anoms)
+		}
 		sortDigestTasks(relevant, rank)
 		if len(relevant) > digestMaxTasks {
 			relevant = relevant[:digestMaxTasks]
@@ -172,4 +175,20 @@ func (o *Orchestrator) emitDigests(ctx context.Context) {
 			slog.Warn("digest publish failed (non-fatal)", "audience", audience, "error", err)
 		}
 	}
+}
+
+// breakerAnomalies renders non-closed circuit breakers as one anomalies line.
+// Spike 002's Q10 gap: breaker/lease anomaly state was the only content
+// exclusive to the raw firehose — this template block closes it.
+func breakerAnomalies(o *Orchestrator) string {
+	var parts []string
+	for agentType, cb := range o.breakerRegistry {
+		if st := cb.State(); st != StateClosed {
+			parts = append(parts, fmt.Sprintf("%s breaker %s (%d failures)", agentType, st, cb.FailureCount()))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "ANOMALIES: " + strings.Join(parts, "; ")
 }

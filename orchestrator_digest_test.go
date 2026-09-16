@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	vclient "github.com/aj-nt/vassago-sdk/client"
 	pb "github.com/aj-nt/vassago-sdk/proto"
@@ -170,5 +171,31 @@ func TestWaitingState_EmitFailureIsNonFatal(t *testing.T) {
 	}
 	if len(m.calls) != 0 {
 		t.Fatalf("failed publish must not record calls, got %d", len(m.calls))
+	}
+}
+
+func TestDigestBuild_IncludesAnomalies(t *testing.T) {
+	t.Parallel()
+	m := &recordingMnemo{}
+	o := digestTestOrchestrator(m)
+	cb := NewCircuitBreaker("dep-audit", 3, 30*time.Second)
+	for i := 0; i < 3; i++ {
+		cb.RecordFailure()
+	}
+	o.breakerRegistry = map[string]*CircuitBreaker{"dep-audit": cb}
+
+	d := o.buildDigest("observer")
+	if !strings.Contains(d, "ANOMALIES") {
+		t.Fatalf("observer digest must include anomalies section\ngot: %s", d)
+	}
+	if !strings.Contains(d, "dep-audit") || !strings.Contains(d, "open") {
+		t.Fatalf("anomalies must name agent type and state\ngot: %s", d)
+	}
+	// healthy breakers are not anomalies — no section when all closed
+	o2 := digestTestOrchestrator(m)
+	o2.breakerRegistry = map[string]*CircuitBreaker{"ok-agent": NewCircuitBreaker("ok-agent", 3, time.Second)}
+	d2 := o2.buildDigest("observer")
+	if strings.Contains(d2, "ANOMALIES") {
+		t.Fatalf("digest must omit anomalies section when all breakers closed\ngot: %s", d2)
 	}
 }
