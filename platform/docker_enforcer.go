@@ -32,6 +32,9 @@ type DockerEnforcer struct {
 	// ChownCommand is the chown command prefix, default "sudo chown". Override
 	// to "chown" when running as root. Test override: "chown".
 	ChownCommand string
+	// MkdirCommand is the mkdir command prefix, default "sudo mkdir -p".
+	// Override to "mkdir -p" when running as root.
+	MkdirCommand string
 	// DaemonCommand is the dockerd binary, default "dockerd".
 	DaemonCommand string
 
@@ -84,6 +87,13 @@ func (e *DockerEnforcer) chownCommand() string {
 	return "sudo chown"
 }
 
+func (e *DockerEnforcer) mkdirCommand() string {
+	if e.MkdirCommand != "" {
+		return e.MkdirCommand
+	}
+	return "sudo mkdir -p"
+}
+
 func (e *DockerEnforcer) daemonCommand() string {
 	if e.DaemonCommand != "" {
 		return e.DaemonCommand
@@ -114,6 +124,29 @@ func (e *DockerEnforcer) chown(ctx context.Context, uid int, path string) error 
 	args := append(parts[1:], fmt.Sprintf("%d:%d", uid, uid), path)
 	_, err := e.exec(ctx, name, args...)
 	return err
+}
+
+// mkdirAll ensures the workspace directory exists before chown, so the
+// bind-mount target and its ownership are both ready before the container
+// starts.
+func (e *DockerEnforcer) mkdirAll(ctx context.Context, path string) error {
+	parts := strings.Fields(e.mkdirCommand())
+	if len(parts) == 0 {
+		return fmt.Errorf("empty mkdir command")
+	}
+	name := parts[0]
+	args := append(parts[1:], path)
+	_, err := e.exec(ctx, name, args...)
+	return err
+}
+
+// prepWorkspace makes the host workspace exist and owned by the agent uid —
+// the host-side prerequisite for a :rw bind-mount under --user <uid>.
+func (e *DockerEnforcer) prepWorkspace(ctx context.Context, spec *NamespaceSpec) error {
+	if err := e.mkdirAll(ctx, spec.Workspace); err != nil {
+		return err
+	}
+	return e.chown(ctx, spec.UID, spec.Workspace)
 }
 
 // Ensure launches the dedicated dockerd if it is not already up, then waits
@@ -204,7 +237,7 @@ func (e *DockerEnforcer) launchDaemon(ctx context.Context) error {
 // Run executes a one-shot command in a deny-by-default container and returns
 // its combined output. The container is removed when the command exits.
 func (e *DockerEnforcer) Run(ctx context.Context, spec *NamespaceSpec, image, command string) (string, error) {
-	if err := e.chown(ctx, spec.UID, spec.Workspace); err != nil {
+	if err := e.prepWorkspace(ctx, spec); err != nil {
 		return "", err
 	}
 	args := append([]string{"run", "--rm"}, spec.DockerRunArgs()...)
@@ -219,7 +252,7 @@ func (e *DockerEnforcer) Run(ctx context.Context, spec *NamespaceSpec, image, co
 // Start launches a detached (long-running) command in a deny-by-default
 // container and returns a handle (the container name) used by Logs/Stop.
 func (e *DockerEnforcer) Start(ctx context.Context, spec *NamespaceSpec, image, command string) (string, error) {
-	if err := e.chown(ctx, spec.UID, spec.Workspace); err != nil {
+	if err := e.prepWorkspace(ctx, spec); err != nil {
 		return "", err
 	}
 	handle := "gaap-" + shortID(command)

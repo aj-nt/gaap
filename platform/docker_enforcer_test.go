@@ -10,6 +10,7 @@ func TestDockerEnforcerRunChownsThenRuns(t *testing.T) {
 	var calls []string
 	e := &DockerEnforcer{
 		ChownCommand: "chown", // override so the test doesn't need sudo
+		MkdirCommand: "mkdir -p",
 		Socket:       "unix:///var/run/gaap.sock",
 		run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 			calls = append(calls, name+" "+strings.Join(args, " "))
@@ -24,24 +25,27 @@ func TestDockerEnforcerRunChownsThenRuns(t *testing.T) {
 	if out != "cmd output" {
 		t.Errorf("Run should return command output, got %q", out)
 	}
-	if len(calls) != 2 {
-		t.Fatalf("expected 2 exec calls (chown + docker), got %d: %v", len(calls), calls)
+	if len(calls) != 3 {
+		t.Fatalf("expected 3 exec calls (mkdir + chown + docker), got %d: %v", len(calls), calls)
 	}
-	if !strings.Contains(calls[0], "chown 10001:10001 /var/gaap/agents/a1") {
-		t.Errorf("first call should chown workspace to agent uid: %q", calls[0])
+	if !strings.Contains(calls[0], "mkdir -p /var/gaap/agents/a1") {
+		t.Errorf("first call should mkdir the workspace: %q", calls[0])
+	}
+	if !strings.Contains(calls[1], "chown 10001:10001 /var/gaap/agents/a1") {
+		t.Errorf("second call should chown workspace to agent uid: %q", calls[1])
 	}
 	// One-shot run: --host <socket>, run --rm, deny-by-default flags, /bin/sh -c.
-	if !strings.Contains(calls[1], "docker --host unix:///var/run/gaap.sock run --rm") {
-		t.Errorf("docker call should target the dedicated socket and use run --rm: %q", calls[1])
+	if !strings.Contains(calls[2], "docker --host unix:///var/run/gaap.sock run --rm") {
+		t.Errorf("docker call should target the dedicated socket and use run --rm: %q", calls[2])
 	}
-	for _, want := range []string{"--network none", "--cap-drop ALL", "--read-only", "--user 10001:10001", " /bin/sh -c echo hi"} {
-		if !strings.Contains(calls[1], want) {
-			t.Errorf("docker call missing %q: %q", want, calls[1])
+	for _, want := range []string{"--network none", "--cap-drop ALL", "--read-only", "--user 10001:10001", "-w /workspace", " /bin/sh -c echo hi"} {
+		if !strings.Contains(calls[2], want) {
+			t.Errorf("docker call missing %q: %q", want, calls[2])
 		}
 	}
 	// One-shot Run must NOT use detached mode.
-	if strings.Contains(calls[1], " -d ") {
-		t.Errorf("Run must not be detached: %q", calls[1])
+	if strings.Contains(calls[2], " -d ") {
+		t.Errorf("Run must not be detached: %q", calls[2])
 	}
 }
 
@@ -49,6 +53,7 @@ func TestDockerEnforcerStartIsDetached(t *testing.T) {
 	var calls []string
 	e := &DockerEnforcer{
 		ChownCommand: "chown",
+		MkdirCommand: "mkdir -p",
 		Socket:       "unix:///var/run/gaap.sock",
 		run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 			calls = append(calls, name+" "+strings.Join(args, " "))
@@ -62,14 +67,14 @@ func TestDockerEnforcerStartIsDetached(t *testing.T) {
 	if handle != "abcdef123456" {
 		t.Errorf("Start should return the container handle, got %q", handle)
 	}
-	if len(calls) != 2 {
-		t.Fatalf("expected 2 calls, got %d", len(calls))
+	if len(calls) != 3 {
+		t.Fatalf("expected 3 calls (mkdir + chown + docker), got %d: %v", len(calls), calls)
 	}
-	if !strings.Contains(calls[1], "docker --host unix:///var/run/gaap.sock run -d --name gaap-sleep-100") {
-		t.Errorf("Start should be detached and named: %q", calls[1])
+	if !strings.Contains(calls[2], "docker --host unix:///var/run/gaap.sock run -d --name gaap-sleep-100") {
+		t.Errorf("Start should be detached and named: %q", calls[2])
 	}
-	if !strings.Contains(calls[1], "--network none") {
-		t.Errorf("Start must still be deny-by-default: %q", calls[1])
+	if !strings.Contains(calls[2], "--network none") {
+		t.Errorf("Start must still be deny-by-default: %q", calls[2])
 	}
 }
 

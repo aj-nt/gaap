@@ -28,6 +28,7 @@ func (s *NamespaceSpec) DockerRunArgs() []string {
 	if s.ReadOnly {
 		args = append(args, "--read-only")
 	}
+	args = append(args, "-w", "/workspace")
 	args = append(args, "-v", fmt.Sprintf("%s:/workspace:rw", s.Workspace))
 	return args
 }

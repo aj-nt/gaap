@@ -14,6 +14,7 @@ func TestNamespaceSpecSafeFlagsPresent(t *testing.T) {
 		" --cap-drop ALL ",
 		" --read-only ",
 		" --user 10001:10001 ",
+		" -w /workspace ",
 		" -v /var/gaap/agents/a1:/workspace:rw ",
 	} {
 		if !strings.Contains(joined, want) {
