@@ -3,20 +3,23 @@ package platform
 // Governor wires the primitives into a single decision authority — the "judge"
 // from the design doc. It decides deterministically and records everything.
 type Governor struct {
-	Policy *PolicyEngine
-	Kill   *KillSwitch
-	Trust  *TrustManager
-	Ledger *Ledger
+	Policy   *PolicyEngine
+	Kill     *KillSwitch
+	Trust    *TrustManager
+	Ledger   *Ledger
+	Enforcer Enforcer
 }
 
 // NewGovernor returns a governor with defaults: deny-by-default policy, an
-// open kill switch, trust starting at 500, and a fresh ledger.
+// open kill switch, trust starting at 500, a fresh ledger, and a noop enforcer
+// (enforce nothing, like today — swap in a DockerEnforcer to make it coercive).
 func NewGovernor() *Governor {
 	return &Governor{
-		Policy: NewPolicyEngine(),
-		Kill:   NewKillSwitch(),
-		Trust:  NewTrustManager(500),
-		Ledger: NewLedger(),
+		Policy:   NewPolicyEngine(),
+		Kill:     NewKillSwitch(),
+		Trust:    NewTrustManager(500),
+		Ledger:   NewLedger(),
+		Enforcer: &NoopEnforcer{},
 	}
 }
 
