@@ -28,6 +28,9 @@ func TestDockerEnforcerChownsBeforeSpawn(t *testing.T) {
 	if !strings.Contains(calls[1], "docker run --rm --network none") {
 		t.Errorf("second call should be docker run with deny-by-default: %q", calls[1])
 	}
+	if !strings.Contains(calls[1], " /bin/sh -c true") {
+		t.Errorf("command must run through the container shell: %q", calls[1])
+	}
 }
 
 func TestDockerEnforcerGrantChowns(t *testing.T) {

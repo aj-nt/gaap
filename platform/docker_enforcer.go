@@ -47,12 +47,14 @@ func (e *DockerEnforcer) chown(ctx context.Context, uid int, path string) error 
 }
 
 // Spawn chowns the workspace to the agent uid, then docker-runs the image with
-// the deny-by-default namespace. Returns the container ID.
+// the deny-by-default namespace. The command string runs through the
+// container's shell (/bin/sh -c), so shell syntax (redirection, pipes) works.
+// Returns the container ID.
 func (e *DockerEnforcer) Spawn(ctx context.Context, spec *NamespaceSpec, image, command string) (string, error) {
 	if err := e.chown(ctx, spec.UID, spec.Workspace); err != nil {
 		return "", err
 	}
-	args := append(spec.DockerRunArgs(), "--name", "gaap-agent", image, command)
+	args := append(spec.DockerRunArgs(), "--name", "gaap-agent", image, "/bin/sh", "-c", command)
 	out, err := e.exec(ctx, "docker", args...)
 	if err != nil {
 		return "", err
