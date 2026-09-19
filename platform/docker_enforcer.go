@@ -3,9 +3,11 @@ package platform
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 )
 
 // DockerEnforcer drives Gaap's own dedicated dockerd to run the agent's
@@ -86,7 +88,7 @@ func (e *DockerEnforcer) daemonCommand() string {
 	if e.DaemonCommand != "" {
 		return e.DaemonCommand
 	}
-	return "dockerd"
+	return "sudo dockerd"
 }
 
 func (e *DockerEnforcer) exec(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -114,16 +116,41 @@ func (e *DockerEnforcer) chown(ctx context.Context, uid int, path string) error 
 	return err
 }
 
-// Ensure launches the dedicated dockerd if it is not already up. Idempotent:
-// a health check against the socket decides whether to launch.
+// Ensure launches the dedicated dockerd if it is not already up, then waits
+// for it to answer on its socket (bounded). Idempotent and safe under
+// concurrent first-use. The wait is what makes "self-managed" real: launching
+// the daemon without confirming it is ready hands the caller a race.
 func (e *DockerEnforcer) Ensure(ctx context.Context) error {
 	e.ensureOnce.Do(func() {
 		if e.daemonUp(ctx) {
 			return
 		}
-		e.ensureErr = e.launchDaemon(ctx)
+		if err := e.launchDaemon(ctx); err != nil {
+			e.ensureErr = err
+			return
+		}
+		e.ensureErr = e.waitReady(ctx)
 	})
 	return e.ensureErr
+}
+
+// waitReady polls the daemon socket until it answers, or the context expires.
+func (e *DockerEnforcer) waitReady(ctx context.Context) error {
+	const (
+		attempts = 30
+		delay    = 500 * time.Millisecond
+	)
+	for i := 0; i < attempts; i++ {
+		if e.daemonUp(ctx) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+	return fmt.Errorf("dedicated dockerd did not become ready after %d attempts", attempts)
 }
 
 // daemonUp reports whether the dedicated daemon answers on its socket.
@@ -146,13 +173,26 @@ func (e *DockerEnforcer) daemonArgs() []string {
 	}
 }
 
-// launchDaemon starts the dedicated dockerd in the background.
+// launchDaemon starts the dedicated dockerd in the background. The daemon
+// command is a prefix (default "sudo dockerd") split like chown, so the daemon
+// runs as root via the sovereign's passwordless sudo.
 func (e *DockerEnforcer) launchDaemon(ctx context.Context) error {
-	args := e.daemonArgs()
-	if e.launch != nil {
-		return e.launch(e.daemonCommand(), args)
+	parts := strings.Fields(e.daemonCommand())
+	if len(parts) == 0 {
+		return fmt.Errorf("empty daemon command")
 	}
-	cmd := exec.Command(e.daemonCommand(), args...)
+	name := parts[0]
+	args := append(parts[1:], e.daemonArgs()...)
+	if e.launch != nil {
+		return e.launch(name, args)
+	}
+	cmd := exec.Command(name, args...)
+	// Capture stderr so a silent startup failure is diagnosable.
+	if log, err := os.Create("/tmp/gaap-dockerd.log"); err == nil {
+		cmd.Stderr = log
+		cmd.Stdout = log
+		defer func() { _ = log.Close() }()
+	}
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("launch dedicated dockerd: %w", err)
 	}

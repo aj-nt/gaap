@@ -102,6 +102,7 @@ func TestDockerEnforcerLogsAndStop(t *testing.T) {
 func TestDockerEnforcerEnsureLaunchesWhenDown(t *testing.T) {
 	var launchedName string
 	var launchedArgs []string
+	daemonLaunched := false
 	e := &DockerEnforcer{
 		Socket:        "unix:///var/run/gaap.sock",
 		DataRoot:      "/var/lib/gaap",
@@ -109,15 +110,18 @@ func TestDockerEnforcerEnsureLaunchesWhenDown(t *testing.T) {
 		Pidfile:       "/var/run/gaap.pid",
 		DaemonCommand: "dockerd",
 		run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
-			// docker --host <socket> info → daemon down.
 			if name == "docker" && args[len(args)-1] == "info" {
-				return nil, context.Canceled
+				if !daemonLaunched {
+					return nil, context.Canceled // down until launch
+				}
+				return []byte("{}"), nil // up after launch
 			}
 			return nil, nil
 		},
 		launch: func(name string, args []string) error {
 			launchedName = name
 			launchedArgs = append([]string(nil), args...)
+			daemonLaunched = true
 			return nil
 		},
 	}
