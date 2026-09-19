@@ -18,11 +18,11 @@ func NewNamespaceSpec(uid int, workspace string) *NamespaceSpec {
 	return &NamespaceSpec{UID: uid, GID: uid, Workspace: workspace, ReadOnly: true}
 }
 
-// DockerRunArgs returns the docker run arguments (image and command are
-// appended by the caller). Safe flags only, in docker's expected order.
+// DockerRunArgs returns the deny-by-default security flags (no `run` and no
+// `--rm`/`-d` — the enforcer composes those, since one-shot Run and detached
+// Start differ). Safe flags only, in docker's expected order.
 func (s *NamespaceSpec) DockerRunArgs() []string {
-	args := []string{"run", "--rm"}
-	args = append(args, "--network", "none")
+	args := []string{"--network", "none"}
 	args = append(args, "--cap-drop", "ALL")
 	args = append(args, "--user", fmt.Sprintf("%d:%d", s.UID, s.GID))
 	if s.ReadOnly {
