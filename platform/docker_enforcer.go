@@ -2,6 +2,8 @@ package platform
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -256,7 +258,7 @@ func (e *DockerEnforcer) Start(ctx context.Context, spec *NamespaceSpec, image, 
 	if err := e.prepWorkspace(ctx, spec); err != nil {
 		return "", err
 	}
-	handle := "gaap-" + shortID(command)
+	handle := "gaap-" + shortID(command) + "-" + randomHex(4)
 	args := append([]string{"run", "-d", "--name", handle}, spec.DockerRunArgs()...)
 	args = append(args, image, "/bin/sh", "-c", command)
 	out, err := e.docker(ctx, args...)
@@ -337,4 +339,17 @@ func shortID(command string) string {
 		s = "run"
 	}
 	return s
+}
+
+// randomHex returns n bytes of crypto-random data as hex. It makes detached
+// container names unique so two concurrent long-running processes with the same
+// command do not collide on --name (docker refuses a duplicate name).
+func randomHex(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand failure is catastrophic; fall back to a time-derived
+		// suffix rather than returning an empty name.
+		return fmt.Sprintf("%08x", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
 }

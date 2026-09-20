@@ -72,8 +72,8 @@ func TestDockerEnforcerStartIsDetached(t *testing.T) {
 	if len(calls) != 3 {
 		t.Fatalf("expected 3 calls (mkdir + chown + docker), got %d: %v", len(calls), calls)
 	}
-	if !strings.Contains(calls[2], "docker --host unix:///var/run/gaap.sock run -d --name gaap-sleep-100") {
-		t.Errorf("Start should be detached and named: %q", calls[2])
+	if !strings.Contains(calls[2], "docker --host unix:///var/run/gaap.sock run -d --name gaap-sleep-100-") {
+		t.Errorf("Start should be detached and uniquely named (gaap-sleep-100-<rand>): %q", calls[2])
 	}
 	if !strings.Contains(calls[2], "--network none") {
 		t.Errorf("Start must still be deny-by-default: %q", calls[2])
