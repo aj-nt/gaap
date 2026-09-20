@@ -51,6 +51,11 @@ type Orchestrator struct {
 	// subscribeDaemon() attempts gRPC subscription first, falling back to
 	// polling on failure. False (default) uses polling only (backward compat).
 	subscribeFallbackToPoll bool // daemon key for persisted RunState
+
+	// digestMaxChars is the per-audience digest budget (default
+	// defaultDigestMaxChars). A field, not a package global, so tests can
+	// override it without racing parallel readers.
+	digestMaxChars int
 }
 
 // NewOrchestrator creates an orchestrator with the given config and daemon connection.
@@ -62,13 +67,14 @@ func NewOrchestrator(ctx context.Context, cfg *Config, daemon MnemoClient, decom
 		cfg.MaxWaitSec = 300
 	}
 	o := &Orchestrator{
-		cfg:        cfg,
-		ctx:        ctx,
-		daemon:     daemon,
-		decomposer: decomposer,
-		synthesis:  NewSynthesisEngine(nil), // schema-only by default; set later for LLM
-		dag:        NewDAG(),
-		state:      &IdleState{},
+		cfg:            cfg,
+		ctx:            ctx,
+		daemon:         daemon,
+		decomposer:     decomposer,
+		synthesis:      NewSynthesisEngine(nil), // schema-only by default; set later for LLM
+		dag:            NewDAG(),
+		state:          &IdleState{},
+		digestMaxChars: defaultDigestMaxChars,
 	}
 	return o
 }

@@ -17,11 +17,12 @@ import (
 	"time"
 )
 
-// digestMaxChars is the per-audience digest budget. 900 = spike 003's knee
-// for a findings-bearing fixture; overridable in tests.
-var digestMaxChars = 900
+// defaultDigestMaxChars is the per-audience digest budget. 900 = spike 003's
+// knee for a findings-bearing fixture. It lives on the Orchestrator (field
+// digestMaxChars) so tests can override it without racing parallel readers;
+// this package-level constant is only the default value.
+const defaultDigestMaxChars = 900
 
-const digestMaxSummary = 160
 const digestMaxTasks = 12
 
 // buildDigest renders the current DAG state as a digest for one audience.
@@ -88,7 +89,7 @@ func (o *Orchestrator) buildDigest(audience string) string {
 		}
 	}
 
-	return enforceDigestBudget(lines, digestMaxChars)
+	return enforceDigestBudget(lines, o.digestMaxChars)
 }
 
 // digestTask is one task's projection into a digest line.

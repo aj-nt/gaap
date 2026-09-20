@@ -104,9 +104,7 @@ func TestDigestBuild_BudgetDropsWholeLinesAndDeclares(t *testing.T) {
 	o := digestTestOrchestrator(&vclient.NullMnemo{})
 	completeTask(o, "T1", strings.Repeat("x", 400)) // force overflow
 
-	orig := digestMaxChars
-	digestMaxChars = 200
-	defer func() { digestMaxChars = orig }()
+	o.digestMaxChars = 200
 
 	d := o.buildDigest("observer")
 	if len(d) > 200+80 { // tolerance for the drop notice line
