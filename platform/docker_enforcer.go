@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -305,6 +306,29 @@ func (e *DockerEnforcer) Wait(ctx context.Context, handle string) (string, error
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// Status reports whether a detached container is running or exited and, if
+// exited, its exit code, using a single non-blocking docker inspect. The
+// container is not removed, so Logs/Stop still work afterward.
+func (e *DockerEnforcer) Status(ctx context.Context, handle string) (string, int, error) {
+	out, err := e.docker(ctx, "inspect", "-f", "{{.State.Status}} {{.State.ExitCode}}", handle)
+	if err != nil {
+		return "", 0, err
+	}
+	fields := strings.Fields(strings.TrimSpace(string(out)))
+	if len(fields) == 0 {
+		return "", 0, fmt.Errorf("empty inspect output for %s", handle)
+	}
+	status := fields[0]
+	exitCode := 0
+	if len(fields) >= 2 {
+		// A negative exit code means the process was killed by a signal.
+		if n, err := strconv.Atoi(fields[1]); err == nil {
+			exitCode = n
+		}
+	}
+	return status, exitCode, nil
 }
 
 // Stop terminates and removes a detached container.

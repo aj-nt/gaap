@@ -249,3 +249,44 @@ func TestDockerEnforcerWaitReturnsExitCode(t *testing.T) {
 		t.Errorf("Wait should target the handle, got %q", waitArg)
 	}
 }
+
+func TestDockerEnforcerStatusParsesInspect(t *testing.T) {
+	e := &DockerEnforcer{
+		Socket: "unix:///var/run/gaap.sock",
+		run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			if name == "docker" && len(args) >= 1 && args[len(args)-1] == "gaap-sleep-100" {
+				return []byte("running 0\n"), nil
+			}
+			return nil, nil
+		},
+	}
+	status, exitCode, err := e.Status(context.Background(), "gaap-sleep-100")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status != "running" {
+		t.Errorf("status = %q, want running", status)
+	}
+	if exitCode != 0 {
+		t.Errorf("exitCode = %d, want 0", exitCode)
+	}
+}
+
+func TestDockerEnforcerStatusExited(t *testing.T) {
+	e := &DockerEnforcer{
+		Socket: "unix:///var/run/gaap.sock",
+		run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			return []byte("exited 3\n"), nil
+		},
+	}
+	status, exitCode, err := e.Status(context.Background(), "gaap-sleep-100")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status != "exited" {
+		t.Errorf("status = %q, want exited", status)
+	}
+	if exitCode != 3 {
+		t.Errorf("exitCode = %d, want 3", exitCode)
+	}
+}

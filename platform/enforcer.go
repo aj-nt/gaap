@@ -32,6 +32,11 @@ type Enforcer interface {
 	// (trimmed). The container is NOT removed, so Logs still works afterward.
 	Wait(ctx context.Context, handle string) (string, error)
 
+	// Status reports whether a detached container is running or exited and, if
+	// exited, its exit code. Non-blocking — used by the long-running lifecycle's
+	// "poll" action, which must not wait.
+	Status(ctx context.Context, handle string) (status string, exitCode int, err error)
+
 	// Stop terminates and removes a detached container.
 	Stop(ctx context.Context, handle string) error
 
@@ -56,6 +61,9 @@ func (NoopEnforcer) Stage(context.Context, *NamespaceSpec, string, string) error
 	return nil
 }
 func (NoopEnforcer) Wait(context.Context, string) (string, error) { return "", nil }
+func (NoopEnforcer) Status(context.Context, string) (string, int, error) {
+	return "exited", 0, nil
+}
 func (NoopEnforcer) Stop(context.Context, string) error           { return nil }
 func (NoopEnforcer) Grant(context.Context, string, PathGrant) error {
 	return nil
