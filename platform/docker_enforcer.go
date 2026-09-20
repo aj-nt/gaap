@@ -130,15 +130,25 @@ func (e *DockerEnforcer) docker(ctx context.Context, args ...string) ([]byte, er
 	return e.exec(ctx, "docker", full...)
 }
 
+// splitCommand splits a command prefix (e.g. "sudo chown", "mkdir -p") into its
+// binary and args. Returns an error if the prefix is empty. The "what" label
+// names the command in the error so failures stay attributable.
+func splitCommand(cmd, what string) (name string, args []string, err error) {
+	parts := strings.Fields(cmd)
+	if len(parts) == 0 {
+		return "", nil, fmt.Errorf("empty %s command", what)
+	}
+	return parts[0], parts[1:], nil
+}
+
 // chown runs the chown command against the given host path for the agent uid.
 func (e *DockerEnforcer) chown(ctx context.Context, uid int, path string) error {
-	parts := strings.Fields(e.chownCommand())
-	if len(parts) == 0 {
-		return fmt.Errorf("empty chown command")
+	name, args, err := splitCommand(e.chownCommand(), "chown")
+	if err != nil {
+		return err
 	}
-	name := parts[0]
-	args := append(parts[1:], fmt.Sprintf("%d:%d", uid, uid), path)
-	_, err := e.exec(ctx, name, args...)
+	args = append(args, fmt.Sprintf("%d:%d", uid, uid), path)
+	_, err = e.exec(ctx, name, args...)
 	return err
 }
 
@@ -146,13 +156,12 @@ func (e *DockerEnforcer) chown(ctx context.Context, uid int, path string) error 
 // bind-mount target and its ownership are both ready before the container
 // starts.
 func (e *DockerEnforcer) mkdirAll(ctx context.Context, path string) error {
-	parts := strings.Fields(e.mkdirCommand())
-	if len(parts) == 0 {
-		return fmt.Errorf("empty mkdir command")
+	name, args, err := splitCommand(e.mkdirCommand(), "mkdir")
+	if err != nil {
+		return err
 	}
-	name := parts[0]
-	args := append(parts[1:], path)
-	_, err := e.exec(ctx, name, args...)
+	args = append(args, path)
+	_, err = e.exec(ctx, name, args...)
 	return err
 }
 
@@ -161,13 +170,12 @@ func (e *DockerEnforcer) mkdirAll(ctx context.Context, path string) error {
 // uid (the sovereign cannot write there directly after prepWorkspace chowned
 // it, but sudo can).
 func (e *DockerEnforcer) cp(ctx context.Context, src, dst string) error {
-	parts := strings.Fields(e.cpCommand())
-	if len(parts) == 0 {
-		return fmt.Errorf("empty cp command")
+	name, args, err := splitCommand(e.cpCommand(), "cp")
+	if err != nil {
+		return err
 	}
-	name := parts[0]
-	args := append(parts[1:], src, dst)
-	_, err := e.exec(ctx, name, args...)
+	args = append(args, src, dst)
+	_, err = e.exec(ctx, name, args...)
 	return err
 }
 
@@ -241,12 +249,11 @@ func (e *DockerEnforcer) daemonArgs() []string {
 // command is a prefix (default "sudo dockerd") split like chown, so the daemon
 // runs as root via the sovereign's passwordless sudo.
 func (e *DockerEnforcer) launchDaemon(ctx context.Context) error {
-	parts := strings.Fields(e.daemonCommand())
-	if len(parts) == 0 {
-		return fmt.Errorf("empty daemon command")
+	name, args, err := splitCommand(e.daemonCommand(), "daemon")
+	if err != nil {
+		return err
 	}
-	name := parts[0]
-	args := append(parts[1:], e.daemonArgs()...)
+	args = append(args, e.daemonArgs()...)
 	if e.launch != nil {
 		return e.launch(name, args)
 	}
