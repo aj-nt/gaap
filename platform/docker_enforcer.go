@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -269,6 +270,39 @@ func (e *DockerEnforcer) Start(ctx context.Context, spec *NamespaceSpec, image, 
 func (e *DockerEnforcer) Logs(ctx context.Context, handle string) (string, error) {
 	out, err := e.docker(ctx, "logs", handle)
 	return string(out), err
+}
+
+// Stage writes a file into the agent's workspace mount and chowns it to the
+// agent uid, so a code file can be executed inside the container. The
+// workspace must exist (mkdir + chown dir first), then the file is written
+// host-side and its ownership fixed so the container's non-root user can read
+// and overwrite it.
+func (e *DockerEnforcer) Stage(ctx context.Context, spec *NamespaceSpec, filename, content string) error {
+	if err := e.prepWorkspace(ctx, spec); err != nil {
+		return err
+	}
+	// Reject any filename that escapes the workspace (path traversal).
+	if strings.Contains(filename, "..") || strings.HasPrefix(filename, "/") {
+		return fmt.Errorf("stage filename %q must be a relative path inside the workspace", filename)
+	}
+	path := filepath.Join(spec.Workspace, filename)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		return fmt.Errorf("stage %s: %w", filename, err)
+	}
+	if err := e.chown(ctx, spec.UID, path); err != nil {
+		return fmt.Errorf("stage chown %s: %w", filename, err)
+	}
+	return nil
+}
+
+// Wait blocks until a detached container exits and returns its exit code
+// (trimmed). The container is NOT removed, so Logs still works afterward.
+func (e *DockerEnforcer) Wait(ctx context.Context, handle string) (string, error) {
+	out, err := e.docker(ctx, "wait", handle)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // Stop terminates and removes a detached container.

@@ -2,6 +2,8 @@ package platform
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -179,5 +181,71 @@ func TestDockerEnforcerGrantChowns(t *testing.T) {
 	}
 	if len(calls) != 1 || !strings.Contains(calls[0], "chown 10001:10001 /data/foo") {
 		t.Errorf("Grant should chown the path: %v", calls)
+	}
+}
+
+func TestDockerEnforcerStagePreparesWorkspaceThenWrites(t *testing.T) {
+	var calls []string
+	e := &DockerEnforcer{
+		ChownCommand: "chown",
+		MkdirCommand: "mkdir -p",
+		run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			if name == "chown" {
+				// chown's last arg is the path; capture the file chown (dir chown is the workspace).
+				calls = append(calls, name+" "+strings.Join(args, " "))
+			}
+			return nil, nil
+		},
+	}
+	spec := NewNamespaceSpec(10001, t.TempDir())
+	if err := e.Stage(context.Background(), spec, "code.py", "print(1)\n"); err != nil {
+		t.Fatalf("Stage: %v", err)
+	}
+	// mkdir + chown dir + chown file = at least 2 chown/mkdir-family calls.
+	if len(calls) < 2 {
+		t.Fatalf("expected mkdir/chown prep + file chown, got %v", calls)
+	}
+	// The file must exist on disk with the staged content.
+	b, err := os.ReadFile(filepath.Join(spec.Workspace, "code.py"))
+	if err != nil {
+		t.Fatalf("staged file not written: %v", err)
+	}
+	if string(b) != "print(1)\n" {
+		t.Errorf("staged content = %q", string(b))
+	}
+}
+
+func TestDockerEnforcerStageRejectsTraversal(t *testing.T) {
+	e := &DockerEnforcer{ChownCommand: "chown", MkdirCommand: "mkdir -p",
+		run: func(ctx context.Context, name string, args ...string) ([]byte, error) { return nil, nil }}
+	spec := NewNamespaceSpec(10001, t.TempDir())
+	for _, bad := range []string{"../evil.py", "/etc/passwd", "a/../../evil.py"} {
+		if err := e.Stage(context.Background(), spec, bad, "x"); err == nil {
+			t.Errorf("Stage(%q) should be rejected", bad)
+		}
+	}
+}
+
+func TestDockerEnforcerWaitReturnsExitCode(t *testing.T) {
+	var waitArg string
+	e := &DockerEnforcer{
+		Socket: "unix:///var/run/gaap.sock",
+		run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			if name == "docker" && len(args) >= 2 && args[len(args)-2] == "wait" {
+				waitArg = args[len(args)-1]
+				return []byte("0\n"), nil
+			}
+			return nil, nil
+		},
+	}
+	out, err := e.Wait(context.Background(), "gaap-sleep-100")
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if out != "0" {
+		t.Errorf("Wait should return trimmed exit code, got %q", out)
+	}
+	if waitArg != "gaap-sleep-100" {
+		t.Errorf("Wait should target the handle, got %q", waitArg)
 	}
 }

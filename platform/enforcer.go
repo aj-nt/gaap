@@ -23,6 +23,15 @@ type Enforcer interface {
 	// Logs returns the accumulated output of a detached container.
 	Logs(ctx context.Context, handle string) (string, error)
 
+	// Stage writes content to a file inside the agent's workspace mount, so a
+	// code file can be executed inside the container (ExecuteCode). The file is
+	// owned by the agent uid so the container can read and overwrite it.
+	Stage(ctx context.Context, spec *NamespaceSpec, filename, content string) error
+
+	// Wait blocks until a detached container exits and returns its exit code
+	// (trimmed). The container is NOT removed, so Logs still works afterward.
+	Wait(ctx context.Context, handle string) (string, error)
+
 	// Stop terminates and removes a detached container.
 	Stop(ctx context.Context, handle string) error
 
@@ -43,6 +52,10 @@ func (NoopEnforcer) Start(context.Context, *NamespaceSpec, string, string) (stri
 	return "noop", nil
 }
 func (NoopEnforcer) Logs(context.Context, string) (string, error) { return "", nil }
+func (NoopEnforcer) Stage(context.Context, *NamespaceSpec, string, string) error {
+	return nil
+}
+func (NoopEnforcer) Wait(context.Context, string) (string, error) { return "", nil }
 func (NoopEnforcer) Stop(context.Context, string) error           { return nil }
 func (NoopEnforcer) Grant(context.Context, string, PathGrant) error {
 	return nil
