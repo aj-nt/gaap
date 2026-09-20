@@ -39,6 +39,11 @@ type DockerEnforcer struct {
 	// MkdirCommand is the mkdir command prefix, default "sudo mkdir -p".
 	// Override to "mkdir -p" when running as root.
 	MkdirCommand string
+	// CpCommand is the copy command prefix, default "sudo cp". Override to
+	// "cp" when running as root. Used by Stage to write into a workspace dir
+	// that may be owned by the agent uid (the sovereign cannot write there
+	// directly after prepWorkspace chowned it).
+	CpCommand string
 	// DaemonCommand is the dockerd binary, default "dockerd".
 	DaemonCommand string
 
@@ -98,6 +103,13 @@ func (e *DockerEnforcer) mkdirCommand() string {
 	return "sudo mkdir -p"
 }
 
+func (e *DockerEnforcer) cpCommand() string {
+	if e.CpCommand != "" {
+		return e.CpCommand
+	}
+	return "sudo cp"
+}
+
 func (e *DockerEnforcer) daemonCommand() string {
 	if e.DaemonCommand != "" {
 		return e.DaemonCommand
@@ -140,6 +152,21 @@ func (e *DockerEnforcer) mkdirAll(ctx context.Context, path string) error {
 	}
 	name := parts[0]
 	args := append(parts[1:], path)
+	_, err := e.exec(ctx, name, args...)
+	return err
+}
+
+// cp runs the copy command (default "sudo cp") from src to dst. Used by Stage
+// to place a file into a workspace directory that may be owned by the agent
+// uid (the sovereign cannot write there directly after prepWorkspace chowned
+// it, but sudo can).
+func (e *DockerEnforcer) cp(ctx context.Context, src, dst string) error {
+	parts := strings.Fields(e.cpCommand())
+	if len(parts) == 0 {
+		return fmt.Errorf("empty cp command")
+	}
+	name := parts[0]
+	args := append(parts[1:], src, dst)
 	_, err := e.exec(ctx, name, args...)
 	return err
 }
@@ -288,11 +315,26 @@ func (e *DockerEnforcer) Stage(ctx context.Context, spec *NamespaceSpec, filenam
 	if strings.Contains(filename, "..") || strings.HasPrefix(filename, "/") {
 		return fmt.Errorf("stage filename %q must be a relative path inside the workspace", filename)
 	}
-	path := filepath.Join(spec.Workspace, filename)
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		return fmt.Errorf("stage %s: %w", filename, err)
+	dst := filepath.Join(spec.Workspace, filename)
+	// Write the content to a sovereign-owned temp file, then sudo cp it into
+	// the (possibly agent-uid-owned) workspace and chown the result. A direct
+	// os.WriteFile fails after prepWorkspace chowned the dir to the agent uid,
+	// because the sovereign (non-root) can no longer create files there.
+	tmp, err := os.CreateTemp("", "gaap-stage-*.tmp")
+	if err != nil {
+		return fmt.Errorf("stage temp: %w", err)
 	}
-	if err := e.chown(ctx, spec.UID, path); err != nil {
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if _, err := tmp.WriteString(content); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("stage temp write: %w", err)
+	}
+	_ = tmp.Close()
+	if err := e.cp(ctx, tmpPath, dst); err != nil {
+		return fmt.Errorf("stage cp %s: %w", filename, err)
+	}
+	if err := e.chown(ctx, spec.UID, dst); err != nil {
 		return fmt.Errorf("stage chown %s: %w", filename, err)
 	}
 	return nil

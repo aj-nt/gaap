@@ -189,10 +189,17 @@ func TestDockerEnforcerStagePreparesWorkspaceThenWrites(t *testing.T) {
 	e := &DockerEnforcer{
 		ChownCommand: "chown",
 		MkdirCommand: "mkdir -p",
+		CpCommand:    "cp",
 		run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
-			if name == "chown" {
-				// chown's last arg is the path; capture the file chown (dir chown is the workspace).
-				calls = append(calls, name+" "+strings.Join(args, " "))
+			calls = append(calls, name+" "+strings.Join(args, " "))
+			if name == "cp" {
+				// Actually perform the copy so content flow is verifiable.
+				src, dst := args[len(args)-2], args[len(args)-1]
+				b, err := os.ReadFile(src)
+				if err != nil {
+					return nil, err
+				}
+				return nil, os.WriteFile(dst, b, 0o644)
 			}
 			return nil, nil
 		},
@@ -201,9 +208,9 @@ func TestDockerEnforcerStagePreparesWorkspaceThenWrites(t *testing.T) {
 	if err := e.Stage(context.Background(), spec, "code.py", "print(1)\n"); err != nil {
 		t.Fatalf("Stage: %v", err)
 	}
-	// mkdir + chown dir + chown file = at least 2 chown/mkdir-family calls.
-	if len(calls) < 2 {
-		t.Fatalf("expected mkdir/chown prep + file chown, got %v", calls)
+	// mkdir + chown dir + cp + chown file = at least 3 calls.
+	if len(calls) < 3 {
+		t.Fatalf("expected mkdir/chown prep + cp + file chown, got %v", calls)
 	}
 	// The file must exist on disk with the staged content.
 	b, err := os.ReadFile(filepath.Join(spec.Workspace, "code.py"))
@@ -212,6 +219,16 @@ func TestDockerEnforcerStagePreparesWorkspaceThenWrites(t *testing.T) {
 	}
 	if string(b) != "print(1)\n" {
 		t.Errorf("staged content = %q", string(b))
+	}
+	// A cp call must target the workspace file path.
+	foundCp := false
+	for _, c := range calls {
+		if strings.HasPrefix(c, "cp ") && strings.HasSuffix(c, "/code.py") {
+			foundCp = true
+		}
+	}
+	if !foundCp {
+		t.Errorf("expected cp into workspace code.py, got %v", calls)
 	}
 }
 

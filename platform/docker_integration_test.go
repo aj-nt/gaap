@@ -85,3 +85,82 @@ func TestDockerEnforcerDetachedIntegration(t *testing.T) {
 		t.Fatalf("Stop: %v", err)
 	}
 }
+
+// TestDockerEnforcerStageIntegration proves the code-file staging path: write a
+// Python file into the workspace via Stage, then Run it in a python image
+// inside the container and confirm its output (ExecuteCode's shape).
+func TestDockerEnforcerStageIntegration(t *testing.T) {
+	e := &DockerEnforcer{ChownCommand: "sudo chown"}
+	ctx := context.Background()
+
+	if err := e.Ensure(ctx); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+
+	ws := t.TempDir()
+	defer e.chown(ctx, os.Getuid(), ws)
+
+	spec := NewNamespaceSpec(10001, ws)
+	if err := e.Stage(ctx, spec, "code.py", "print('staged-ok')\n"); err != nil {
+		t.Fatalf("Stage: %v", err)
+	}
+	out, err := e.Run(ctx, spec, "python:3-alpine", "python3 /workspace/code.py")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(out, "staged-ok") {
+		t.Fatalf("code output should contain staged-ok, got %q", out)
+	}
+}
+
+// TestDockerEnforcerStatusWaitIntegration proves the long-running lifecycle
+// primitives: Start a detached container, Status reports running, Wait returns
+// its exit code after it exits, Stop removes it (BackgroundProcess's shape).
+func TestDockerEnforcerStatusWaitIntegration(t *testing.T) {
+	e := &DockerEnforcer{ChownCommand: "sudo chown"}
+	ctx := context.Background()
+
+	if err := e.Ensure(ctx); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+
+	ws := t.TempDir()
+	defer e.chown(ctx, os.Getuid(), ws)
+
+	spec := NewNamespaceSpec(10001, ws)
+	handle, err := e.Start(ctx, spec, "alpine:latest", "echo bg-ok && sleep 2")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Status should report running (or already exited if it raced to finish).
+	status, _, err := e.Status(ctx, handle)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status != "running" && status != "exited" {
+		t.Fatalf("Status = %q, want running or exited", status)
+	}
+
+	// Wait blocks until exit and returns "0".
+	code, err := e.Wait(ctx, handle)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if code != "0" {
+		t.Fatalf("Wait exit code = %q, want 0", code)
+	}
+
+	// Logs still work after Wait (container not removed).
+	logs, err := e.Logs(ctx, handle)
+	if err != nil {
+		t.Fatalf("Logs after Wait: %v", err)
+	}
+	if !strings.Contains(logs, "bg-ok") {
+		t.Fatalf("logs should contain bg-ok, got %q", logs)
+	}
+
+	if err := e.Stop(ctx, handle); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+}
