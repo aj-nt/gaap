@@ -41,8 +41,9 @@ func (g *Governor) Decide(agentID, tool string, args map[string]any) Decision {
 
 func (g *Governor) record(agentID, tool string, d Decision) {
 	g.Ledger.Append(Entry{
-		Kind:    "decision",
-		Subject: agentID + "/" + tool,
-		Detail:  string(d.Action) + " " + d.Reason,
+		Kind:          "decision",
+		Subject:       agentID + "/" + tool,
+		Detail:        string(d.Action) + " " + d.Reason,
+		Reversibility: classify(tool),
 	})
 }

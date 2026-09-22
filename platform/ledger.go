@@ -13,6 +13,11 @@ type Entry struct {
 	Kind    string // "decision", "grant", "killswitch", "trust", "request"
 	Subject string // agent ID and/or tool name
 	Detail  string
+	// Reversibility classifies whether the recorded effect can be undone. Zero
+	// value (empty string) means "not classified" — valid for non-decision
+	// entries (grant, trust, request). Decision entries should always carry a
+	// class (see classify).
+	Reversibility Reversibility
 }
 
 // Ledger is an append-only record. There is deliberately no delete, update, or
