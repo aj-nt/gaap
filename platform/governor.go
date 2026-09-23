@@ -8,6 +8,11 @@ type Governor struct {
 	Trust    *TrustManager
 	Ledger   *Ledger
 	Enforcer Enforcer
+	// Classify maps a tool name to its reversibility class. Defaults to the
+	// kernel's conservative classifier (everything irreversible). A governed
+	// workload injects a classifier that knows its own read-only tools, so the
+	// ledger can admit which effects are provably pure. nil = conservative.
+	Classify func(tool string) Reversibility
 }
 
 // NewGovernor returns a governor with defaults: deny-by-default policy, an
@@ -44,6 +49,16 @@ func (g *Governor) record(agentID, tool string, d Decision) {
 		Kind:          "decision",
 		Subject:       agentID + "/" + tool,
 		Detail:        string(d.Action) + " " + d.Reason,
-		Reversibility: classify(tool),
+		Reversibility: g.classifyTool(tool),
 	})
+}
+
+// classifyTool resolves the reversibility class for a tool: the injected
+// workload classifier when present, else the kernel's conservative default
+// (everything irreversible).
+func (g *Governor) classifyTool(tool string) Reversibility {
+	if g.Classify != nil {
+		return g.Classify(tool)
+	}
+	return classify(tool)
 }
