@@ -419,15 +419,15 @@ func formatSynthesisReport(sr *SynthesisResult) string {
 		}
 		fmt.Fprintf(&b, "--- %s SEVERITY (%d findings) ---\n\n", section.severity, len(section.items))
 		for i, f := range section.items {
-			b.WriteString(fmt.Sprintf("%d. %s\n", i+1, f.Title))
+			fmt.Fprintf(&b, "%d. %s\n", i+1, f.Title)
 			if f.Location != "" {
-				b.WriteString(fmt.Sprintf("   Location: %s\n", f.Location))
+				fmt.Fprintf(&b, "   Location: %s\n", f.Location)
 			}
 			if f.Detail != "" {
-				b.WriteString(fmt.Sprintf("   %s\n", f.Detail))
+				fmt.Fprintf(&b, "   %s\n", f.Detail)
 			}
 			if len(f.Sources) > 0 {
-				b.WriteString(fmt.Sprintf("   Source(s): %s\n", strings.Join(f.Sources, ", ")))
+				fmt.Fprintf(&b, "   Source(s): %s\n", strings.Join(f.Sources, ", "))
 			}
 			b.WriteString("\n")
 		}
@@ -437,11 +437,11 @@ func formatSynthesisReport(sr *SynthesisResult) string {
 	if len(sr.CrossRefInsights) > 0 {
 		b.WriteString("--- CROSS-REFERENCE INSIGHTS ---\n\n")
 		for i, ci := range sr.CrossRefInsights {
-			b.WriteString(fmt.Sprintf("%d. Pattern: %s\n", i+1, ci.Pattern))
-			b.WriteString(fmt.Sprintf("   Root Cause: %s\n", ci.RootCause))
-			b.WriteString(fmt.Sprintf("   Recommendation: %s\n", ci.Recommend))
+			fmt.Fprintf(&b, "%d. Pattern: %s\n", i+1, ci.Pattern)
+			fmt.Fprintf(&b, "   Root Cause: %s\n", ci.RootCause)
+			fmt.Fprintf(&b, "   Recommendation: %s\n", ci.Recommend)
 			if len(ci.Locations) > 0 {
-				b.WriteString(fmt.Sprintf("   Affected: %s\n", strings.Join(ci.Locations, ", ")))
+				fmt.Fprintf(&b, "   Affected: %s\n", strings.Join(ci.Locations, ", "))
 			}
 			b.WriteString("\n")
 		}
@@ -451,7 +451,7 @@ func formatSynthesisReport(sr *SynthesisResult) string {
 	if len(sr.CodebaseHealth) > 0 {
 		b.WriteString("--- CODEBASE HEALTH ---\n\n")
 		for k, v := range sr.CodebaseHealth {
-			b.WriteString(fmt.Sprintf("  %s: %s\n", k, v))
+			fmt.Fprintf(&b, "  %s: %s\n", k, v)
 		}
 		b.WriteString("\n")
 	}
@@ -460,10 +460,10 @@ func formatSynthesisReport(sr *SynthesisResult) string {
 	if len(sr.Recommendations) > 0 {
 		b.WriteString("--- TOP RECOMMENDATIONS ---\n\n")
 		for i, r := range sr.Recommendations {
-			b.WriteString(fmt.Sprintf("%d. [Priority %d] %s\n", i+1, r.Priority, r.Action))
-			b.WriteString(fmt.Sprintf("   Effort: %s | Impact: %s\n", r.Effort, r.Impact))
+			fmt.Fprintf(&b, "%d. [Priority %d] %s\n", i+1, r.Priority, r.Action)
+			fmt.Fprintf(&b, "   Effort: %s | Impact: %s\n", r.Effort, r.Impact)
 			if r.Rationale != "" {
-				b.WriteString(fmt.Sprintf("   Rationale: %s\n", r.Rationale))
+				fmt.Fprintf(&b, "   Rationale: %s\n", r.Rationale)
 			}
 			b.WriteString("\n")
 		}
