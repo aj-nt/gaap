@@ -5,6 +5,26 @@
 Model-agnostic multi-agent orchestrator on the blackboard pattern. Coordinates heterogeneous agents
 through shared memory (Vassago).
 
+## Governance
+
+Gaap also hosts a governance layer for autonomous agents: the missing legal layer that sits
+above an agent and enforces what it's allowed to touch. Agents self-assemble belief and social
+structure, but not law, because law needs a power asymmetry peers can't produce. It has to be
+imposed from outside.
+
+| Primitive | Role |
+|---|---|
+| Policy engine | deny-by-default rules over tool calls |
+| Kill switch | scoped, non-negotiable stop (global / agent / capability) |
+| Trust score | signal on the request path |
+| Append-only ledger | the record the governor reads; agents never write it |
+| Enforcement layer | container (Linux) or local shim (macOS) the agent's shell can't reach around |
+
+The agent participates in its governance and never governs itself. The allow/deny decision is
+deterministic, and the LLM enters only as data, never as the judge.
+
+The primitives live in `platform/`. See [Design: Governance-as-a-Platform](docs/design/governance-as-a-platform.md).
+
 ## Thesis
 
 > For coordinating heterogeneous, intermittently-connected AI agents, searchable shared memory — the
@@ -118,6 +138,7 @@ make deploy-studio   # build + scp to studio:~/.local/bin/gaap
 
 - [Design: Multi-Agent Orchestration](docs/design/multi-agent-orchestration.md)
 - [Design: Orchestrator Patterns](docs/design/orchestrator-patterns.md)
+- [Design: Governance-as-a-Platform](docs/design/governance-as-a-platform.md)
 
 ## License
 
