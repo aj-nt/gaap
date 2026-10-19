@@ -64,7 +64,7 @@ func (NoopEnforcer) Wait(context.Context, string) (string, error) { return "", n
 func (NoopEnforcer) Status(context.Context, string) (string, int, error) {
 	return "exited", 0, nil
 }
-func (NoopEnforcer) Stop(context.Context, string) error           { return nil }
+func (NoopEnforcer) Stop(context.Context, string) error { return nil }
 func (NoopEnforcer) Grant(context.Context, string, PathGrant) error {
 	return nil
 }
