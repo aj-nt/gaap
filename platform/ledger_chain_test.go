@@ -2,6 +2,7 @@ package platform
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -77,5 +78,30 @@ func TestLedgerSaveLoadRoundTrip(t *testing.T) {
 	}
 	if err := got.Verify(); err != nil {
 		t.Fatalf("loaded ledger failed verification: %v", err)
+	}
+}
+
+func TestLedgerAppendRejectsUnsupportedAlgorithm(t *testing.T) {
+	l := NewLedger()
+	_, err := l.Append(Entry{Kind: "decision", Detail: "x", Algo: "sha512"})
+	if err == nil {
+		t.Fatal("Append accepted an unsupported hash algorithm")
+	}
+	if len(l.Entries()) != 0 {
+		t.Fatalf("ledger has %d entries after rejected append, want 0", len(l.Entries()))
+	}
+}
+
+func TestLedgerVerifyRejectsUnsupportedAlgorithm(t *testing.T) {
+	// Build a ledger whose stored entry claims an algorithm this build cannot
+	// hash, bypassing Append (which now rejects it) to simulate a ledger written
+	// by a future version.
+	l := &Ledger{entries: []Entry{{Seq: 1, Kind: "decision", Algo: "sha512", Hash: "deadbeef"}}}
+	err := l.Verify()
+	if err == nil {
+		t.Fatal("Verify accepted an unsupported hash algorithm")
+	}
+	if !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("Verify error = %q, want it to name the unsupported algorithm", err)
 	}
 }

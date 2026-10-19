@@ -52,7 +52,10 @@ func NewLedger() *Ledger {
 // hashEntry computes the chain hash for an entry: sha256 over a canonical,
 // deterministic serialization of the previous entry's hash and this entry's
 // own fields. Append and Verify both use it, so a mismatch means tampering.
-func hashEntry(e Entry, prevHash string) string {
+func hashEntry(e Entry, prevHash string) (string, error) {
+	if e.Algo != "" && e.Algo != "sha256" {
+		return "", fmt.Errorf("unsupported hash algorithm %q (only sha256 implemented)", e.Algo)
+	}
 	content := struct {
 		PrevHash      string `json:"prev_hash"`
 		KeyID         string `json:"key_id"`
@@ -74,13 +77,16 @@ func hashEntry(e Entry, prevHash string) string {
 		Detail:        e.Detail,
 		Reversibility: string(e.Reversibility),
 	}
-	b, _ := json.Marshal(content)
+	b, err := json.Marshal(content)
+	if err != nil {
+		return "", err
+	}
 	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // Append adds an entry and returns its 1-based sequence number.
-func (l *Ledger) Append(e Entry) int64 {
+func (l *Ledger) Append(e Entry) (int64, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	e.Seq = int64(len(l.entries)) + 1
@@ -94,9 +100,13 @@ func (l *Ledger) Append(e Entry) int64 {
 	if len(l.entries) > 0 {
 		prevHash = l.entries[len(l.entries)-1].Hash
 	}
-	e.Hash = hashEntry(e, prevHash)
+	h, err := hashEntry(e, prevHash)
+	if err != nil {
+		return 0, err
+	}
+	e.Hash = h
 	l.entries = append(l.entries, e)
-	return e.Seq
+	return e.Seq, nil
 }
 
 // Entries returns a snapshot (a copy) of all entries in order.
@@ -116,8 +126,12 @@ func (l *Ledger) Verify() error {
 	defer l.mu.Unlock()
 	prevHash := ""
 	for _, e := range l.entries {
-		if e.Hash != hashEntry(e, prevHash) {
-			return fmt.Errorf("entry %d: hash mismatch (tampered or unsupported algorithm)", e.Seq)
+		h, err := hashEntry(e, prevHash)
+		if err != nil {
+			return fmt.Errorf("entry %d: %w", e.Seq, err)
+		}
+		if e.Hash != h {
+			return fmt.Errorf("entry %d: hash mismatch (tampered)", e.Seq)
 		}
 		prevHash = e.Hash
 	}
