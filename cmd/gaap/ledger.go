@@ -99,9 +99,9 @@ func ledgerTail(args []string) error {
 func formatLedgerEntries(entries []platform.Entry) string {
 	var b strings.Builder
 	w := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "SEQ\tTIME\tOUTCOME\tTOOL\tRULE\tSUBJECT\tREVERSIBILITY\tREASON")
+	_, _ = fmt.Fprintln(w, "SEQ	TIME	OUTCOME	TOOL	RULE	SUBJECT	REVERSIBILITY	REASON")
 	for _, e := range entries {
-		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		_, _ = fmt.Fprintf(w, "%d	%s	%s	%s	%s	%s	%s	%s\n",
 			e.Seq,
 			e.Time.UTC().Format(time.RFC3339),
 			e.Outcome,

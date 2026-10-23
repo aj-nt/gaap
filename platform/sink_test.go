@@ -27,7 +27,7 @@ func (m *memSink) Close() error { m.closed = true; return nil }
 func TestLedgerWritesThroughToSink(t *testing.T) {
 	l := NewLedger()
 	s := &memSink{}
-	l.SetSink(s)
+	_ = l.SetSink(s)
 
 	if _, err := l.Append(Entry{Kind: "decision", Outcome: ActionAllow}); err != nil {
 		t.Fatalf("Append: %v", err)
@@ -43,7 +43,7 @@ func TestLedgerWritesThroughToSink(t *testing.T) {
 func TestAppendFailsWhenSinkFails(t *testing.T) {
 	l := NewLedger()
 	s := &memSink{err: os.ErrPermission}
-	l.SetSink(s)
+	_ = l.SetSink(s)
 
 	if _, err := l.Append(Entry{Kind: "decision"}); err == nil {
 		t.Fatal("Append reported success while the sink failed (silent unrecorded decision)")
@@ -132,7 +132,7 @@ func TestNewLedgerAtResumesTheChain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLedgerAt (existing): %v", err)
 	}
-	defer l2.Close()
+	defer func() { _ = l2.Close() }()
 	seq, err := l2.Append(Entry{Kind: "decision", Outcome: ActionDeny})
 	if err != nil {
 		t.Fatalf("append after resume: %v", err)
@@ -145,15 +145,56 @@ func TestNewLedgerAtResumesTheChain(t *testing.T) {
 	}
 }
 
+// Reopening a ledger must not rewrite or duplicate what is already in the file.
+func TestReopenDoesNotDuplicateTheLog(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ledger.jsonl")
+	l, err := NewLedgerAt(path)
+	if err != nil {
+		t.Fatalf("NewLedgerAt: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := l.Append(Entry{Kind: "decision", Outcome: ActionAllow}); err != nil {
+			t.Fatalf("append %d: %v", i, err)
+		}
+	}
+	_ = l.Close()
+
+	lines := func() int {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		return len(strings.Split(strings.TrimSpace(string(raw)), "\n"))
+	}
+	if got := lines(); got != 3 {
+		t.Fatalf("file has %d lines after 3 appends, want 3", got)
+	}
+
+	l2, err := NewLedgerAt(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer func() { _ = l2.Close() }()
+	if got := lines(); got != 3 {
+		t.Fatalf("reopening the ledger rewrote history: %d lines, want 3", got)
+	}
+	if _, err := l2.Append(Entry{Kind: "decision", Outcome: ActionDeny}); err != nil {
+		t.Fatalf("append after reopen: %v", err)
+	}
+	if got := lines(); got != 4 {
+		t.Fatalf("file has %d lines after 4 appends, want 4", got)
+	}
+}
+
 func TestNewLedgerAtRejectsCorruptChain(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ledger.jsonl")
 	l, err := NewLedgerAt(path)
 	if err != nil {
 		t.Fatalf("NewLedgerAt: %v", err)
 	}
-	l.Append(Entry{Kind: "decision", Outcome: ActionAllow})
-	l.Append(Entry{Kind: "decision", Outcome: ActionDeny})
-	l.Close()
+	_, _ = l.Append(Entry{Kind: "decision", Outcome: ActionAllow})
+	_, _ = l.Append(Entry{Kind: "decision", Outcome: ActionDeny})
+	_ = l.Close()
 
 	// Tamper with the file: flip a byte in the first line's outcome.
 	raw, err := os.ReadFile(path)
@@ -176,7 +217,7 @@ func TestNewLedgerAtRejectsCorruptChain(t *testing.T) {
 func TestVerifyRejectsSequenceGap(t *testing.T) {
 	l := NewLedger()
 	for i := 0; i < 3; i++ {
-		l.Append(Entry{Kind: "decision"})
+		_, _ = l.Append(Entry{Kind: "decision"})
 	}
 
 	// Renumber with a hole and RE-HASH, so the only defect is continuity.
@@ -210,9 +251,9 @@ func TestTruncationIsRejected(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ledger.jsonl")
 	l, _ := NewLedgerAt(path)
 	for i := 0; i < 5; i++ {
-		l.Append(Entry{Kind: "decision", Outcome: ActionAllow})
+		_, _ = l.Append(Entry{Kind: "decision", Outcome: ActionAllow})
 	}
-	l.Close()
+	_ = l.Close()
 
 	raw, _ := os.ReadFile(path)
 	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")

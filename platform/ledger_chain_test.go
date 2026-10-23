@@ -10,12 +10,12 @@ import (
 func TestLedgerAppendChainsHashes(t *testing.T) {
 	fixed := time.Unix(1700000000, 0)
 	l := NewLedger()
-	l.Append(Entry{Kind: "decision", SubjectHash: "a", Reason: "allow", Time: fixed})
-	l.Append(Entry{Kind: "decision", SubjectHash: "b", Reason: "deny", Time: fixed})
+	_, _ = l.Append(Entry{Kind: "decision", SubjectHash: "a", Reason: "allow", Time: fixed})
+	_, _ = l.Append(Entry{Kind: "decision", SubjectHash: "b", Reason: "deny", Time: fixed})
 
 	other := NewLedger()
-	other.Append(Entry{Kind: "decision", SubjectHash: "a", Reason: "different", Time: fixed})
-	other.Append(Entry{Kind: "decision", SubjectHash: "b", Reason: "deny", Time: fixed})
+	_, _ = other.Append(Entry{Kind: "decision", SubjectHash: "a", Reason: "different", Time: fixed})
+	_, _ = other.Append(Entry{Kind: "decision", SubjectHash: "b", Reason: "deny", Time: fixed})
 
 	a, b := l.Entries(), other.Entries()
 	if a[0].Hash == "" || a[1].Hash == "" {
@@ -31,8 +31,8 @@ func TestLedgerAppendChainsHashes(t *testing.T) {
 
 func TestLedgerVerifyDetectsTamper(t *testing.T) {
 	l := NewLedger()
-	l.Append(Entry{Kind: "decision", Reason: "allow"})
-	l.Append(Entry{Kind: "decision", Reason: "deny"})
+	_, _ = l.Append(Entry{Kind: "decision", Reason: "allow"})
+	_, _ = l.Append(Entry{Kind: "decision", Reason: "deny"})
 	if err := l.Verify(); err != nil {
 		t.Fatalf("clean ledger failed verification: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestLedgerVerifyDetectsTamper(t *testing.T) {
 
 func TestLedgerStampsKeyIDAndAlgo(t *testing.T) {
 	l := NewLedger()
-	l.Append(Entry{Kind: "decision", KeyID: "k1"})
+	_, _ = l.Append(Entry{Kind: "decision", KeyID: "k1"})
 	e := l.Entries()[0]
 	if e.KeyID != "k1" {
 		t.Fatalf("KeyID = %q, want k1", e.KeyID)
@@ -56,8 +56,8 @@ func TestLedgerStampsKeyIDAndAlgo(t *testing.T) {
 
 func TestLedgerSaveLoadRoundTrip(t *testing.T) {
 	l := NewLedger()
-	l.Append(Entry{Kind: "decision", SubjectHash: "a", Reason: "allow", KeyID: "k1"})
-	l.Append(Entry{Kind: "decision", SubjectHash: "b", Reason: "deny", KeyID: "k1"})
+	_, _ = l.Append(Entry{Kind: "decision", SubjectHash: "a", Reason: "allow", KeyID: "k1"})
+	_, _ = l.Append(Entry{Kind: "decision", SubjectHash: "b", Reason: "deny", KeyID: "k1"})
 
 	path := filepath.Join(t.TempDir(), "ledger.json")
 	if err := l.Save(path); err != nil {

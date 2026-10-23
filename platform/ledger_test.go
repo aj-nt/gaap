@@ -4,8 +4,8 @@ import "testing"
 
 func TestLedgerAppendsInOrder(t *testing.T) {
 	l := NewLedger()
-	l.Append(Entry{Kind: "decision", SubjectHash: "a", Reason: "allow"})
-	l.Append(Entry{Kind: "decision", SubjectHash: "b", Reason: "deny"})
+	_, _ = l.Append(Entry{Kind: "decision", SubjectHash: "a", Reason: "allow"})
+	_, _ = l.Append(Entry{Kind: "decision", SubjectHash: "b", Reason: "deny"})
 
 	entries := l.Entries()
 	if len(entries) != 2 {
@@ -21,7 +21,7 @@ func TestLedgerAppendsInOrder(t *testing.T) {
 
 func TestLedgerSnapshotIsACopy(t *testing.T) {
 	l := NewLedger()
-	l.Append(Entry{Kind: "decision"})
+	_, _ = l.Append(Entry{Kind: "decision"})
 	snap := l.Entries()
 	snap[0].Reason = "mutated"
 	if got := l.Entries()[0].Reason; got != "" {

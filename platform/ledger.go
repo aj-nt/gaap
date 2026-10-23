@@ -90,20 +90,19 @@ func NewLedger() *Ledger {
 	return &Ledger{}
 }
 
-// SetSink attaches a durable sink. It must be called before the first append,
-// or on a ledger that is already populated — entries present are written
-// through so the sink never starts with a hole. Attaching a second sink is an
-// error: it would duplicate the stream.
+// SetSink attaches a durable sink to an EMPTY ledger. Attaching one to a ledger
+// that already holds entries is refused rather than backfilled: the usual way to
+// get a populated in-memory ledger is loading it from a file, and backfilling
+// would then append the same entries to that file a second time. Use
+// NewLedgerAt to reopen an existing record.
 func (l *Ledger) SetSink(s Sink) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.sink != nil {
 		return errors.New("ledger already has a sink")
 	}
-	for _, e := range l.entries {
-		if err := s.Append(e); err != nil {
-			return fmt.Errorf("backfill entry %d: %w", e.Seq, err)
-		}
+	if len(l.entries) > 0 {
+		return fmt.Errorf("cannot attach a sink to a ledger holding %d entries; reopen it with NewLedgerAt", len(l.entries))
 	}
 	l.sink = s
 	return nil
@@ -291,7 +290,7 @@ func syncDir(dir string) error {
 	if err != nil {
 		return err
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }()
 	return d.Sync()
 }
 
@@ -303,7 +302,7 @@ func LoadLedger(path string) (*Ledger, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var entries []Entry
 	sc := bufio.NewScanner(f)
@@ -331,7 +330,7 @@ func LoadLedger(path string) (*Ledger, error) {
 // loaded and its chain verified BEFORE it is reopened for appending, so a
 // governor never appends onto a log it cannot vouch for.
 func NewLedgerAt(path string) (*Ledger, error) {
-	l := NewLedger()
+	var entries []Entry
 	if _, err := os.Stat(path); err == nil {
 		loaded, err := LoadLedger(path)
 		if err != nil {
@@ -340,7 +339,7 @@ func NewLedgerAt(path string) (*Ledger, error) {
 		if err := loaded.Verify(); err != nil {
 			return nil, fmt.Errorf("refusing to append to %s: %w", path, err)
 		}
-		l = loaded
+		entries = loaded.entries
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
@@ -349,11 +348,9 @@ func NewLedgerAt(path string) (*Ledger, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := l.SetSink(s); err != nil {
-		_ = s.Close()
-		return nil, err
-	}
-	return l, nil
+	// Attach the sink directly. The loaded entries are already in the file, so
+	// backfilling them (as SetSink would) would duplicate the whole log.
+	return &Ledger{entries: entries, sink: s}, nil
 }
 
 // FileSink appends entries to a file as JSON Lines, fsyncing every append. The
