@@ -4,8 +4,8 @@ import "testing"
 
 func TestLedgerAppendsInOrder(t *testing.T) {
 	l := NewLedger()
-	l.Append(Entry{Kind: "decision", Subject: "a", Detail: "allow"})
-	l.Append(Entry{Kind: "decision", Subject: "b", Detail: "deny"})
+	_, _ = l.Append(Entry{Kind: "decision", SubjectHash: "a", Reason: "allow"})
+	_, _ = l.Append(Entry{Kind: "decision", SubjectHash: "b", Reason: "deny"})
 
 	entries := l.Entries()
 	if len(entries) != 2 {
@@ -14,17 +14,17 @@ func TestLedgerAppendsInOrder(t *testing.T) {
 	if entries[0].Seq != 1 || entries[1].Seq != 2 {
 		t.Fatalf("seqs = %d,%d, want 1,2", entries[0].Seq, entries[1].Seq)
 	}
-	if entries[1].Subject != "b" {
-		t.Fatalf("second entry subject = %q, want b", entries[1].Subject)
+	if entries[1].SubjectHash != "b" {
+		t.Fatalf("second entry subject hash = %q, want b", entries[1].SubjectHash)
 	}
 }
 
 func TestLedgerSnapshotIsACopy(t *testing.T) {
 	l := NewLedger()
-	l.Append(Entry{Kind: "decision"})
+	_, _ = l.Append(Entry{Kind: "decision"})
 	snap := l.Entries()
-	snap[0].Detail = "mutated"
-	if got := l.Entries()[0].Detail; got != "" {
+	snap[0].Reason = "mutated"
+	if got := l.Entries()[0].Reason; got != "" {
 		t.Fatalf("mutating the snapshot leaked into the ledger: %q", got)
 	}
 }

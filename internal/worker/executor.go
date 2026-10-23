@@ -19,29 +19,29 @@ import (
 // Commands with pipes/redirects still use sh -c, but the first word gates access.
 var allowedCommands = map[string]bool{
 	// File discovery and inspection
-	"find":     true,
-	"ls":       true,
-	"grep":     true,
-	"cat":      true,
-	"head":     true,
-	"tail":     true,
-	"wc":       true,
-	"sort":     true,
-	"du":       true,
-	"file":     true,
-	"stat":     true,
-	"diff":     true,
+	"find": true,
+	"ls":   true,
+	"grep": true,
+	"cat":  true,
+	"head": true,
+	"tail": true,
+	"wc":   true,
+	"sort": true,
+	"du":   true,
+	"file": true,
+	"stat": true,
+	"diff": true,
 
 	// Shell utilities
-	"cd":       true,
-	"pwd":      true,
-	"echo":     true,
-	"which":    true,
-	"type":     true,
-	"command":  true,
+	"cd":      true,
+	"pwd":     true,
+	"echo":    true,
+	"which":   true,
+	"type":    true,
+	"command": true,
 
 	// Go toolchain (read-only operations)
-	"go":       true,
+	"go": true,
 
 	// Static analysis tools
 	"golangci-lint": true,
@@ -49,16 +49,16 @@ var allowedCommands = map[string]bool{
 	"govulncheck":   true,
 
 	// Text processing (read-only, no -i)
-	"awk":      true,
-	"sed":      true,
+	"awk": true,
+	"sed": true,
 
 	// Scripting (limited)
-	"python3":  true,
-	"node":     true,
-	"sh":       true, // needed for pipelines; guarded by pattern checks
+	"python3": true,
+	"node":    true,
+	"sh":      true, // needed for pipelines; guarded by pattern checks
 
 	// Source control (read-only)
-	"git":      true,
+	"git": true,
 }
 
 // blockedPatterns are substrings that, if present anywhere in the command,
@@ -242,28 +242,28 @@ func (e *Executor) Execute(ctx context.Context, task *client.TaskEntry, repoPath
 				Status:     "failed",
 				Error:      reason,
 				Findings:   findings,
-			Model:      e.llm.Model(),
-			LLMTurns:   turn,
-			DurationMs: time.Since(t0).Milliseconds(),
+				Model:      e.llm.Model(),
+				LLMTurns:   turn,
+				DurationMs: time.Since(t0).Milliseconds(),
+			}
+
+		default:
+			messages = append(messages, ollama.Message{
+				Role:    "user",
+				Content: "Respond with CMD:, DONE:, or FAIL:",
+			})
 		}
-
-	default:
-		messages = append(messages, ollama.Message{
-			Role:    "user",
-			Content: "Respond with CMD:, DONE:, or FAIL:",
-		})
 	}
-}
 
-return &ExecuteResult{
-	TaskID:     task.Id,
-	Status:     "failed",
-	Error:      fmt.Sprintf("Exceeded %d turns without DONE/FAIL", e.maxTurns),
-	Findings:   findings,
-	Model:      e.llm.Model(),
-	LLMTurns:   e.maxTurns,
-	DurationMs: time.Since(t0).Milliseconds(),
-}
+	return &ExecuteResult{
+		TaskID:     task.Id,
+		Status:     "failed",
+		Error:      fmt.Sprintf("Exceeded %d turns without DONE/FAIL", e.maxTurns),
+		Findings:   findings,
+		Model:      e.llm.Model(),
+		LLMTurns:   e.maxTurns,
+		DurationMs: time.Since(t0).Milliseconds(),
+	}
 }
 
 // cmdOutput holds the result of running a shell command.
@@ -394,7 +394,7 @@ CONTEXT:
 GOAL:
 %s
 
-Start now: output your first CMD: line.`, contextStr, goal) 
+Start now: output your first CMD: line.`, contextStr, goal)
 }
 
 // fileExtensions is the set of extensions that indicate a file path rather

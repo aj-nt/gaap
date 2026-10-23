@@ -15,6 +15,11 @@ const (
 type Decision struct {
 	Action Action
 	Reason string
+	// RuleID identifies the policy rule that produced this decision. Empty when
+	// no rule matched (the deny-by-default fallback) or when the decision did not
+	// come from a rule (e.g. the kill switch). The governor records it, which is
+	// what makes a decision attributable instead of anonymous.
+	RuleID string
 }
 
 // Allow is the trivial allow decision.
