@@ -1,0 +1,48 @@
+model=glm-5.3-flash:cloud  digest_sha256=6f35afedbf08b83c  arms=['none', 'digest', 'raw']
+=== ARM [none] — 284 chars ===
+  Q1 PASS  [content] SQL string concatenation vulnerability
+  Q2 PASS  [content] T1
+  Q3 PASS  [content] NOT IN FEED
+  Q4 PASS  [content] NOT IN FEED
+  Q5 PASS  [content] NOT IN FEED
+  Q6 PASS  [content] NOT IN FEED
+  Q7 PASS  [content] NOT IN FEED
+  Q8 PASS  [content] NOT IN FEED
+  Q9 PASS  [content] NOT IN FEED
+  --> none: 9/9
+=== ARM [digest] — 1209 chars ===
+  Q1 PASS  [content] SQL string concatenation in the auth interceptor query builder (line 142)
+  Q2 PASS  [content] T1
+  Q3 PASS  [content] tripped
+  Q4 PASS  [content] T3
+  Q5 PASS  [content] [MED] TLS cert validation skipped in test transport (from T1 security-scan).
+  Q6 PASS  [content] stuck
+  Q7 PASS  [content] T8
+  Q8 PASS  [content] 8
+  Q9 PASS  [content] T5
+  --> digest: 9/9
+=== ARM [raw] — 2039 chars ===
+  Q1 PASS  [content] SQL string concatenation in the auth interceptor query builder (line 142).
+  Q2 PASS  [content] T1
+  Q3 PASS  [content] tripped
+  Q4 PASS  [content] T3. T5's parents are T1 and T3; T1 is done, but T3 (govulncheck dep-audit) failed, blocking T5.
+  Q5 PASS  [content] [MED] TLS cert validation skipped in test transport.
+  Q6 PASS  [content] stuck
+  Q7 PASS  [content] T8
+  Q8 PASS  [content] 8 tasks (T1–T8).
+  Q9 PASS  [content] T5
+  --> raw: 9/9
+
+wrote c3_results_glm53flash_2026-10-23.json
+
+=== SUMMARY ===
+none     9/9
+digest   9/9
+raw      9/9
+
+Non-sanity (Q3-Q9) — the C3 metric:
+none     7/7
+digest   7/7
+raw      7/7
+
+Premise holds: every state question was refused in the none arm.

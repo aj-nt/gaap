@@ -1,0 +1,229 @@
+{
+  "model": "glm-5.3-flash:cloud",
+  "run_at": "2026-10-23T20:03:33Z",
+  "digest_sha256": "6f35afedbf08b83cbefbecc85e02aff108e6fe618f6dca43e65d7df85837a01c",
+  "context_chars": {
+    "none": 284,
+    "digest": 1209,
+    "raw": 2039
+  },
+  "premise_violations": [],
+  "rows": [
+    {
+      "arm": "none",
+      "qid": "Q1",
+      "ok": true,
+      "answer": "SQL string concatenation vulnerability",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "none",
+      "qid": "Q2",
+      "ok": true,
+      "answer": "T1",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "none",
+      "qid": "Q3",
+      "ok": true,
+      "answer": "NOT IN FEED",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "none",
+      "qid": "Q4",
+      "ok": true,
+      "answer": "NOT IN FEED",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "none",
+      "qid": "Q5",
+      "ok": true,
+      "answer": "NOT IN FEED",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "none",
+      "qid": "Q6",
+      "ok": true,
+      "answer": "NOT IN FEED",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "none",
+      "qid": "Q7",
+      "ok": true,
+      "answer": "NOT IN FEED",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "none",
+      "qid": "Q8",
+      "ok": true,
+      "answer": "NOT IN FEED",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "none",
+      "qid": "Q9",
+      "ok": true,
+      "answer": "NOT IN FEED",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "digest",
+      "qid": "Q1",
+      "ok": true,
+      "answer": "SQL string concatenation in the auth interceptor query builder (line 142)",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "digest",
+      "qid": "Q2",
+      "ok": true,
+      "answer": "T1",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "digest",
+      "qid": "Q3",
+      "ok": true,
+      "answer": "tripped",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "digest",
+      "qid": "Q4",
+      "ok": true,
+      "answer": "T3",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "digest",
+      "qid": "Q5",
+      "ok": true,
+      "answer": "[MED] TLS cert validation skipped in test transport (from T1 security-scan).",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "digest",
+      "qid": "Q6",
+      "ok": true,
+      "answer": "stuck",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "digest",
+      "qid": "Q7",
+      "ok": true,
+      "answer": "T8",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "digest",
+      "qid": "Q8",
+      "ok": true,
+      "answer": "8",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "digest",
+      "qid": "Q9",
+      "ok": true,
+      "answer": "T5",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "raw",
+      "qid": "Q1",
+      "ok": true,
+      "answer": "SQL string concatenation in the auth interceptor query builder (line 142).",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "raw",
+      "qid": "Q2",
+      "ok": true,
+      "answer": "T1",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "raw",
+      "qid": "Q3",
+      "ok": true,
+      "answer": "tripped",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "raw",
+      "qid": "Q4",
+      "ok": true,
+      "answer": "T3. T5's parents are T1 and T3; T1 is done, but T3 (govulncheck dep-audit) failed, blocking T5.",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "raw",
+      "qid": "Q5",
+      "ok": true,
+      "answer": "[MED] TLS cert validation skipped in test transport.",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "raw",
+      "qid": "Q6",
+      "ok": true,
+      "answer": "stuck",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "raw",
+      "qid": "Q7",
+      "ok": true,
+      "answer": "T8",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "raw",
+      "qid": "Q8",
+      "ok": true,
+      "answer": "8 tasks (T1\u2013T8).",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "raw",
+      "qid": "Q9",
+      "ok": true,
+      "answer": "T5",
+      "field": "content",
+      "error": null
+    }
+  ]
+}

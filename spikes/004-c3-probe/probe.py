@@ -6,21 +6,36 @@ Arms (contexts built from artifacts the Go fixture test dumped, plus the task br
   digest — task text + the real Go buildDigest("observer") output (context_arm_digest.txt)
   raw    — task text + full matrix incl. transport noise (context_arm_raw.txt)
 
-Questions are pipeline-STATE questions (not skill questions) so qwen's pretraining
-cannot answer them; the 2 sanity questions are answerable from the task text in
-every arm and calibrate arm equality. NOT-IN-FEED protocol, temp 0.
+Questions are pipeline-STATE questions (not skill questions), chosen so the
+receiver model cannot answer them from pretraining; the 2 sanity questions are
+answerable from the task text in every arm and calibrate arm equality.
+NOT-IN-FEED protocol, temp 0.
+
+MODEL comes from $C3_MODEL and is recorded in the results along with the digest's
+sha256, because the original model (qwen3.5:397b) was retired 2026-09-25: a later
+run is a different experiment, not a repeat of the 2026-09-16 numbers.
+
+A transport error is not an answer. ollama() returns None on failure and the row
+scores FAIL — the previous version returned the error JSON as text, and the
+`key in answer` matcher then scored substrings of it (the error's ref hash
+contains a digit matching Q8's key), producing PASSes with no model in the loop.
+The run aborts without writing results if any call failed.
 """
+import hashlib
 import json
-import subprocess
 import os
+import subprocess
+import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OLLAMA_URL = "http://localhost:11434/api/chat"
-MODEL = "qwen3.5:cloud"
+MODEL = os.environ.get("C3_MODEL", "glm-5.3-flash:cloud")
 
 TASK = json.load(open(f"{HERE}/c3_scenario.json"))["receiver_task"]
 DIGEST = open(f"{HERE}/context_arm_digest.txt").read()
 RAW = open(f"{HERE}/context_arm_raw.txt").read()
+DIGEST_SHA = hashlib.sha256(DIGEST.encode()).hexdigest()
 
 # (id, question, {arm: [accepted keys, lowercase]}) — none-arm keys may be
 # "not in feed" (correct discipline) where the question is unanswerable.
@@ -48,8 +63,11 @@ QUIZ = [
 ARMS = {"none": TASK, "digest": TASK + "\n\nPIPELINE DIGEST (pushed to you):\n" + DIGEST,
         "raw": TASK + "\n\nFULL PIPELINE FEED (pushed to you):\n" + RAW}
 
+SANITY = ("Q1", "Q2")
+
 
 def ollama(prompt):
+    """Returns (answer, source_field) on success, (None, error_text) on failure."""
     payload = json.dumps({
         "model": MODEL, "stream": False, "options": {"temperature": 0},
         "messages": [
@@ -62,34 +80,98 @@ def ollama(prompt):
          "-H", "Content-Type: application/json", "-d", "@-"],
         input=payload, capture_output=True)
     try:
-        return json.loads(r.stdout)["message"]["content"].strip()
+        d = json.loads(r.stdout)
     except Exception:
-        return f"<error: {r.stdout[:150]!r}>"
+        return None, f"non-JSON response: {r.stdout[:150]!r}"
+    if d.get("error"):
+        return None, str(d["error"])[:200]
+    msg = d.get("message") or {}
+    content = (msg.get("content") or "").strip()
+    if content:
+        return content, "content"
+    # Reasoning models can leave content empty and put everything in thinking.
+    # Grading content-only then reads as a model failure rather than a harness bug.
+    thinking = (msg.get("thinking") or "").strip()
+    if thinking:
+        return thinking, "thinking"
+    return None, "empty response (no content, no thinking)"
 
 
 def main():
+    out_json = os.environ.get("C3_OUT", f"{HERE}/c3_results.json")
+    print(f"model={MODEL}  digest_sha256={DIGEST_SHA[:16]}  arms={list(ARMS)}", flush=True)
+
     rows = []
+    failures = 0
     for arm, ctx in ARMS.items():
         print(f"=== ARM [{arm}] — {len(ctx)} chars ===", flush=True)
         score = 0
         for qid, q, keys in QUIZ:
-            ans = ollama(f"FEED:\n{ctx}\n\nQUESTION: {q}")
-            ok = any(k in ans.lower() for k in keys[arm])
+            ans, meta = ollama(f"FEED:\n{ctx}\n\nQUESTION: {q}")
+            if ans is None:
+                failures += 1
+                ok = False
+                shown = f"<{meta}>"
+                src = "error"
+            else:
+                ok = any(k in ans.lower() for k in keys[arm])
+                shown = ans[:100]
+                src = meta
             score += ok
-            rows.append({"arm": arm, "qid": qid, "ok": ok, "answer": ans[:120]})
-            print(f"  {qid} {'PASS' if ok else 'FAIL'}  {ans[:100]}", flush=True)
+            rows.append({
+                "arm": arm, "qid": qid, "ok": bool(ok),
+                "answer": None if ans is None else ans[:160],
+                "field": None if ans is None else meta,
+                "error": None if ans is not None else meta,
+            })
+            print(f"  {qid} {'PASS' if ok else 'FAIL'}  [{src}] {shown}", flush=True)
         print(f"  --> {arm}: {score}/{len(QUIZ)}", flush=True)
-    with open(f"{HERE}/c3_results.json", "w") as f:
-        json.dump(rows, f, indent=2)
+
+    if failures:
+        print(f"\nABORT: {failures}/{len(rows)} calls failed. Not writing results — "
+              f"a partial run is not a measurement.", file=sys.stderr)
+        return 1
+
+    # Premise check: the quiz is valid only if a receiver with NO feed cannot
+    # answer the state questions. Any none-arm answer that is not a refusal means
+    # the question was answerable from pretraining, and the arms stopped
+    # measuring context access.
+    violations = [(r["qid"], r["answer"][:100]) for r in rows
+                  if r["arm"] == "none" and r["qid"] not in SANITY
+                  and r["answer"] and "not in feed" not in r["answer"].lower()]
+
+    results = {
+        "model": MODEL,
+        "run_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "digest_sha256": DIGEST_SHA,
+        "context_chars": {arm: len(ctx) for arm, ctx in ARMS.items()},
+        "premise_violations": [{"qid": q, "answer": a} for q, a in violations],
+        "rows": rows,
+    }
+    with open(out_json, "w") as f:
+        json.dump(results, f, indent=2)
+    print(f"\nwrote {out_json}", flush=True)
+
     print("\n=== SUMMARY ===")
     for arm in ARMS:
         s = sum(1 for r in rows if r["arm"] == arm and r["ok"])
         print(f"{arm:8} {s}/9")
     print("\nNon-sanity (Q3-Q9) — the C3 metric:")
     for arm in ARMS:
-        s = sum(1 for r in rows if r["arm"] == arm and r["ok"] and r["qid"] not in ("Q1", "Q2"))
+        s = sum(1 for r in rows if r["arm"] == arm and r["ok"] and r["qid"] not in SANITY)
         print(f"{arm:8} {s}/7")
+
+    if violations:
+        print(f"\n!! PREMISE BROKEN: {len(violations)}/7 state questions answered "
+              f"without a feed. The none arm is not blind to this model, so the arm "
+              f"comparison does not measure context access:")
+        for q, a in violations:
+            print(f"   {q}: {a}")
+    else:
+        print("\nPremise holds: every state question was refused in the none arm.")
+
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
