@@ -245,9 +245,12 @@ func TestVerifyRejectsSequenceGap(t *testing.T) {
 	}
 }
 
-// TestTruncationIsRejected proves the attack the design says the anchor closes
-// is at least visible locally: dropping entries from the tail breaks continuity.
-func TestTruncationIsRejected(t *testing.T) {
+// TestTailTruncationIsLocallyUndetectable pins the honest limit. Dropping entries
+// from the tail leaves a shorter, internally consistent chain: it loads and
+// verifies. Only an external anchor (a published head hash with independent
+// custody) can prove the log was shortened. The test asserts the limit rather
+// than implying the chain closes it.
+func TestTailTruncationIsLocallyUndetectable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ledger.jsonl")
 	l, _ := NewLedgerAt(path)
 	for i := 0; i < 5; i++ {
