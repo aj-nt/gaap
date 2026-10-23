@@ -1,0 +1,318 @@
+{
+  "schema": 2,
+  "model": "glm-5.3-flash:cloud",
+  "run_at": "2026-10-23T20:16:31Z",
+  "digest_sha256": "6f35afedbf08b83cbefbecc85e02aff108e6fe618f6dca43e65d7df85837a01c",
+  "context_chars": {
+    "none": 284,
+    "digest": 1209,
+    "raw": 2039
+  },
+  "counts": {
+    "none": {
+      "answered": 2,
+      "declined": 9,
+      "wrong": 1
+    },
+    "digest": {
+      "answered": 10,
+      "declined": 1,
+      "wrong": 1
+    },
+    "raw": {
+      "answered": 12,
+      "declined": 0,
+      "wrong": 0
+    }
+  },
+  "rows": [
+    {
+      "arm": "none",
+      "qid": "Q1",
+      "outcome": "answered",
+      "answer": "SQL string concatenation vulnerability",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "none",
+      "qid": "Q2",
+      "outcome": "answered",
+      "answer": "T1",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "none",
+      "qid": "Q3",
+      "outcome": "declined",
+      "answer": "NOT IN FEED",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "none",
+      "qid": "Q4",
+      "outcome": "declined",
+      "answer": "NOT IN FEED",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "none",
+      "qid": "Q5",
+      "outcome": "declined",
+      "answer": "NOT IN FEED",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "none",
+      "qid": "Q6",
+      "outcome": "declined",
+      "answer": "NOT IN FEED",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "none",
+      "qid": "Q7",
+      "outcome": "declined",
+      "answer": "NOT IN FEED",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "none",
+      "qid": "Q8",
+      "outcome": "declined",
+      "answer": "NOT IN FEED",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "none",
+      "qid": "Q9",
+      "outcome": "declined",
+      "answer": "NOT IN FEED",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "none",
+      "qid": "Q10",
+      "outcome": "declined",
+      "answer": "NOT IN FEED",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "none",
+      "qid": "Q11",
+      "outcome": "declined",
+      "answer": "NOT IN FEED",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "none",
+      "qid": "Q12",
+      "outcome": "wrong",
+      "answer": "T1 and T6.",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "digest",
+      "qid": "Q1",
+      "outcome": "answered",
+      "answer": "SQL string concatenation in the auth interceptor query builder (line 142)",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "digest",
+      "qid": "Q2",
+      "outcome": "answered",
+      "answer": "T1",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "digest",
+      "qid": "Q3",
+      "outcome": "answered",
+      "answer": "tripped",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "digest",
+      "qid": "Q4",
+      "outcome": "answered",
+      "answer": "T3",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "digest",
+      "qid": "Q5",
+      "outcome": "answered",
+      "answer": "[MED] TLS cert validation skipped in test transport (from T1 security scan).",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "digest",
+      "qid": "Q6",
+      "outcome": "wrong",
+      "answer": "closer",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "digest",
+      "qid": "Q7",
+      "outcome": "answered",
+      "answer": "T8",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "digest",
+      "qid": "Q8",
+      "outcome": "answered",
+      "answer": "8",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "digest",
+      "qid": "Q9",
+      "outcome": "answered",
+      "answer": "T5 (also T7)",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "digest",
+      "qid": "Q10",
+      "outcome": "answered",
+      "answer": "T5 and T7.\n\n- T5 (doc-review) is directly blocked by T3 (dep-audit).\n- T7 (synthesis) is blocked by T5, so it transitively can never start.\n\nT8 (test-verify) is only blocked by T6, which is unaffected",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "digest",
+      "qid": "Q11",
+      "outcome": "declined",
+      "answer": "NOT IN FEED",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "digest",
+      "qid": "Q12",
+      "outcome": "answered",
+      "answer": "T3 and T4 \u2014 both run govulncheck on go.mod dependencies (T4 is the retry).",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "raw",
+      "qid": "Q1",
+      "outcome": "answered",
+      "answer": "SQL string concatenation in the auth interceptor query builder (line 142)",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "raw",
+      "qid": "Q2",
+      "outcome": "answered",
+      "answer": "T1",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "raw",
+      "qid": "Q3",
+      "outcome": "answered",
+      "answer": "tripped",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "raw",
+      "qid": "Q4",
+      "outcome": "answered",
+      "answer": "T3 (dep-audit, failed \u2014 govulncheck errors). T5's parents are T1,T3; T1 is done, so T3 is the blocker.",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "raw",
+      "qid": "Q5",
+      "outcome": "answered",
+      "answer": "[MED] TLS cert validation skipped in test transport.",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "raw",
+      "qid": "Q6",
+      "outcome": "answered",
+      "answer": "stuck",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "raw",
+      "qid": "Q7",
+      "outcome": "answered",
+      "answer": "T8",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "raw",
+      "qid": "Q8",
+      "outcome": "answered",
+      "answer": "8 tasks (T1\u2013T8).",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "raw",
+      "qid": "Q9",
+      "outcome": "answered",
+      "answer": "T5",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "raw",
+      "qid": "Q10",
+      "outcome": "answered",
+      "answer": "T5, T7.\n\n- T5 (parents=T1,T3): T3 is the failed dep-audit task; if it never resolves, T5 stays blocked.\n- T7 (parents=T1,T2,T5,T6): transitively blocked via T5.\n\nT8 is unaffected (depends only on T6).",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "raw",
+      "qid": "Q11",
+      "outcome": "answered",
+      "answer": "Unchecked `resp.Body.Close` in stream.go (from T2's golangci-lint review).",
+      "field": "content",
+      "error": null
+    },
+    {
+      "arm": "raw",
+      "qid": "Q12",
+      "outcome": "answered",
+      "answer": "T3 and T4 \u2014 both run govulncheck on go.mod dependencies (T4 is the retry of T3's failed check).",
+      "field": "content",
+      "error": null
+    }
+  ]
+}

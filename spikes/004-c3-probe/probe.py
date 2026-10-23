@@ -6,20 +6,29 @@ Arms (contexts built from artifacts the Go fixture test dumped, plus the task br
   digest — task text + the real Go buildDigest("observer") output (context_arm_digest.txt)
   raw    — task text + full matrix incl. transport noise (context_arm_raw.txt)
 
-Questions are pipeline-STATE questions (not skill questions), chosen so the
-receiver model cannot answer them from pretraining; the 2 sanity questions are
-answerable from the task text in every arm and calibrate arm equality.
-NOT-IN-FEED protocol, temp 0.
+Scoring v2 — three outcomes, not two. v1 scored a refusal as a correct answer
+whenever a refusal was what that arm should say, so the none arm reached 9/9 by
+declining to say anything: "knew it" and "correctly admitted it didn't" were
+worth the same point. Each question now lands in exactly one bucket:
 
-MODEL comes from $C3_MODEL and is recorded in the results along with the digest's
-sha256, because the original model (qwen3.5:397b) was retired 2026-09-25: a later
-run is a different experiment, not a repeat of the 2026-09-16 numbers.
+  answered — gave content that matches. This is the C3 metric: actionable state.
+  declined — refused, and refusing was right for that arm (protocol compliance).
+  wrong    — refused while holding the information, or gave a non-matching answer.
 
-A transport error is not an answer. ollama() returns None on failure and the row
-scores FAIL — the previous version returned the error JSON as text, and the
-`key in answer` matcher then scored substrings of it (the error's ref hash
-contains a digit matching Q8's key), producing PASSes with no model in the loop.
-The run aborts without writing results if any call failed.
+Questions are pipeline-STATE questions, chosen so the receiver cannot answer them
+from pretraining. Q10 and Q12 require composing facts across digest lines rather
+than quoting one; Q11 is answerable only from the raw firehose, so it measures
+what the 900-char budget drops instead of assuming the drop is free.
+
+A transport error is not an answer: ollama() returns None on failure and the run
+aborts without writing results. The previous version returned the error JSON as
+response text, and `key in answer` scored substrings of it (the retired-model
+error's ref UUID contains digits matching Q8's key), producing PASSes with no
+model in the loop.
+
+MODEL comes from $C3_MODEL and is recorded with the digest sha256, because the
+original model (qwen3.5:397b) was retired 2026-09-25 — a later run is a different
+experiment, not a repeat of the 2026-09-16 numbers.
 """
 import hashlib
 import json
@@ -37,33 +46,51 @@ DIGEST = open(f"{HERE}/context_arm_digest.txt").read()
 RAW = open(f"{HERE}/context_arm_raw.txt").read()
 DIGEST_SHA = hashlib.sha256(DIGEST.encode()).hexdigest()
 
-# (id, question, {arm: [accepted keys, lowercase]}) — none-arm keys may be
-# "not in feed" (correct discipline) where the question is unanswerable.
+REFUSE = "not in feed"
+
+# accept: per-arm accepted keys, lowercase. An arm whose accepted key IS the
+#         refusal was asked something it never received — declining is correct
+#         there, but it scores as `declined`, never as `answered`.
+# mode:   "all" requires every key present (composition), otherwise "any".
 QUIZ = [
-    ("Q1", "What vulnerability are you fixing? One key phrase.", {
-        "none": ["sql", "concatenat"], "digest": ["sql", "concatenat"], "raw": ["sql", "concatenat"]}),
-    ("Q2", "Which task found that vulnerability? Task id.", {
-        "none": ["t1"], "digest": ["t1"], "raw": ["t1"]}),
-    ("Q3", "Is the dep-audit agent type currently dispatchable, or is its circuit breaker tripped? One word: dispatchable or tripped.", {
-        "none": ["not in feed"], "digest": ["tripped", "open"], "raw": ["tripped", "open"]}),
-    ("Q4", "Task T5 (cross-review) is blocked. Which task id blocks it?", {
-        "none": ["not in feed"], "digest": ["t3"], "raw": ["t3"]}),
-    ("Q5", "Name one NON-SQL finding from the security scan.", {
-        "none": ["not in feed"], "digest": ["tls", "retry", "file paths"], "raw": ["tls", "retry", "file paths"]}),
-    ("Q6", "Is the pipeline closer to completion or to being stuck? One word: closer or stuck.", {
-        "none": ["not in feed"], "digest": ["stuck", "closer"], "raw": ["stuck", "closer"]}),
-    ("Q7", "After your fix, which task verifies it? Task id.", {
-        "none": ["not in feed"], "digest": ["t8"], "raw": ["t8"]}),
-    ("Q8", "How many tasks are in the pipeline?", {
-        "none": ["not in feed"], "digest": ["8"], "raw": ["8"]}),
-    ("Q9", "Name any task other than T8 that is currently BLOCKED. Task id.", {
-        "none": ["not in feed"], "digest": ["t5", "t7"], "raw": ["t5", "t7"]}),
+    {"id": "Q1", "q": "What vulnerability are you fixing? One key phrase.",
+     "accept": {"none": ["sql", "concatenat"], "digest": ["sql", "concatenat"], "raw": ["sql", "concatenat"]}},
+    {"id": "Q2", "q": "Which task found that vulnerability? Task id.",
+     "accept": {"none": ["t1"], "digest": ["t1"], "raw": ["t1"]}},
+    {"id": "Q3", "q": "Is the dep-audit agent type currently dispatchable, or is its circuit breaker tripped? One word: dispatchable or tripped.",
+     "accept": {"none": [REFUSE], "digest": ["tripped", "open"], "raw": ["tripped", "open"]}},
+    {"id": "Q4", "q": "Task T5 (cross-review) is blocked. Which task id blocks it?",
+     "accept": {"none": [REFUSE], "digest": ["t3"], "raw": ["t3"]}},
+    {"id": "Q5", "q": "Name one NON-SQL finding from the security scan.",
+     "accept": {"none": [REFUSE], "digest": ["tls", "retry", "file paths"], "raw": ["tls", "retry", "file paths"]}},
+    # Q6 key tightened to "stuck" alone: "closer or stuck" accepted both sides,
+    # so the only way to fail it was to refuse — it measured silence, not judgment.
+    {"id": "Q6", "q": "Is the pipeline closer to completion or to being stuck? One word: closer or stuck.",
+     "accept": {"none": [REFUSE], "digest": ["stuck"], "raw": ["stuck"]}},
+    {"id": "Q7", "q": "After your fix, which task verifies it? Task id.",
+     "accept": {"none": [REFUSE], "digest": ["t8"], "raw": ["t8"]}},
+    {"id": "Q8", "q": "How many tasks are in the pipeline?",
+     "accept": {"none": [REFUSE], "digest": ["8"], "raw": ["8"]}},
+    {"id": "Q9", "q": "Name any task other than T8 that is currently BLOCKED. Task id.",
+     "accept": {"none": [REFUSE], "digest": ["t5", "t7"], "raw": ["t5", "t7"]}},
+    # Q10 — two hops. T5 is blocked by the failed T3; T7 is blocked by T5. No
+    # line says "T5 and T7 can never start" — it has to be chained.
+    {"id": "Q10", "q": "If the dep-audit failure is never resolved, which tasks can never start? Name every task id.",
+     "accept": {"none": [REFUSE], "digest": ["t5", "t7"], "raw": ["t5", "t7"]}, "mode": "all"},
+    # Q11 — the budget cost, measured. The observer digest drops T2's lint line
+    # at the 900-char boundary, so the digest arm should refuse this one.
+    {"id": "Q11", "q": "Which issue did the style/lint review flag as the worst one?",
+     "accept": {"none": [REFUSE], "digest": [REFUSE], "raw": ["body"]}},
+    # Q12 — compare two lines: T4 exists only as a retry of T3.
+    {"id": "Q12", "q": "Two tasks attempt the same check. Name both task ids.",
+     "accept": {"none": [REFUSE], "digest": ["t3", "t4"], "raw": ["t3", "t4"]}, "mode": "all"},
 ]
 
 ARMS = {"none": TASK, "digest": TASK + "\n\nPIPELINE DIGEST (pushed to you):\n" + DIGEST,
         "raw": TASK + "\n\nFULL PIPELINE FEED (pushed to you):\n" + RAW}
 
 SANITY = ("Q1", "Q2")
+OUTCOMES = ("answered", "declined", "wrong")
 
 
 def ollama(prompt):
@@ -89,86 +116,87 @@ def ollama(prompt):
     content = (msg.get("content") or "").strip()
     if content:
         return content, "content"
-    # Reasoning models can leave content empty and put everything in thinking.
-    # Grading content-only then reads as a model failure rather than a harness bug.
+    # Reasoning models can leave content empty and put everything in thinking;
+    # grading content-only then reads as a model failure rather than a harness bug.
     thinking = (msg.get("thinking") or "").strip()
     if thinking:
         return thinking, "thinking"
     return None, "empty response (no content, no thinking)"
 
 
+def classify(answer, accept, mode):
+    """answered | declined | wrong — see the module docstring."""
+    if answer is None:
+        return "error"
+    low = answer.lower()
+    if REFUSE in low:
+        # Correct only where the arm was asked something it never received.
+        return "declined" if accept == [REFUSE] else "wrong"
+    hit = all(k in low for k in accept) if mode == "all" else any(k in low for k in accept)
+    return "answered" if hit else "wrong"
+
+
 def main():
-    out_json = os.environ.get("C3_OUT", f"{HERE}/c3_results.json")
-    print(f"model={MODEL}  digest_sha256={DIGEST_SHA[:16]}  arms={list(ARMS)}", flush=True)
+    out_json = os.environ.get("C3_OUT", f"{HERE}/c3_results_v2.json")
+    print(f"model={MODEL}  digest_sha256={DIGEST_SHA[:16]}  questions={len(QUIZ)}", flush=True)
 
     rows = []
     failures = 0
     for arm, ctx in ARMS.items():
         print(f"=== ARM [{arm}] — {len(ctx)} chars ===", flush=True)
-        score = 0
-        for qid, q, keys in QUIZ:
-            ans, meta = ollama(f"FEED:\n{ctx}\n\nQUESTION: {q}")
+        for q in QUIZ:
+            ans, meta = ollama(f"FEED:\n{ctx}\n\nQUESTION: {q['q']}")
             if ans is None:
                 failures += 1
-                ok = False
-                shown = f"<{meta}>"
-                src = "error"
+                outcome, shown = "error", f"<{meta}>"
             else:
-                ok = any(k in ans.lower() for k in keys[arm])
+                outcome = classify(ans, q["accept"][arm], q.get("mode", "any"))
                 shown = ans[:100]
-                src = meta
-            score += ok
             rows.append({
-                "arm": arm, "qid": qid, "ok": bool(ok),
-                "answer": None if ans is None else ans[:160],
+                "arm": arm, "qid": q["id"], "outcome": outcome,
+                "answer": None if ans is None else ans[:200],
                 "field": None if ans is None else meta,
                 "error": None if ans is not None else meta,
             })
-            print(f"  {qid} {'PASS' if ok else 'FAIL'}  [{src}] {shown}", flush=True)
-        print(f"  --> {arm}: {score}/{len(QUIZ)}", flush=True)
+            print(f"  {q['id']:4} {outcome:8} {shown}", flush=True)
 
     if failures:
         print(f"\nABORT: {failures}/{len(rows)} calls failed. Not writing results — "
               f"a partial run is not a measurement.", file=sys.stderr)
         return 1
 
-    # Premise check: the quiz is valid only if a receiver with NO feed cannot
-    # answer the state questions. Any none-arm answer that is not a refusal means
-    # the question was answerable from pretraining, and the arms stopped
-    # measuring context access.
-    violations = [(r["qid"], r["answer"][:100]) for r in rows
-                  if r["arm"] == "none" and r["qid"] not in SANITY
-                  and r["answer"] and "not in feed" not in r["answer"].lower()]
+    counts = {arm: {k: sum(1 for r in rows if r["arm"] == arm and r["outcome"] == k)
+                    for k in OUTCOMES} for arm in ARMS}
+    state_qs = [q["id"] for q in QUIZ if q["id"] not in SANITY]
 
     results = {
+        "schema": 2,
         "model": MODEL,
         "run_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "digest_sha256": DIGEST_SHA,
         "context_chars": {arm: len(ctx) for arm, ctx in ARMS.items()},
-        "premise_violations": [{"qid": q, "answer": a} for q, a in violations],
+        "counts": counts,
         "rows": rows,
     }
     with open(out_json, "w") as f:
         json.dump(results, f, indent=2)
     print(f"\nwrote {out_json}", flush=True)
 
-    print("\n=== SUMMARY ===")
+    print(f"\n{'arm':8} {'answered':>9} {'declined':>9} {'wrong':>6}   of {len(QUIZ)}")
     for arm in ARMS:
-        s = sum(1 for r in rows if r["arm"] == arm and r["ok"])
-        print(f"{arm:8} {s}/9")
-    print("\nNon-sanity (Q3-Q9) — the C3 metric:")
-    for arm in ARMS:
-        s = sum(1 for r in rows if r["arm"] == arm and r["ok"] and r["qid"] not in SANITY)
-        print(f"{arm:8} {s}/7")
+        c = counts[arm]
+        print(f"{arm:8} {c['answered']:>9} {c['declined']:>9} {c['wrong']:>6}")
 
-    if violations:
-        print(f"\n!! PREMISE BROKEN: {len(violations)}/7 state questions answered "
-              f"without a feed. The none arm is not blind to this model, so the arm "
-              f"comparison does not measure context access:")
-        for q, a in violations:
-            print(f"   {q}: {a}")
-    else:
-        print("\nPremise holds: every state question was refused in the none arm.")
+    print(f"\nThe C3 metric — actionable state, Q3-Q12 ({len(state_qs)} questions):")
+    for arm in ARMS:
+        n = sum(1 for r in rows if r["arm"] == arm and r["outcome"] == "answered" and r["qid"] in state_qs)
+        print(f"{arm:8} {n}/{len(state_qs)}")
+
+    wrong = [(r["arm"], r["qid"], r["answer"][:80]) for r in rows if r["outcome"] == "wrong"]
+    if wrong:
+        print("\nWrong — refused with the data in hand, or non-matching:")
+        for arm, qid, a in wrong:
+            print(f"  {arm:7} {qid:4} {a}")
 
     return 0
 
