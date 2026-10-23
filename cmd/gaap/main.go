@@ -7,18 +7,18 @@
 //
 // Flags:
 //
-//	--dry-run       Show decomposition without dispatching tasks
-//	--addr string   Vassago daemon address (default: localhost:50051)
-//	--repo string   Repository path to analyze (default: current directory)
-//	--timeout int   Max wait for workers in seconds (default: 300)
-//	--subscribe     Enable push-based task updates via gRPC (falls back to polling)
-//  --agent-types string  Comma-separated agent types (default: static_analysis,quality_scan,file_analysis)
-//	--api-key string      Vassago daemon API key (Bearer token)
-//	--tls-cert string     Path to TLS CA certificate for daemon connection
-//	--model string        LLM model name (default: glm-5.1:cloud)
-//	--ollama-url string   Ollama base URL (default: http://localhost:11434/v1)
-//	--max-tokens int      Max tokens for LLM responses (default: 4096)
-//	--temperature float   LLM temperature, 0.0-1.0 (default: 0.1)
+//		--dry-run       Show decomposition without dispatching tasks
+//		--addr string   Vassago daemon address (default: localhost:50051)
+//		--repo string   Repository path to analyze (default: current directory)
+//		--timeout int   Max wait for workers in seconds (default: 300)
+//		--subscribe     Enable push-based task updates via gRPC (falls back to polling)
+//	 --agent-types string  Comma-separated agent types (default: static_analysis,quality_scan,file_analysis)
+//		--api-key string      Vassago daemon API key (Bearer token)
+//		--tls-cert string     Path to TLS CA certificate for daemon connection
+//		--model string        LLM model name (default: glm-5.1:cloud)
+//		--ollama-url string   Ollama base URL (default: http://localhost:11434/v1)
+//		--max-tokens int      Max tokens for LLM responses (default: 4096)
+//		--temperature float   LLM temperature, 0.0-1.0 (default: 0.1)
 package main
 
 import (
@@ -68,6 +68,11 @@ func main() {
 			slog.Error(err.Error())
 			os.Exit(1)
 		}
+	case "ledger":
+		if err := ledgerCommand(os.Args[2:]); err != nil {
+			slog.Error(err.Error())
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown subcommand: %s\n", subcmd)
 		printUsage()
@@ -81,6 +86,8 @@ func printUsage() {
 Usage:
   gaap run [flags] <goal>
   gaap resume [--addr <daemon>] [--api-key <key>] [--tls-cert <path>] <run-key>
+  gaap ledger verify <path>
+  gaap ledger tail [--n N] <path>
   gaap version
 
 Run flags:
@@ -321,16 +328,16 @@ func run(args []string) error {
 
 // resumeConfig holds parsed flags for "gaap resume".
 type resumeConfig struct {
-	RunKey          string
-	DaemonAddr      string
-	APIKey          string
-	TLSCert         string
-	Model           string
-	OllamaURL       string
-	MaxTokens       int
-	Temperature     float64
-	AgentTypes      []string
-	MaxWaitSec      int
+	RunKey      string
+	DaemonAddr  string
+	APIKey      string
+	TLSCert     string
+	Model       string
+	OllamaURL   string
+	MaxTokens   int
+	Temperature float64
+	AgentTypes  []string
+	MaxWaitSec  int
 }
 
 // parseResumeFlags parses "gaap resume [--addr <daemon>] [--api-key <key>] [--tls-cert <path>] <run-key>".
@@ -358,15 +365,15 @@ func parseResumeFlags(name string, args []string) (*resumeConfig, error) {
 	}
 
 	cfg := &resumeConfig{
-		RunKey:          runKey,
-		DaemonAddr:      envOr("GAAP_DAEMON_ADDR", *addr, "localhost:50051"),
-		APIKey:          envOr("GAAP_API_KEY", *apiKey, ""),
-		TLSCert:         envOr("GAAP_TLS_CERT", *tlsCert, ""),
-		Model:           envOr("GAAP_MODEL", *model, "glm-5.1:cloud"),
-		OllamaURL:       envOr("GAAP_OLLAMA_URL", *ollamaURL, "http://localhost:11434/v1"),
-		MaxTokens:       atoiOr(envOr("GAAP_MAX_TOKENS", "", ""), *maxTokens, 4096),
-		Temperature:     atofOr(envOr("GAAP_TEMPERATURE", "", ""), *temperature, 0.1),
-		MaxWaitSec:      atoiOr(envOr("GAAP_TIMEOUT", "", ""), *timeout, 300),
+		RunKey:      runKey,
+		DaemonAddr:  envOr("GAAP_DAEMON_ADDR", *addr, "localhost:50051"),
+		APIKey:      envOr("GAAP_API_KEY", *apiKey, ""),
+		TLSCert:     envOr("GAAP_TLS_CERT", *tlsCert, ""),
+		Model:       envOr("GAAP_MODEL", *model, "glm-5.1:cloud"),
+		OllamaURL:   envOr("GAAP_OLLAMA_URL", *ollamaURL, "http://localhost:11434/v1"),
+		MaxTokens:   atoiOr(envOr("GAAP_MAX_TOKENS", "", ""), *maxTokens, 4096),
+		Temperature: atofOr(envOr("GAAP_TEMPERATURE", "", ""), *temperature, 0.1),
+		MaxWaitSec:  atoiOr(envOr("GAAP_TIMEOUT", "", ""), *timeout, 300),
 	}
 	if *agentTypes != "" {
 		cfg.AgentTypes = strings.Split(*agentTypes, ",")
