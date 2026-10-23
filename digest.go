@@ -13,6 +13,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -98,15 +100,48 @@ type digestTask struct {
 	parents                              []string
 }
 
+// collectDigestTasks projects the DAG into digest lines, ordered by task ID.
+// The order matters: it comes out of a map, so leaving it alone made the same
+// DAG state render differently on every run, and made the digestMaxTasks cut
+// keep a random subset of equally-ranked tasks.
 func collectDigestTasks(o *Orchestrator) []digestTask {
-	var all []digestTask
+	all := make([]digestTask, 0, len(o.dag.nodes))
 	for id, node := range o.dag.nodes {
 		all = append(all, digestTask{
 			id: id, status: node.Status, goal: node.Goal,
 			summary: node.Summary, agentType: node.AgentType, parents: node.ParentIDs,
 		})
 	}
+	sort.Slice(all, func(i, j int) bool { return digestTaskIDLess(all[i].id, all[j].id) })
 	return all
+}
+
+// digestTaskIDLess orders task IDs the way a reader expects: T2 before T10,
+// where plain string order puts T10 first. When the prefixes differ, or an ID
+// has no trailing number, it falls back to string order so it stays a total
+// order over whatever the decomposition produced.
+func digestTaskIDLess(a, b string) bool {
+	aPrefix, aNum, aOK := splitTrailingNumber(a)
+	bPrefix, bNum, bOK := splitTrailingNumber(b)
+	if aOK && bOK && aPrefix == bPrefix && aNum != bNum {
+		return aNum < bNum
+	}
+	return a < b
+}
+
+func splitTrailingNumber(s string) (string, int, bool) {
+	i := len(s)
+	for i > 0 && s[i-1] >= '0' && s[i-1] <= '9' {
+		i--
+	}
+	if i == len(s) {
+		return "", 0, false
+	}
+	n, err := strconv.Atoi(s[i:])
+	if err != nil {
+		return "", 0, false
+	}
+	return s[:i], n, true
 }
 
 func digestTaskLine(t digestTask, blockers []string) string {
@@ -182,8 +217,17 @@ func (o *Orchestrator) emitDigests(ctx context.Context) {
 // Spike 002's Q10 gap: breaker/lease anomaly state was the only content
 // exclusive to the raw firehose — this template block closes it.
 func breakerAnomalies(o *Orchestrator) string {
+	// Sorted, for the same reason the task lines are: this iterates a map, and
+	// with more than one non-closed breaker the line reordered itself per run.
+	types := make([]string, 0, len(o.breakerRegistry))
+	for agentType := range o.breakerRegistry {
+		types = append(types, agentType)
+	}
+	sort.Strings(types)
+
 	var parts []string
-	for agentType, cb := range o.breakerRegistry {
+	for _, agentType := range types {
+		cb := o.breakerRegistry[agentType]
 		if st := cb.State(); st != StateClosed {
 			parts = append(parts, fmt.Sprintf("%s breaker %s (%d failures)", agentType, st, cb.FailureCount()))
 		}
