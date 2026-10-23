@@ -93,3 +93,52 @@ run stays comparable to September's. Fixing it is a separate change.
 
 n=1 model, n=1 run, one fixture — directional, not statistical. The C3 work-product
 question is still parked.
+
+## Quiz v2 (2026-10-23) — three outcomes, and questions the digest must reason over
+
+v1 had two defects that between them hid the result. It scored a refusal as a
+correct answer whenever refusing was right for that arm, so the none arm reached
+9/9 carrying no state at all; and every question could be answered by quoting one
+digest line, so the quiz had no headroom once a strong model arrived.
+
+v2 fixes both:
+
+- **Three outcomes.** `answered` (content that matches — the C3 metric), `declined`
+  (refused, and refusing was right for that arm), `wrong` (refused while holding the
+  data, or answered something non-matching). A refusal is never an actionable point.
+- **Q10 and Q12 require composition.** Q10 asks which tasks can never start if the
+  dep-audit failure stands: T5 is blocked by the failed T3, and T7 by T5 — no line
+  says so, it has to be chained. Q12 asks which two tasks run the same check: T4
+  exists only as a retry of T3.
+- **Q11 measures the budget instead of assuming it is free.** The observer digest
+  drops T2's lint line at the 900-char boundary, so this is answerable only from the
+  raw feed. The digest arm should refuse it.
+- **Q6 tightened.** It accepted both "closer" and "stuck", so the only way to fail was
+  to refuse — it measured silence, not judgment.
+
+Artifacts: `c3_results_v2_glm53flash_2026-10-23.json`,
+`c3_run_v2_glm53flash_2026-10-23.log`.
+
+| arm | answered | declined | wrong | actionable (Q3–Q12) |
+|---|---|---|---|---|
+| none | 2 | 9 | 1 | **0/10** |
+| digest | 10 | 1 | 1 | **8/10** |
+| raw | 12 | 0 | 0 | **10/10** |
+
+### What v2 shows
+
+1. **The digest carries composition, not just recall.** Both multi-hop questions
+   (Q10, Q12) are answered from the digest, with the chain spelled out. On the eight
+   factual questions the digest can see, it scores 8/8 — identical to raw.
+2. **The 900-char budget costs exactly one question.** Q11 is unanswerable from the
+   digest and the model correctly declines. That is the first *measurement* of the
+   drop rather than an assumption that it does not matter. Digest reaches parity with
+   raw on everything visible to it, at 59% of the context.
+3. **The remaining gap is a judgment disagreement, not a content gap.** Q6: given the
+   digest the model reads the pipeline as "closer"; given the full feed, "stuck". Both
+   are defensible from the same facts. Q6's key is my reading rather than a fact, so
+   Q6 should not be scored as a state question at all.
+4. **One hallucination without a feed.** The none arm answered Q12 with "T1 and T6" —
+   inventing task ids it was never given instead of declining. 1 in 10 state questions.
+   The protocol mostly holds; it is not free.
+

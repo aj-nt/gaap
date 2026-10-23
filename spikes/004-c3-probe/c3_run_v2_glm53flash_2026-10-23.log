@@ -1,0 +1,61 @@
+model=glm-5.3-flash:cloud  digest_sha256=6f35afedbf08b83c  questions=12
+=== ARM [none] — 284 chars ===
+  Q1   answered SQL string concatenation vulnerability
+  Q2   answered T1
+  Q3   declined NOT IN FEED
+  Q4   declined NOT IN FEED
+  Q5   declined NOT IN FEED
+  Q6   declined NOT IN FEED
+  Q7   declined NOT IN FEED
+  Q8   declined NOT IN FEED
+  Q9   declined NOT IN FEED
+  Q10  declined NOT IN FEED
+  Q11  declined NOT IN FEED
+  Q12  wrong    T1 and T6.
+=== ARM [digest] — 1209 chars ===
+  Q1   answered SQL string concatenation in the auth interceptor query builder (line 142)
+  Q2   answered T1
+  Q3   answered tripped
+  Q4   answered T3
+  Q5   answered [MED] TLS cert validation skipped in test transport (from T1 security scan).
+  Q6   wrong    closer
+  Q7   answered T8
+  Q8   answered 8
+  Q9   answered T5 (also T7)
+  Q10  answered T5 and T7.
+
+- T5 (doc-review) is directly blocked by T3 (dep-audit).
+- T7 (synthesis) is blocked by 
+  Q11  declined NOT IN FEED
+  Q12  answered T3 and T4 — both run govulncheck on go.mod dependencies (T4 is the retry).
+=== ARM [raw] — 2039 chars ===
+  Q1   answered SQL string concatenation in the auth interceptor query builder (line 142)
+  Q2   answered T1
+  Q3   answered tripped
+  Q4   answered T3 (dep-audit, failed — govulncheck errors). T5's parents are T1,T3; T1 is done, so T3 is the blocke
+  Q5   answered [MED] TLS cert validation skipped in test transport.
+  Q6   answered stuck
+  Q7   answered T8
+  Q8   answered 8 tasks (T1–T8).
+  Q9   answered T5
+  Q10  answered T5, T7.
+
+- T5 (parents=T1,T3): T3 is the failed dep-audit task; if it never resolves, T5 stays block
+  Q11  answered Unchecked `resp.Body.Close` in stream.go (from T2's golangci-lint review).
+  Q12  answered T3 and T4 — both run govulncheck on go.mod dependencies (T4 is the retry of T3's failed check).
+
+wrote c3_results_v2_glm53flash_2026-10-23.json
+
+arm       answered  declined  wrong   of 12
+none             2         9      1
+digest          10         1      1
+raw             12         0      0
+
+The C3 metric — actionable state, Q3-Q12 (10 questions):
+none     0/10
+digest   8/10
+raw      10/10
+
+Wrong — refused with the data in hand, or non-matching:
+  none    Q12  T1 and T6.
+  digest  Q6   closer
