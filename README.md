@@ -25,6 +25,29 @@ deterministic, and the LLM enters only as data, never as the judge.
 
 The primitives live in `platform/`. See [Design: Governance-as-a-Platform](docs/design/governance-as-a-platform.md).
 
+### The record
+
+Every decision is appended to a hash-chained ledger, one JSON object per line, fsynced on
+each append. The entry is a structural skeleton, not a transcript — it commits to the
+subject identity and the call arguments by hash and stores neither:
+
+```json
+{"seq":1,"time":"...","kind":"decision","subject_hash":"cfad431a...","tool":"FileWrite",
+ "rule_id":"deny-etc","outcome":"deny","input_hash":"1fe0cddf...",
+ "reason":"protected path","reversibility":"irreversible","algo":"sha256","hash":"ecf3e963..."}
+```
+
+Read it from a terminal:
+
+```bash
+gaap ledger verify ~/.vagent/ledger/agent.jsonl   # recompute the chain, print genesis + head
+gaap ledger tail ~/.vagent/ledger/agent.jsonl     # last 20 decisions, with rule attribution
+```
+
+Chain verification catches a tampered entry or entries removed from the middle. Removing
+entries from the *end* leaves a shorter, internally consistent chain — detecting that needs
+an external anchor (a published head hash with independent custody), which is not built.
+
 ## Thesis
 
 > For coordinating heterogeneous, intermittently-connected AI agents, searchable shared memory — the
@@ -71,7 +94,7 @@ Eight design patterns govern the internals:
 
 - **Vassago daemon** — shared memory blackboard. [github.com/aj-nt/vassago](https://github.com/aj-nt/vassago)
 - **Ollama** — LLM backend for decomposition and synthesis (defaults to localhost:11434)
-- **Go 1.26+**
+- **Go 1.27+**
 
 ### Build
 
@@ -126,7 +149,7 @@ make cover  # Coverage profile
 make ci     # fmt + vet + test (CI gate)
 ```
 
-108 tests. All pass with `-race`.
+202 tests. All pass with `-race`.
 
 ## Deployment
 
