@@ -20,8 +20,8 @@ import (
 // only the task-management methods the orchestrator calls.
 type testDaemon struct {
 	pb.UnimplementedVassagoServer
-	mu          sync.Mutex
-	tasks       map[string]*pb.TaskEntry
+	mu           sync.Mutex
+	tasks        map[string]*pb.TaskEntry
 	autoComplete bool // if true, tasks become "done" on AddTask/ClaimTask
 }
 

@@ -410,7 +410,6 @@ func TestParseResumeFlagsMissingRunKey(t *testing.T) {
 	}
 }
 
-
 // smokeDaemon is a minimal gRPC server that satisfies HealthCheck by
 // returning a valid GetHotBlock response.
 type smokeDaemon struct {
