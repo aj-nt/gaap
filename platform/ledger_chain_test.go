@@ -10,12 +10,12 @@ import (
 func TestLedgerAppendChainsHashes(t *testing.T) {
 	fixed := time.Unix(1700000000, 0)
 	l := NewLedger()
-	l.Append(Entry{Kind: "decision", Subject: "a", Detail: "allow", Time: fixed})
-	l.Append(Entry{Kind: "decision", Subject: "b", Detail: "deny", Time: fixed})
+	l.Append(Entry{Kind: "decision", SubjectHash: "a", Reason: "allow", Time: fixed})
+	l.Append(Entry{Kind: "decision", SubjectHash: "b", Reason: "deny", Time: fixed})
 
 	other := NewLedger()
-	other.Append(Entry{Kind: "decision", Subject: "a", Detail: "different", Time: fixed})
-	other.Append(Entry{Kind: "decision", Subject: "b", Detail: "deny", Time: fixed})
+	other.Append(Entry{Kind: "decision", SubjectHash: "a", Reason: "different", Time: fixed})
+	other.Append(Entry{Kind: "decision", SubjectHash: "b", Reason: "deny", Time: fixed})
 
 	a, b := l.Entries(), other.Entries()
 	if a[0].Hash == "" || a[1].Hash == "" {
@@ -31,12 +31,12 @@ func TestLedgerAppendChainsHashes(t *testing.T) {
 
 func TestLedgerVerifyDetectsTamper(t *testing.T) {
 	l := NewLedger()
-	l.Append(Entry{Kind: "decision", Detail: "allow"})
-	l.Append(Entry{Kind: "decision", Detail: "deny"})
+	l.Append(Entry{Kind: "decision", Reason: "allow"})
+	l.Append(Entry{Kind: "decision", Reason: "deny"})
 	if err := l.Verify(); err != nil {
 		t.Fatalf("clean ledger failed verification: %v", err)
 	}
-	l.entries[0].Detail = "tampered"
+	l.entries[0].Reason = "tampered"
 	if err := l.Verify(); err == nil {
 		t.Fatal("tampered ledger verified clean")
 	}
@@ -56,8 +56,8 @@ func TestLedgerStampsKeyIDAndAlgo(t *testing.T) {
 
 func TestLedgerSaveLoadRoundTrip(t *testing.T) {
 	l := NewLedger()
-	l.Append(Entry{Kind: "decision", Subject: "a", Detail: "allow", KeyID: "k1"})
-	l.Append(Entry{Kind: "decision", Subject: "b", Detail: "deny", KeyID: "k1"})
+	l.Append(Entry{Kind: "decision", SubjectHash: "a", Reason: "allow", KeyID: "k1"})
+	l.Append(Entry{Kind: "decision", SubjectHash: "b", Reason: "deny", KeyID: "k1"})
 
 	path := filepath.Join(t.TempDir(), "ledger.json")
 	if err := l.Save(path); err != nil {
@@ -83,7 +83,7 @@ func TestLedgerSaveLoadRoundTrip(t *testing.T) {
 
 func TestLedgerAppendRejectsUnsupportedAlgorithm(t *testing.T) {
 	l := NewLedger()
-	_, err := l.Append(Entry{Kind: "decision", Detail: "x", Algo: "sha512"})
+	_, err := l.Append(Entry{Kind: "decision", Reason: "x", Algo: "sha512"})
 	if err == nil {
 		t.Fatal("Append accepted an unsupported hash algorithm")
 	}
