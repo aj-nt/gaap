@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -122,5 +123,24 @@ func TestGovernorRefusesWhenCommitmentFails(t *testing.T) {
 	}
 	if len(g.Ledger.Entries()) != 0 {
 		t.Fatal("a decision that could not be committed was recorded anyway")
+	}
+}
+
+func TestGovernorKeysUnderRandomSubjectRefs(t *testing.T) {
+	kr := NewMemoryKeyRing()
+	c, _ := NewCommitter(kr)
+	g := NewGovernor()
+	g.Committer = c
+	g.Refs = NewMemoryRefRegistry()
+	g.Policy.AddRule(Rule{Tool: "ReadFile", Decision: Allow})
+
+	g.Decide("agent-1", "ReadFile", nil)
+
+	e := g.Ledger.Entries()[0]
+	if e.SubjectRef == "agent-1" {
+		t.Fatal("commitments are keyed under the subject string; the ledger stores the identifier in the clear")
+	}
+	if !strings.HasPrefix(e.SubjectRef, "ref-") {
+		t.Fatalf("SubjectRef = %q, want a minted handle", e.SubjectRef)
 	}
 }

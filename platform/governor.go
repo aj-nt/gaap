@@ -26,11 +26,11 @@ type Governor struct {
 	// KeyRing: erasure of a subject is key destruction, and the chain still
 	// verifies afterwards because the chain hash is unkeyed on purpose.
 	Committer *Committer
-	// SubjectRef maps a subject to the opaque handle its commitments are keyed
-	// under. nil = the subject string is the handle. Inject this when the
-	// subject is a person rather than an agent id, so the handle is random and
-	// never derived from personal data.
-	SubjectRef func(subject string) string
+	// Refs maps a subject to the opaque handle its commitments are keyed under.
+	// nil = the subject string is the handle, which is acceptable for agent ids
+	// and unacceptable for people: it stores the identifier in the clear. A
+	// RefRegistry mints a random handle and can forget it on erasure.
+	Refs RefRegistry
 	// Hash commits to a value without storing it. nil = sha256. Only used when
 	// Committer is nil; it cannot be erased, so it survives as the legacy path.
 	Hash func(value string) string
@@ -104,7 +104,10 @@ func (g *Governor) commitments(agentID string, args map[string]any) (subjectHash
 	if g.Committer == nil {
 		return g.commit(agentID), g.commit(canonicalArgs(args)), "", "", nil
 	}
-	ref = g.subjectRef(agentID)
+	ref, err = g.subjectRef(agentID)
+	if err != nil {
+		return "", "", "", "", err
+	}
 	subjectHash, err = g.Committer.Commit(ref, agentID)
 	if err != nil {
 		return "", "", "", "", fmt.Errorf("commit subject: %w", err)
@@ -117,11 +120,15 @@ func (g *Governor) commitments(agentID string, args map[string]any) (subjectHash
 }
 
 // subjectRef resolves the handle a decision is keyed under.
-func (g *Governor) subjectRef(subject string) string {
-	if g.SubjectRef != nil {
-		return g.SubjectRef(subject)
+func (g *Governor) subjectRef(subject string) (string, error) {
+	if g.Refs == nil {
+		return subject, nil
 	}
-	return subject
+	ref, err := g.Refs.Ref(subject)
+	if err != nil {
+		return "", fmt.Errorf("resolve subject ref: %w", err)
+	}
+	return ref, nil
 }
 
 // commit hashes a value so it can be referenced without being stored.

@@ -237,11 +237,14 @@ Where the real engineering is, and where this design earns nothing yet:
   hash when unset, so ledgers written before this feature still verify. Setting
   either field changes the hash, so a keyed record cannot be downgraded to an
   unkeyed one undetected.
-- **The handle mapping.** The governor keys commitments under a handle supplied
-  by the caller. If that handle is the subject string itself, the ledger stores
-  the identifier in the clear and the scheme is decoration. A random,
-  forgettable subject-to-handle registry is required before this governs on
-  behalf of a person rather than an agent id.
+- **The handle mapping.** The governor keys commitments under a handle from a
+  `RefRegistry`: random, stable per subject, and forgettable on erasure, so an
+  erased subject resolves to a fresh handle afterwards. The registry is itself
+  personal data, since it is the table that maps people to handles. Forget
+  deletes the row; encrypting the file at rest is the operator's custody
+  problem, and a registry that a backup outlives defeats the erasure it was
+  meant to support. Leaving `Refs` nil keys commitments under the subject
+  string, which is fine for agent ids and wrong for people.
 - **The limit that survives.** After a lawful erasure, the record proves a
   decision of this type, under this rule, at this time, on some input. It does
   not prove whose or what, and no architecture can. If a regulator demands

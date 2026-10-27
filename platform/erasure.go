@@ -30,6 +30,9 @@ type Eraser struct {
 	// Ledger records the erasure. Optional, but an unrecorded erasure is an
 	// erasure nobody can prove.
 	Ledger *Ledger
+	// Refs is the subject-to-handle registry. Required by EraseSubject, and
+	// ignored by Erase, which is already given a handle.
+	Refs RefRegistry
 }
 
 // Erase deletes the subject's content, shreds their key, and appends an erase
@@ -115,4 +118,28 @@ func (e *Eraser) recorded(ref string) bool {
 		}
 	}
 	return false
+}
+
+// EraseSubject erases a subject by identity: resolve the handle, erase the
+// records behind it, then forget the mapping.
+//
+// The order matters in the same way as Erase. The mapping is forgotten last, so
+// a failure part-way leaves a handle the next attempt can still resolve. Forget
+// is what makes the subject resolve to a fresh handle afterwards, which is what
+// keeps a post-erasure decision from relinking to the erased history.
+func (e *Eraser) EraseSubject(subject, reason string) error {
+	if e.Refs == nil {
+		return errors.New("EraseSubject requires a ref registry; Erase takes a handle directly")
+	}
+	ref, err := e.Refs.Ref(subject)
+	if err != nil {
+		return fmt.Errorf("resolve subject %q: %w", subject, err)
+	}
+	if err := e.Erase(ref, reason); err != nil {
+		return err
+	}
+	if err := e.Refs.Forget(subject); err != nil {
+		return fmt.Errorf("forget subject mapping: %w", err)
+	}
+	return nil
 }

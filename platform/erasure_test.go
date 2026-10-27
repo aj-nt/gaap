@@ -187,3 +187,47 @@ func TestEraseRequiresRingAndCommitter(t *testing.T) {
 		t.Fatal("Eraser without a committer reported success")
 	}
 }
+
+func TestEraseSubjectForgetsTheHandle(t *testing.T) {
+	ring := NewMemoryKeyRing()
+	content := NewMemoryContentStore()
+	refs := NewMemoryRefRegistry()
+	c, _ := NewCommitter(ring)
+
+	subject := "alice@example.com"
+	ref, _ := refs.Ref(subject)
+	commitment, _ := c.Commit(ref, subject)
+	_ = content.Put(ref, []byte(subject))
+
+	e := &Eraser{Content: content, Ring: ring, Ledger: NewLedger(), Committer: c, Refs: refs}
+	if err := e.EraseSubject(subject, "gdpr-request"); err != nil {
+		t.Fatalf("EraseSubject: %v", err)
+	}
+
+	entries := e.Ledger.Entries()
+	if len(entries) != 1 || entries[0].SubjectRef != ref {
+		t.Fatalf("ledger entries = %+v, want one erase entry for the old handle", entries)
+	}
+	if _, err := content.Get(ref); !errors.Is(err, ErrContentNotFound) {
+		t.Fatalf("content survived: %v", err)
+	}
+	if ok, err := c.Match(ref, subject, commitment); ok || !errors.Is(err, ErrKeyDestroyed) {
+		t.Fatalf("Match = (%v, %v), want (false, ErrKeyDestroyed)", ok, err)
+	}
+	fresh, err := refs.Ref(subject)
+	if err != nil {
+		t.Fatalf("Ref after erase: %v", err)
+	}
+	if fresh == ref {
+		t.Fatal("the erased subject still resolves to its old handle; a later record would relink to the erased history")
+	}
+}
+
+func TestEraseSubjectRequiresARegistry(t *testing.T) {
+	ring := NewMemoryKeyRing()
+	c, _ := NewCommitter(ring)
+	e := &Eraser{Ring: ring, Ledger: NewLedger(), Committer: c}
+	if err := e.EraseSubject("alice@example.com", "gdpr-request"); err == nil {
+		t.Fatal("EraseSubject without a ref registry reported success")
+	}
+}
