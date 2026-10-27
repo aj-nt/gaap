@@ -48,6 +48,7 @@ type failingRing struct{}
 func (failingRing) Key(string) ([]byte, error) { return nil, errRingUnavailable }
 func (failingRing) Destroy(string) error       { return nil }
 func (failingRing) Has(string) bool            { return false }
+func (failingRing) Destroyed(string) bool      { return false }
 
 var errRingUnavailable = errors.New("key ring unavailable")
 

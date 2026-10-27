@@ -41,6 +41,10 @@ type KeyRing interface {
 	Destroy(ref string) error
 	// Has reports whether ref currently holds a usable key.
 	Has(ref string) bool
+	// Destroyed reports whether ref was erased. It is distinct from Has: a ref
+	// that was never seen and a ref that was shredded both have no key, and only
+	// the eraser can tell them apart.
+	Destroyed(ref string) bool
 }
 
 // MemoryKeyRing is a KeyRing that lives in process memory and forgets
@@ -122,6 +126,14 @@ func (k *MemoryKeyRing) Has(ref string) bool {
 	}
 	_, ok := k.keys[ref]
 	return ok
+}
+
+// Destroyed reports whether ref was erased.
+func (k *MemoryKeyRing) Destroyed(ref string) bool {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	_, gone := k.destroyed[ref]
+	return gone
 }
 
 // snapshot returns copies of the live keys and the tombstones.
