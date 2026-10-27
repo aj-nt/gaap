@@ -26,6 +26,16 @@ type Governor struct {
 	// KeyRing: erasure of a subject is key destruction, and the chain still
 	// verifies afterwards because the chain hash is unkeyed on purpose.
 	Committer *Committer
+	// Content is the erasable store the commitments point into. When set, every
+	// recorded decision stores the arguments it decided on, under the input
+	// commitment as the item key, so a record can be resolved to its content
+	// while the ledger itself holds none.
+	//
+	// It is not optional decoration. A commitment that points at nothing makes
+	// "what did it see when it decided" unanswerable, and makes an erasure a
+	// no-op that still reports success. A decision whose content cannot be
+	// stored is refused, on the same rule that governs recording itself.
+	Content ContentStore
 	// Refs maps a subject to the opaque handle its commitments are keyed under.
 	// nil = the subject string is the handle, which is acceptable for agent ids
 	// and unacceptable for people: it stores the identifier in the clear. A
@@ -80,6 +90,11 @@ func (g *Governor) record(agentID, tool string, args map[string]any, d Decision)
 	subjectHash, inputHash, ref, algo, err := g.commitments(agentID, args)
 	if err != nil {
 		return err
+	}
+	if g.Content != nil {
+		if err := g.Content.Put(ref, inputHash, []byte(canonicalArgs(args))); err != nil {
+			return fmt.Errorf("store decision content: %w", err)
+		}
 	}
 	_, err = g.Ledger.Append(Entry{
 		Kind:          "decision",

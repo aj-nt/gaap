@@ -2,6 +2,22 @@
 
 All notable changes to Gaap.
 
+## [v0.4.8] — 2026-10-27
+
+Governance becomes something an operator can run. Until now the governor had no CLI
+surface and no policy file: the only way to make it decide was to write Go.
+
+### Governance
+- **Policy files** — `gaap govern decide --policy rules.json`. JSON (not YAML) so the kernel keeps zero parser dependencies. Strict validation: unique rule IDs, typed actions, mandatory reason on any non-allow.
+- **Operator verbs** — `gaap govern decide`, `gaap govern erase`, over a state directory holding the record, key ring, subject handles, and erasable content. A deny exits zero: the decision is the data, not an error.
+- **Declared reads** — `--read-tools` lets the workload say which tools are pure reads; the kernel never guesses that an unknown tool is reversible.
+- **Demo** — `examples/demo/run.sh`: decide, record, verify, tamper, erase, in ninety seconds against the real CLI. `TestDemoFlow` runs the same narrative in CI so the script cannot drift.
+
+### Erasure
+- **Keyed commitments** — the ledger commits to subject and arguments with HMAC over a random per-subject key instead of a bare hash, which was a re-identification oracle. Destroying the key is what an erasure does; the chain still verifies, because the chain hash never needed it.
+- **Content store** — per-item storage (items scoped to a subject and keyed by the commitment pointing at them), file-backed with path-segment validation. `Governor.Content` refuses to record a decision whose content cannot be stored.
+- **Durable rollback** — a failed write to the key ring or handle registry no longer leaves a tombstone or mint in memory that the disk does not hold. Without it, a retried erasure recorded success with the key still on disk.
+
 ## [v0.2.0] — 2026-05-20
 
 Production-readiness release. Fills all identified release and production gaps.

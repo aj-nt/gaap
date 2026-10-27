@@ -68,6 +68,11 @@ func main() {
 			slog.Error(err.Error())
 			os.Exit(1)
 		}
+	case "govern":
+		if err := governCommand(os.Args[2:], os.Stdout); err != nil {
+			slog.Error(err.Error())
+			os.Exit(1)
+		}
 	case "ledger":
 		if err := ledgerCommand(os.Args[2:]); err != nil {
 			slog.Error(err.Error())
@@ -86,6 +91,8 @@ func printUsage() {
 Usage:
   gaap run [flags] <goal>
   gaap resume [--addr <daemon>] [--api-key <key>] [--tls-cert <path>] <run-key>
+  gaap govern decide --policy <file> --subject <id> --tool <name> [--args <json>]
+  gaap govern erase --subject <id> [--reason <code>]
   gaap ledger verify <path>
   gaap ledger tail [--n N] <path>
   gaap version

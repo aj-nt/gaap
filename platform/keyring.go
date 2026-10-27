@@ -136,6 +136,19 @@ func (k *MemoryKeyRing) Destroyed(ref string) bool {
 	return gone
 }
 
+// restore replaces the ring's contents with a previously taken snapshot. It is
+// the rollback for a write that failed: memory must never claim a destruction
+// (or a mint) the disk does not hold.
+func (k *MemoryKeyRing) restore(keys map[string][]byte, destroyed []string) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.keys = keys
+	k.destroyed = make(map[string]struct{}, len(destroyed))
+	for _, ref := range destroyed {
+		k.destroyed[ref] = struct{}{}
+	}
+}
+
 // snapshot returns copies of the live keys and the tombstones.
 func (k *MemoryKeyRing) snapshot() (map[string][]byte, []string) {
 	k.mu.Lock()
@@ -211,12 +224,22 @@ func OpenFileKeyRing(path string) (*FileKeyRing, error) {
 // would outlive the record of how to unlink it.
 func (f *FileKeyRing) Key(ref string) ([]byte, error) {
 	minted := !f.Has(ref)
-	key, err := f.MemoryKeyRing.Key(ref)
+	var keys map[string][]byte
+	var gone []string
+	if minted {
+		keys, gone = f.snapshot()
+	}
+	mem := f.MemoryKeyRing
+	key, err := mem.Key(ref)
 	if err != nil {
 		return nil, err
 	}
 	if minted {
 		if err := f.persist(); err != nil {
+			// A key that was never written is worse than no key: the caller would
+			// hold it, the next process would not, and every commitment made with
+			// it would be unverifiable after a restart.
+			f.restore(keys, gone)
 			return nil, err
 		}
 	}
@@ -225,10 +248,19 @@ func (f *FileKeyRing) Key(ref string) ([]byte, error) {
 
 // Destroy shreds the key for ref and rewrites the file without it.
 func (f *FileKeyRing) Destroy(ref string) error {
-	if err := f.MemoryKeyRing.Destroy(ref); err != nil {
+	keys, gone := f.snapshot()
+	mem := f.MemoryKeyRing
+	if err := mem.Destroy(ref); err != nil {
 		return err
 	}
-	return f.persist()
+	if err := f.persist(); err != nil {
+		// Keep the tombstone out of memory when the write failed. Otherwise a
+		// retried erasure sees "already shredded", skips the destroy, and records
+		// an erasure the disk never performed.
+		f.restore(keys, gone)
+		return err
+	}
+	return nil
 }
 
 // persist writes the ring atomically: temp file in the same directory, fsync,

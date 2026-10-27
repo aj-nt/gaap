@@ -49,10 +49,7 @@ func (e *Eraser) Erase(ref, reason string) error {
 
 	hadKey := e.Ring.Has(ref)
 	shredded := e.Ring.Destroyed(ref)
-	hadContent, err := e.hasContent(ref)
-	if err != nil {
-		return err
-	}
+	hadContent := e.Content != nil && e.Content.Has(ref)
 	if !hadKey && !shredded && !hadContent {
 		return nil // never seen: nothing to erase and nothing to record
 	}
@@ -82,22 +79,6 @@ func (e *Eraser) Erase(ref, reason string) error {
 		return fmt.Errorf("record erasure of %s: %w", ref, err)
 	}
 	return nil
-}
-
-// hasContent reports whether the content store holds anything for ref. A store
-// error other than "not found" is propagated: an eraser that cannot see the
-// content cannot claim to have erased it.
-func (e *Eraser) hasContent(ref string) (bool, error) {
-	if e.Content == nil {
-		return false, nil
-	}
-	if _, err := e.Content.Get(ref); err != nil {
-		if errors.Is(err, ErrContentNotFound) {
-			return false, nil
-		}
-		return false, fmt.Errorf("inspect content for %s: %w", ref, err)
-	}
-	return true, nil
 }
 
 // recorded reports whether the ledger already holds an erase entry for ref.

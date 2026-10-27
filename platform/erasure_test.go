@@ -12,10 +12,11 @@ import (
 // store whose backend is unavailable.
 type failingContentStore struct{}
 
-func (failingContentStore) Put(string, []byte) error { return nil }
-func (failingContentStore) Get(string) ([]byte, error) {
+func (failingContentStore) Put(string, string, []byte) error { return nil }
+func (failingContentStore) Get(string, string) ([]byte, error) {
 	return nil, ErrContentNotFound
 }
+func (failingContentStore) Has(string) bool     { return false }
 func (failingContentStore) Delete(string) error { return errors.New("store unavailable") }
 
 func newTestEraser(t *testing.T) (*Eraser, *MemoryKeyRing, *MemoryContentStore, *Committer) {
@@ -33,7 +34,7 @@ func newTestEraser(t *testing.T) (*Eraser, *MemoryKeyRing, *MemoryContentStore, 
 func TestEraseDestroysContentAndKey(t *testing.T) {
 	e, _, content, c := newTestEraser(t)
 	commitment, _ := c.Commit("sub-a", "alice@example.com")
-	if err := content.Put("sub-a", []byte("alice@example.com")); err != nil {
+	if err := content.Put("sub-a", "item", []byte("alice@example.com")); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
@@ -41,7 +42,7 @@ func TestEraseDestroysContentAndKey(t *testing.T) {
 		t.Fatalf("Erase: %v", err)
 	}
 
-	if _, err := content.Get("sub-a"); !errors.Is(err, ErrContentNotFound) {
+	if _, err := content.Get("sub-a", "item"); !errors.Is(err, ErrContentNotFound) {
 		t.Fatalf("content survived the erasure: %v", err)
 	}
 	if ok, err := c.Match("sub-a", "alice@example.com", commitment); ok || !errors.Is(err, ErrKeyDestroyed) {
@@ -51,7 +52,7 @@ func TestEraseDestroysContentAndKey(t *testing.T) {
 
 func TestEraseRecordsAuditableEntry(t *testing.T) {
 	e, _, content, _ := newTestEraser(t)
-	_ = content.Put("sub-a", []byte("alice@example.com"))
+	_ = content.Put("sub-a", "item", []byte("alice@example.com"))
 	if err := e.Erase("sub-a", "gdpr-request"); err != nil {
 		t.Fatalf("Erase: %v", err)
 	}
@@ -97,7 +98,7 @@ func TestEraseEntryHoldsNoPersonalData(t *testing.T) {
 	defer func() { _ = l.Close() }()
 
 	subject := "alice@example.com"
-	_ = content.Put("ref-7f3a", []byte(subject))
+	_ = content.Put("ref-7f3a", "item", []byte(subject))
 	commitment, _ := c.Commit("ref-7f3a", subject)
 	_, _ = l.Append(Entry{Kind: "decision", SubjectRef: "ref-7f3a", SubjectHash: commitment, CommitAlgo: CommitAlgoHMACSHA256})
 
@@ -120,7 +121,7 @@ func TestEraseEntryHoldsNoPersonalData(t *testing.T) {
 
 func TestEraseIsIdempotent(t *testing.T) {
 	e, _, content, _ := newTestEraser(t)
-	_ = content.Put("sub-a", []byte("x"))
+	_ = content.Put("sub-a", "item", []byte("x"))
 	if err := e.Erase("sub-a", "gdpr-request"); err != nil {
 		t.Fatalf("Erase: %v", err)
 	}
@@ -194,7 +195,7 @@ func TestEraseSubjectForgetsTheHandle(t *testing.T) {
 	subject := "alice@example.com"
 	ref, _ := refs.Ref(subject)
 	commitment, _ := c.Commit(ref, subject)
-	_ = content.Put(ref, []byte(subject))
+	_ = content.Put(ref, "item", []byte(subject))
 
 	e := &Eraser{Content: content, Ring: ring, Ledger: NewLedger(), Refs: refs}
 	if err := e.EraseSubject(subject, "gdpr-request"); err != nil {
@@ -205,7 +206,7 @@ func TestEraseSubjectForgetsTheHandle(t *testing.T) {
 	if len(entries) != 1 || entries[0].SubjectRef != ref {
 		t.Fatalf("ledger entries = %+v, want one erase entry for the old handle", entries)
 	}
-	if _, err := content.Get(ref); !errors.Is(err, ErrContentNotFound) {
+	if _, err := content.Get(ref, "item"); !errors.Is(err, ErrContentNotFound) {
 		t.Fatalf("content survived: %v", err)
 	}
 	if ok, err := c.Match(ref, subject, commitment); ok || !errors.Is(err, ErrKeyDestroyed) {
@@ -232,7 +233,7 @@ func TestEraseOnlyNeedsARing(t *testing.T) {
 	content := NewMemoryContentStore()
 	c, _ := NewCommitter(ring)
 	_, _ = c.Commit("sub-a", "x")
-	_ = content.Put("sub-a", []byte("x"))
+	_ = content.Put("sub-a", "item", []byte("x"))
 
 	// No Committer: the eraser destroys content and keys, and never needs to
 	// recompute a commitment, so requiring one would be a dependency it does
