@@ -198,10 +198,10 @@ func OpenFileKeyRing(path string) (*FileKeyRing, error) {
 		if err != nil {
 			return nil, fmt.Errorf("key ring %s: key for %s is not valid hex", path, ref)
 		}
-		f.MemoryKeyRing.keys[ref] = key
+		f.keys[ref] = key
 	}
 	for _, ref := range stored.Destroyed {
-		f.MemoryKeyRing.destroyed[ref] = struct{}{}
+		f.destroyed[ref] = struct{}{}
 	}
 	return f, nil
 }
@@ -210,7 +210,7 @@ func OpenFileKeyRing(path string) (*FileKeyRing, error) {
 // it. A key that is not durable cannot honor an erasure later: the commitment
 // would outlive the record of how to unlink it.
 func (f *FileKeyRing) Key(ref string) ([]byte, error) {
-	minted := !f.MemoryKeyRing.Has(ref)
+	minted := !f.Has(ref)
 	key, err := f.MemoryKeyRing.Key(ref)
 	if err != nil {
 		return nil, err
@@ -237,7 +237,7 @@ func (f *FileKeyRing) persist() error {
 	f.wmu.Lock()
 	defer f.wmu.Unlock()
 
-	keys, gone := f.MemoryKeyRing.snapshot()
+	keys, gone := f.snapshot()
 	stored := fileKeyRingFormat{Version: 1, Keys: make(map[string]string, len(keys)), Destroyed: gone}
 	for ref, key := range keys {
 		stored.Keys[ref] = hex.EncodeToString(key)

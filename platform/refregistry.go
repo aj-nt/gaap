@@ -128,7 +128,7 @@ func OpenFileRefRegistry(path string) (*FileRefRegistry, error) {
 		return nil, fmt.Errorf("ref registry %s is not readable: %w", path, err)
 	}
 	if stored.Refs != nil {
-		f.MemoryRefRegistry.restore(stored.Refs)
+		f.restore(stored.Refs)
 	}
 	return f, nil
 }
@@ -139,7 +139,7 @@ func OpenFileRefRegistry(path string) (*FileRefRegistry, error) {
 func (f *FileRefRegistry) Ref(subject string) (string, error) {
 	f.wmu.Lock()
 	defer f.wmu.Unlock()
-	existing := f.MemoryRefRegistry.snapshot()[subject]
+	existing := f.snapshot()[subject]
 	ref, err := f.MemoryRefRegistry.Ref(subject)
 	if err != nil {
 		return "", err
@@ -164,7 +164,7 @@ func (f *FileRefRegistry) Forget(subject string) error {
 
 // persist writes the registry atomically: temp file, fsync, rename, fsync dir.
 func (f *FileRefRegistry) persist() error {
-	stored := fileRefRegistryFormat{Version: 1, Refs: f.MemoryRefRegistry.snapshot()}
+	stored := fileRefRegistryFormat{Version: 1, Refs: f.snapshot()}
 	b, err := json.Marshal(stored)
 	if err != nil {
 		return err
