@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "rules": [
+    {"id": "read-only-tools", "tool": "ReadFile", "action": "allow"},
+    {"id": "no-destructive-shell", "tool": "Execute", "action": "deny",
+     "reason": "destructive shell command", "args_contain": {"command": "rm -rf"}},
+    {"id": "allow-tests", "tool": "Execute", "action": "allow", "args_contain": {"command": "go test"}}
+  ]
+}

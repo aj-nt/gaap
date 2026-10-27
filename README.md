@@ -29,7 +29,10 @@ The primitives live in `platform/`. See [Design: Governance-as-a-Platform](docs/
 
 Every decision is appended to a hash-chained ledger, one JSON object per line, fsynced on
 each append. The entry is a structural skeleton, not a transcript — it commits to the
-subject identity and the call arguments by hash and stores neither:
+subject identity and the call arguments with a keyed commitment (HMAC over a random
+per-subject key) and stores neither. A plain hash of a name or an argument is a
+re-identification oracle: hash a candidate list, confirm the match. The key removes that,
+and destroying it is what an erasure actually does:
 
 ```json
 {"seq":1,"time":"...","kind":"decision","subject_hash":"cfad431a...","tool":"FileWrite",
@@ -47,6 +50,36 @@ gaap ledger tail ~/.vagent/ledger/agent.jsonl     # last 20 decisions, with rule
 Chain verification catches a tampered entry or entries removed from the middle. Removing
 entries from the *end* leaves a shorter, internally consistent chain — detecting that needs
 an external anchor (a published head hash with independent custody), which is not built.
+
+### Decide and erase from a terminal
+
+The governor is not a library you call from Go. You write the rules, ask it for a decision,
+and read what it recorded:
+
+```bash
+gaap govern decide --policy rules.json --subject agent-1 \
+  --tool Execute --args '{"command":"rm -rf /tmp/x"}' --read-tools ReadFile
+gaap ledger tail ~/.gaap/ledger.jsonl
+gaap ledger verify ~/.gaap/ledger.jsonl
+```
+
+`rules.json` is the sovereign's standing orders: deny-by-default, with named rules and
+optional substring predicates on arguments. JSON rather than YAML so the kernel keeps zero
+parser dependencies.
+
+Erasure is key destruction. The subject's content is deleted and the per-subject commitment
+key is shredded, so the entry survives as structure while the link to the person dies — and
+the chain still verifies afterwards, because the chain hash never needed the key:
+
+```bash
+gaap govern erase --subject alice@example.com --reason gdpr-request
+```
+
+`examples/demo/run.sh` runs the whole story in about ninety seconds: a read allowed, a
+destructive command denied, the record inspected, the chain verified, one byte changed so the
+chain fails, then an erase that leaves the record intact and unlinkable. `TestDemoFlow` runs
+the same narrative in CI against the policy file the demo ships, so the script cannot claim
+behaviour the code does not have.
 
 ## Thesis
 
