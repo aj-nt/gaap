@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -142,5 +143,113 @@ func TestGovernorKeysUnderRandomSubjectRefs(t *testing.T) {
 	}
 	if !strings.HasPrefix(e.SubjectRef, "ref-") {
 		t.Fatalf("SubjectRef = %q, want a minted handle", e.SubjectRef)
+	}
+}
+
+// failingPutStore accepts nothing, standing in for a content store that is down.
+type failingPutStore struct{}
+
+func (failingPutStore) Put(string, string, []byte) error { return errStoreUnavailable }
+func (failingPutStore) Get(string, string) ([]byte, error) {
+	return nil, ErrContentNotFound
+}
+func (failingPutStore) Has(string) bool     { return false }
+func (failingPutStore) Delete(string) error { return nil }
+
+var errStoreUnavailable = errors.New("content store unavailable")
+
+func newContentGovernor(t *testing.T) (*Governor, *MemoryContentStore) {
+	t.Helper()
+	c, err := NewCommitter(NewMemoryKeyRing())
+	if err != nil {
+		t.Fatalf("NewCommitter: %v", err)
+	}
+	g := NewGovernor()
+	g.Committer = c
+	content := NewMemoryContentStore()
+	g.Content = content
+	g.Policy.AddRule(Rule{ID: "reads", Tool: "ReadFile", Decision: Allow})
+	return g, content
+}
+
+func TestGovernorStoresArgumentsAsErasableContent(t *testing.T) {
+	g, content := newContentGovernor(t)
+	g.Decide("agent-1", "ReadFile", map[string]any{"path": "/etc/hosts"})
+
+	e := g.Ledger.Entries()[0]
+	got, err := content.Get(e.SubjectRef, e.InputHash)
+	if err != nil {
+		t.Fatalf("content Get by commitment: %v", err)
+	}
+	if string(got) != `{"path":"/etc/hosts"}` {
+		t.Fatalf("stored content = %q, want the canonical arguments", got)
+	}
+	if bytes.Contains(got, []byte("agent-1")) {
+		t.Fatal("stored content carries the subject identity")
+	}
+}
+
+func TestGovernorKeepsContentPerDecisionNotPerSubject(t *testing.T) {
+	g, content := newContentGovernor(t)
+	g.Decide("agent-1", "ReadFile", map[string]any{"path": "/a"})
+	g.Decide("agent-1", "ReadFile", map[string]any{"path": "/b"})
+
+	entries := g.Ledger.Entries()
+	first, err := content.Get(entries[0].SubjectRef, entries[0].InputHash)
+	if err != nil {
+		t.Fatalf("first decision content: %v", err)
+	}
+	second, err := content.Get(entries[1].SubjectRef, entries[1].InputHash)
+	if err != nil {
+		t.Fatalf("second decision content: %v", err)
+	}
+	if string(first) != `{"path":"/a"}` || string(second) != `{"path":"/b"}` {
+		t.Fatalf("content = %q then %q, want each decision to keep its own arguments", first, second)
+	}
+}
+
+func TestGovernorRefusesWhenContentCannotBeStored(t *testing.T) {
+	c, _ := NewCommitter(NewMemoryKeyRing())
+	g := NewGovernor()
+	g.Committer = c
+	g.Content = failingPutStore{}
+	g.Policy.AddRule(Rule{Tool: "ReadFile", Decision: Allow})
+
+	d := g.Decide("agent-1", "ReadFile", map[string]any{"path": "/a"})
+	if d.Action != ActionDeny {
+		t.Fatalf("decision with unstorable content = %q, want deny", d.Action)
+	}
+	if got := len(g.Ledger.Entries()); got != 0 {
+		t.Fatalf("ledger len = %d: a decision whose content was not stored was recorded with a commitment to nothing", got)
+	}
+}
+
+func TestErasingTheSubjectRemovesStoredArguments(t *testing.T) {
+	g, content := newContentGovernor(t)
+	ring := NewMemoryKeyRing()
+	committer, _ := NewCommitter(ring)
+	g.Committer = committer
+	g.Refs = NewMemoryRefRegistry()
+	erasedRef, _ := g.Refs.Ref("agent-1")
+
+	g.Decide("agent-1", "ReadFile", map[string]any{"path": "/a"})
+	g.Decide("agent-1", "ReadFile", map[string]any{"path": "/b"})
+	if !content.Has(erasedRef) {
+		t.Fatal("fixture: governor stored no content")
+	}
+
+	e := &Eraser{Content: content, Ring: ring, Ledger: g.Ledger, Refs: g.Refs}
+	if err := e.EraseSubject("agent-1", "test"); err != nil {
+		t.Fatalf("EraseSubject: %v", err)
+	}
+
+	if content.Has(erasedRef) {
+		t.Fatal("arguments survived the erasure")
+	}
+	if err := g.Ledger.Verify(); err != nil {
+		t.Fatalf("chain failed verification after erasure: %v", err)
+	}
+	if got := len(g.Ledger.Entries()); got != 3 {
+		t.Fatalf("ledger len = %d, want 2 decisions plus the erase entry", got)
 	}
 }
