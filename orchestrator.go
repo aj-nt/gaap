@@ -9,8 +9,13 @@ import (
 	"time"
 
 	"github.com/aj-nt/gaap/internal/worker"
+	"github.com/aj-nt/vassago-sdk/client"
 	pb "github.com/aj-nt/vassago-sdk/proto"
 )
+
+// MnemoClient is the Vassago daemon client interface the orchestrator talks to.
+// Re-exported from the SDK so the orchestrator's signatures stay readable.
+type MnemoClient = client.MnemoClient
 
 // Config holds the orchestrator configuration.
 type Config struct {
