@@ -31,8 +31,23 @@ type Entry struct {
 	// "request".
 	Kind string `json:"kind"`
 	// SubjectHash commits to the identity the decision was about, without
-	// storing it.
+	// storing it. When CommitAlgo is set this is a KEYED commitment, not a plain
+	// hash: see Committer. An unkeyed hash of a low-entropy value is a
+	// re-identification oracle, so the keyed form is what keeps the ledger from
+	// being one.
 	SubjectHash string `json:"subject_hash"`
+	// SubjectRef is the opaque handle to the subject whose key produced the
+	// commitment. It is random and never derived from personal data. It
+	// survives erasure deliberately: after the key is shredded the record can
+	// still be grouped with other records of the same, now unlinked,
+	// pseudonym. That residual linkability is the price of honoring one
+	// erasure request with one key destruction instead of N.
+	SubjectRef string `json:"subject_ref,omitempty"`
+	// CommitAlgo names the keyed algorithm behind SubjectHash and InputHash.
+	// Empty means the commitments are unkeyed sha256, the format from before
+	// erasure support existed. It is hashed into the chain so a keyed record
+	// cannot be rewritten into an unkeyed one undetected.
+	CommitAlgo string `json:"commit_algo,omitempty"`
 	// Tool is the structural action type ("Execute", "FileWrite"). Not personal
 	// data, so it is stored directly.
 	Tool string `json:"tool"`
@@ -128,13 +143,19 @@ func hashEntry(e Entry, prevHash string) (string, error) {
 		return "", fmt.Errorf("unsupported hash algorithm %q (only sha256 implemented)", e.Algo)
 	}
 	content := struct {
-		PrevHash      string `json:"prev_hash"`
-		KeyID         string `json:"key_id"`
-		Algo          string `json:"algo"`
-		Seq           int64  `json:"seq"`
-		TimeUnixNano  int64  `json:"time_unix_nano"`
-		Kind          string `json:"kind"`
-		SubjectHash   string `json:"subject_hash"`
+		PrevHash     string `json:"prev_hash"`
+		KeyID        string `json:"key_id"`
+		Algo         string `json:"algo"`
+		Seq          int64  `json:"seq"`
+		TimeUnixNano int64  `json:"time_unix_nano"`
+		Kind         string `json:"kind"`
+		SubjectHash  string `json:"subject_hash"`
+		// Omitted when unset, so entries written before erasure support hash
+		// exactly as they did then: an existing ledger still verifies. Setting
+		// either field changes the hash, so a keyed record cannot be downgraded
+		// to an unkeyed one (or stripped of its subject ref) undetected.
+		SubjectRef    string `json:"subject_ref,omitempty"`
+		CommitAlgo    string `json:"commit_algo,omitempty"`
 		Tool          string `json:"tool"`
 		RuleID        string `json:"rule_id"`
 		Outcome       string `json:"outcome"`
@@ -149,6 +170,8 @@ func hashEntry(e Entry, prevHash string) (string, error) {
 		TimeUnixNano:  e.Time.UnixNano(),
 		Kind:          e.Kind,
 		SubjectHash:   e.SubjectHash,
+		SubjectRef:    e.SubjectRef,
+		CommitAlgo:    e.CommitAlgo,
 		Tool:          e.Tool,
 		RuleID:        e.RuleID,
 		Outcome:       string(e.Outcome),
