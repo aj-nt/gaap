@@ -20,10 +20,19 @@ type Governor struct {
 	// workload injects a classifier that knows its own read-only tools, so the
 	// ledger can admit which effects are provably pure. nil = conservative.
 	Classify func(tool string) Reversibility
-	// Hash commits to a value without storing it. nil = sha256. A sovereign that
-	// holds a key can inject an HMAC so the commitment cannot be brute-forced by
-	// an outside party; that key then becomes a single point of failure for
-	// every commitment it made.
+	// Committer makes the subject and input commitments keyed and erasable.
+	// nil = plain sha256 (the pre-erasure format): commitments are then
+	// brute-forceable by anyone holding the ledger. Prefer a Committer with a
+	// KeyRing: erasure of a subject is key destruction, and the chain still
+	// verifies afterwards because the chain hash is unkeyed on purpose.
+	Committer *Committer
+	// SubjectRef maps a subject to the opaque handle its commitments are keyed
+	// under. nil = the subject string is the handle. Inject this when the
+	// subject is a person rather than an agent id, so the handle is random and
+	// never derived from personal data.
+	SubjectRef func(subject string) string
+	// Hash commits to a value without storing it. nil = sha256. Only used when
+	// Committer is nil; it cannot be erased, so it survives as the legacy path.
 	Hash func(value string) string
 }
 
@@ -68,17 +77,51 @@ func (g *Governor) Decide(agentID, tool string, args map[string]any) Decision {
 // what outcome, on which input (hashed), why — and a hash of who, never the
 // identity itself.
 func (g *Governor) record(agentID, tool string, args map[string]any, d Decision) error {
-	_, err := g.Ledger.Append(Entry{
+	subjectHash, inputHash, ref, algo, err := g.commitments(agentID, args)
+	if err != nil {
+		return err
+	}
+	_, err = g.Ledger.Append(Entry{
 		Kind:          "decision",
-		SubjectHash:   g.commit(agentID),
+		SubjectHash:   subjectHash,
+		SubjectRef:    ref,
+		CommitAlgo:    algo,
 		Tool:          tool,
 		RuleID:        d.RuleID,
 		Outcome:       d.Action,
-		InputHash:     g.commit(canonicalArgs(args)),
+		InputHash:     inputHash,
 		Reason:        d.Reason,
 		Reversibility: g.classifyTool(tool),
 	})
 	return err
+}
+
+// commitments returns the subject and input commitments for a decision, plus
+// the handle and algorithm they were made under so the entry is self-describing
+// after a key rotation or an erasure. With a Committer the commitments are keyed
+// and erasable; without one they are the legacy unkeyed hashes.
+func (g *Governor) commitments(agentID string, args map[string]any) (subjectHash, inputHash, ref, algo string, err error) {
+	if g.Committer == nil {
+		return g.commit(agentID), g.commit(canonicalArgs(args)), "", "", nil
+	}
+	ref = g.subjectRef(agentID)
+	subjectHash, err = g.Committer.Commit(ref, agentID)
+	if err != nil {
+		return "", "", "", "", fmt.Errorf("commit subject: %w", err)
+	}
+	inputHash, err = g.Committer.Commit(ref, canonicalArgs(args))
+	if err != nil {
+		return "", "", "", "", fmt.Errorf("commit input: %w", err)
+	}
+	return subjectHash, inputHash, ref, g.Committer.AlgoName(), nil
+}
+
+// subjectRef resolves the handle a decision is keyed under.
+func (g *Governor) subjectRef(subject string) string {
+	if g.SubjectRef != nil {
+		return g.SubjectRef(subject)
+	}
+	return subject
 }
 
 // commit hashes a value so it can be referenced without being stored.
