@@ -139,13 +139,19 @@ func OpenFileRefRegistry(path string) (*FileRefRegistry, error) {
 func (f *FileRefRegistry) Ref(subject string) (string, error) {
 	f.wmu.Lock()
 	defer f.wmu.Unlock()
-	existing := f.snapshot()[subject]
-	ref, err := f.MemoryRefRegistry.Ref(subject)
+	before := f.snapshot()
+	existing := before[subject]
+	mem := f.MemoryRefRegistry
+	ref, err := mem.Ref(subject)
 	if err != nil {
 		return "", err
 	}
 	if existing == "" {
 		if err := f.persist(); err != nil {
+			// Do not hold a handle the file never recorded: the next call would
+			// return it without writing, and a reopened registry would mint a
+			// different one for the same subject.
+			f.restore(before)
 			return "", err
 		}
 	}
@@ -156,10 +162,19 @@ func (f *FileRefRegistry) Ref(subject string) (string, error) {
 func (f *FileRefRegistry) Forget(subject string) error {
 	f.wmu.Lock()
 	defer f.wmu.Unlock()
-	if err := f.MemoryRefRegistry.Forget(subject); err != nil {
+	before := f.snapshot()
+	mem := f.MemoryRefRegistry
+	if err := mem.Forget(subject); err != nil {
 		return err
 	}
-	return f.persist()
+	if err := f.persist(); err != nil {
+		// The mapping was never removed from disk, so it must not be removed from
+		// memory either: after a restart the subject would still resolve to its old
+		// handle, which is exactly the relink an erasure is supposed to prevent.
+		f.restore(before)
+		return err
+	}
+	return nil
 }
 
 // persist writes the registry atomically: temp file, fsync, rename, fsync dir.
