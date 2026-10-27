@@ -23,10 +23,6 @@ type Eraser struct {
 	Content ContentStore
 	// Ring holds the per-subject keys. Required.
 	Ring KeyRing
-	// Committer is the committer the ledger's commitments were made with.
-	// Required, so an erasure is performed by the same keying authority that
-	// made the commitments it is destroying.
-	Committer *Committer
 	// Ledger records the erasure. Optional, but an unrecorded erasure is an
 	// erasure nobody can prove.
 	Ledger *Ledger
@@ -49,9 +45,6 @@ type Eraser struct {
 func (e *Eraser) Erase(ref, reason string) error {
 	if e.Ring == nil {
 		return errors.New("eraser requires a key ring")
-	}
-	if e.Committer == nil {
-		return errors.New("eraser requires a committer")
 	}
 
 	hadKey := e.Ring.Has(ref)

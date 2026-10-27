@@ -26,7 +26,7 @@ func newTestEraser(t *testing.T) (*Eraser, *MemoryKeyRing, *MemoryContentStore, 
 	if err != nil {
 		t.Fatalf("NewCommitter: %v", err)
 	}
-	e := &Eraser{Content: content, Ring: ring, Ledger: NewLedger(), Committer: c}
+	e := &Eraser{Content: content, Ring: ring, Ledger: NewLedger()}
 	return e, ring, content, c
 }
 
@@ -101,7 +101,7 @@ func TestEraseEntryHoldsNoPersonalData(t *testing.T) {
 	commitment, _ := c.Commit("ref-7f3a", subject)
 	_, _ = l.Append(Entry{Kind: "decision", SubjectRef: "ref-7f3a", SubjectHash: commitment, CommitAlgo: CommitAlgoHMACSHA256})
 
-	e := &Eraser{Content: content, Ring: ring, Ledger: l, Committer: c}
+	e := &Eraser{Content: content, Ring: ring, Ledger: l}
 	if err := e.Erase("ref-7f3a", "gdpr-request"); err != nil {
 		t.Fatalf("Erase: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestEraseKeepsKeyWhenContentDeleteFails(t *testing.T) {
 	ring := NewMemoryKeyRing()
 	c, _ := NewCommitter(ring)
 	_, _ = c.Commit("sub-a", "x")
-	e := &Eraser{Content: failingContentStore{}, Ring: ring, Ledger: NewLedger(), Committer: c}
+	e := &Eraser{Content: failingContentStore{}, Ring: ring, Ledger: NewLedger()}
 
 	err := e.Erase("sub-a", "gdpr-request")
 	if err == nil {
@@ -169,7 +169,7 @@ func TestEraseRecordsWhenTheKeyIsAlreadyGone(t *testing.T) {
 	_, _ = c.Commit("sub-a", "x")
 	_ = ring.Destroy("sub-a") // shredded out of band, never recorded
 
-	e := &Eraser{Content: NewMemoryContentStore(), Ring: ring, Ledger: NewLedger(), Committer: c}
+	e := &Eraser{Content: NewMemoryContentStore(), Ring: ring, Ledger: NewLedger()}
 	if err := e.Erase("sub-a", "gdpr-request"); err != nil {
 		t.Fatalf("Erase: %v", err)
 	}
@@ -179,12 +179,9 @@ func TestEraseRecordsWhenTheKeyIsAlreadyGone(t *testing.T) {
 	}
 }
 
-func TestEraseRequiresRingAndCommitter(t *testing.T) {
+func TestEraseRequiresARing(t *testing.T) {
 	if err := (&Eraser{Ledger: NewLedger()}).Erase("sub-a", "x"); err == nil {
 		t.Fatal("Eraser without a key ring reported success")
-	}
-	if err := (&Eraser{Ring: NewMemoryKeyRing()}).Erase("sub-a", "x"); err == nil {
-		t.Fatal("Eraser without a committer reported success")
 	}
 }
 
@@ -199,7 +196,7 @@ func TestEraseSubjectForgetsTheHandle(t *testing.T) {
 	commitment, _ := c.Commit(ref, subject)
 	_ = content.Put(ref, []byte(subject))
 
-	e := &Eraser{Content: content, Ring: ring, Ledger: NewLedger(), Committer: c, Refs: refs}
+	e := &Eraser{Content: content, Ring: ring, Ledger: NewLedger(), Refs: refs}
 	if err := e.EraseSubject(subject, "gdpr-request"); err != nil {
 		t.Fatalf("EraseSubject: %v", err)
 	}
@@ -224,10 +221,27 @@ func TestEraseSubjectForgetsTheHandle(t *testing.T) {
 }
 
 func TestEraseSubjectRequiresARegistry(t *testing.T) {
-	ring := NewMemoryKeyRing()
-	c, _ := NewCommitter(ring)
-	e := &Eraser{Ring: ring, Ledger: NewLedger(), Committer: c}
+	e := &Eraser{Ring: NewMemoryKeyRing(), Ledger: NewLedger()}
 	if err := e.EraseSubject("alice@example.com", "gdpr-request"); err == nil {
 		t.Fatal("EraseSubject without a ref registry reported success")
+	}
+}
+
+func TestEraseOnlyNeedsARing(t *testing.T) {
+	ring := NewMemoryKeyRing()
+	content := NewMemoryContentStore()
+	c, _ := NewCommitter(ring)
+	_, _ = c.Commit("sub-a", "x")
+	_ = content.Put("sub-a", []byte("x"))
+
+	// No Committer: the eraser destroys content and keys, and never needs to
+	// recompute a commitment, so requiring one would be a dependency it does
+	// not use.
+	e := &Eraser{Content: content, Ring: ring, Ledger: NewLedger()}
+	if err := e.Erase("sub-a", "gdpr-request"); err != nil {
+		t.Fatalf("Erase without a committer: %v", err)
+	}
+	if got := len(e.Ledger.Entries()); got != 1 {
+		t.Fatalf("ledger len = %d, want 1", got)
 	}
 }
