@@ -15,10 +15,10 @@ imposed from outside.
 | Primitive | Role |
 |---|---|
 | Policy engine | deny-by-default rules over tool calls |
-| Kill switch | scoped, non-negotiable stop (global / agent / capability) |
-| Trust score | signal on the request path |
+| Kill switch | scoped, irreversible stop (global / agent), tripped from code |
+| Trust score | written on every non-allow decision; nothing reads it yet — the request path it informs is not built |
 | Append-only ledger | the record the governor reads; agents never write it |
-| Enforcement layer | container (Linux) or local shim (macOS) the agent's shell can't reach around |
+| Enforcement layer | container spec (no network, no capabilities, read-only root, per-agent uid); applied by the workload, not by the governor |
 
 The agent participates in its governance and never governs itself. The allow/deny decision is
 deterministic, and the LLM enters only as data, never as the judge.
