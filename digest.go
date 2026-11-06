@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/aj-nt/gaap/internal/status"
 )
 
 // defaultDigestMaxChars is the per-audience digest budget. 900 = spike 003's
@@ -37,11 +39,11 @@ func (o *Orchestrator) buildDigest(audience string) string {
 
 	blockedBy := map[string][]string{}
 	for _, t := range all {
-		if t.status == "blocked" {
+		if t.status == status.TaskBlocked {
 			var failedParents, blockers []string
 			for _, p := range t.parents {
 				if pn, ok := o.dag.nodes[p]; ok {
-					if pn.Status == "failed" {
+					if pn.Status == status.TaskFailed {
 						failedParents = append(failedParents, p)
 					} else {
 						blockers = append(blockers, p)
@@ -56,7 +58,7 @@ func (o *Orchestrator) buildDigest(audience string) string {
 		}
 	}
 
-	rank := map[string]int{"failed": 0, "blocked": 1, "ready": 2, "claimed": 3, "done": 4}
+	rank := map[status.Task]int{status.TaskFailed: 0, status.TaskBlocked: 1, status.TaskReady: 2, status.TaskClaimed: 3, status.TaskDone: 4}
 	var relevant []digestTask
 	switch audience {
 	case "orchestrator":
@@ -66,13 +68,13 @@ func (o *Orchestrator) buildDigest(audience string) string {
 		lines = append(lines, "full summaries in board categories")
 	case "worker":
 		for _, t := range all {
-			if t.status != "done" {
+			if t.status != status.TaskDone {
 				relevant = append(relevant, t)
 			}
 		}
 	case "observer":
 		for _, t := range all {
-			if t.status == "failed" || t.status == "blocked" || t.summary != "" {
+			if t.status == status.TaskFailed || t.status == status.TaskBlocked || t.summary != "" {
 				relevant = append(relevant, t)
 			}
 		}
@@ -96,8 +98,9 @@ func (o *Orchestrator) buildDigest(audience string) string {
 
 // digestTask is one task's projection into a digest line.
 type digestTask struct {
-	id, status, goal, summary, agentType string
-	parents                              []string
+	id, goal, summary, agentType string
+	status                       status.Task
+	parents                      []string
 }
 
 // collectDigestTasks projects the DAG into digest lines, ordered by task ID.
@@ -145,15 +148,15 @@ func splitTrailingNumber(s string) (string, int, bool) {
 }
 
 func digestTaskLine(t digestTask, blockers []string) string {
-	icon := map[string]string{"done": "OK", "failed": "FAIL", "claimed": "RUN", "ready": "QUEUED", "blocked": "BLOCKED"}[t.status]
+	icon := map[status.Task]string{status.TaskDone: "OK", status.TaskFailed: "FAIL", status.TaskClaimed: "RUN", status.TaskReady: "QUEUED", status.TaskBlocked: "BLOCKED"}[t.status]
 	if icon == "" {
-		icon = strings.ToUpper(t.status)
+		icon = strings.ToUpper(string(t.status))
 	}
 	line := fmt.Sprintf("[%s] %s (%s): %s", icon, t.id, t.agentType, t.goal)
-	if t.status == "blocked" && len(blockers) > 0 {
+	if t.status == status.TaskBlocked && len(blockers) > 0 {
 		line += fmt.Sprintf(" — blocked by %s", strings.Join(blockers, ","))
 	}
-	if t.summary != "" && t.status != "blocked" {
+	if t.summary != "" && t.status != status.TaskBlocked {
 		line += fmt.Sprintf(" — %.160s", t.summary)
 	}
 	return line
@@ -185,7 +188,7 @@ func enforceDigestBudget(lines []string, max int) string {
 	return out
 }
 
-func sortDigestTasks(tasks []digestTask, rank map[string]int) {
+func sortDigestTasks(tasks []digestTask, rank map[status.Task]int) {
 	for i := 1; i < len(tasks); i++ {
 		for j := i; j > 0 && rank[tasks[j].status] < rank[tasks[j-1].status]; j-- {
 			tasks[j], tasks[j-1] = tasks[j-1], tasks[j]

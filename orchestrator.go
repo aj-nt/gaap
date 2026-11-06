@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/aj-nt/gaap/internal/status"
 	"github.com/aj-nt/gaap/internal/worker"
 	"github.com/aj-nt/vassago-sdk/client"
 	pb "github.com/aj-nt/vassago-sdk/proto"
@@ -363,7 +364,7 @@ func (o *Orchestrator) pollDaemon() {
 func (o *Orchestrator) pollOnce() {
 	for _, node := range o.dag.nodes {
 		// Only query tasks that were dispatched to the daemon.
-		if node.Status == "ready" || node.Status == "claimed" {
+		if node.Status == status.TaskReady || node.Status == status.TaskClaimed {
 			entry, err := o.daemon.GetTask(o.ctx, node.ID)
 			if err != nil {
 				slog.Warn("poll: failed to get task", "id", node.ID, "error", err)
@@ -372,8 +373,8 @@ func (o *Orchestrator) pollOnce() {
 			if entry == nil {
 				continue
 			}
-			if entry.Status == "done" || entry.Status == "dead_letter" {
-				node.Status = "done"
+			if status.Task(entry.Status) == status.TaskDone || status.Task(entry.Status) == status.TaskDeadLetter {
+				node.Status = status.TaskDone
 
 				// Read the worker's result from the daemon.
 				// Workers store ExecuteResult JSON and pass the memory UUID
@@ -398,8 +399,8 @@ func (o *Orchestrator) pollOnce() {
 	// daemon task to poll -- we mark them done and fire completion events
 	// so the state machine can advance.
 	for _, node := range o.dag.nodes {
-		if node.AgentType == "synthesis" && node.Status == "ready" {
-			node.Status = "done"
+		if node.AgentType == "synthesis" && node.Status == status.TaskReady {
+			node.Status = status.TaskDone
 			o.fireTaskCompleted(node.ID, "poll:synthesis")
 		}
 	}
@@ -429,8 +430,8 @@ func (o *Orchestrator) fireTaskCompleted(taskID, logPrefix string) {
 func (o *Orchestrator) simulateCompletions() {
 	// First pass: mark all ready tasks as done.
 	for id, node := range o.dag.nodes {
-		if node.Status == "ready" && len(node.ParentIDs) == 0 {
-			node.Status = "done"
+		if node.Status == status.TaskReady && len(node.ParentIDs) == 0 {
+			node.Status = status.TaskDone
 			o.fireTaskCompleted(id, "sim")
 		}
 	}
@@ -438,8 +439,8 @@ func (o *Orchestrator) simulateCompletions() {
 	// Second pass: now promoted tasks may be ready (was blocked, now all parents done).
 	// Mark those as done too.
 	for id, node := range o.dag.nodes {
-		if node.Status == "ready" {
-			node.Status = "done"
+		if node.Status == status.TaskReady {
+			node.Status = status.TaskDone
 			o.fireTaskCompleted(id, "sim")
 		}
 	}
@@ -493,9 +494,9 @@ func (o *Orchestrator) subscribeDaemon() error {
 			}
 
 			oldStatus := node.Status
-			switch event.Task.Status {
-			case "done", "dead_letter":
-				node.Status = "done"
+			switch status.Task(event.Task.Status) {
+			case status.TaskDone, status.TaskDeadLetter:
+				node.Status = status.TaskDone
 
 				// Read worker results from daemon (same as pollOnce)
 				if event.Task.ResultKey != "" {
@@ -517,8 +518,8 @@ func (o *Orchestrator) subscribeDaemon() error {
 
 				// Also auto-complete synthesis tasks promoted to ready
 				for _, n := range o.dag.nodes {
-					if n.AgentType == "synthesis" && n.Status == "ready" {
-						n.Status = "done"
+					if n.AgentType == "synthesis" && n.Status == status.TaskReady {
+						n.Status = status.TaskDone
 						o.fireTaskCompleted(n.ID, "sub:synthesis")
 					}
 				}

@@ -6,13 +6,15 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+
+	"github.com/aj-nt/gaap/internal/status"
 )
 
 // TaskSpec represents a decomposed task to be dispatched to workers.
 type TaskSpec struct {
 	TaskID    string         `json:"task_id"`
 	ParentIDs []string       `json:"parent_ids"`
-	Status    string         `json:"status"`
+	Status    status.Task    `json:"status"`
 	Goal      string         `json:"goal"`
 	AgentType string         `json:"agent_type"`
 	Context   map[string]any `json:"context"`
@@ -132,7 +134,7 @@ func (d *Decomposer) fileGoalTask(goal, filePath string) []TaskSpec {
 		{
 			TaskID:    prefix + "_file_analysis",
 			ParentIDs: nil,
-			Status:    "ready",
+			Status:    status.TaskReady,
 			Goal:      goal,
 			AgentType: "file_analysis",
 			Context: map[string]any{
@@ -232,7 +234,7 @@ func hardcodedDecompose(goal, repoPath, reason string) []TaskSpec {
 		{
 			TaskID:    leaf1ID,
 			ParentIDs: nil,
-			Status:    "ready",
+			Status:    status.TaskReady,
 			Goal:      fmt.Sprintf("Run static analysis (golangci-lint, gosec, govulncheck) on %s", repoPath),
 			AgentType: "static_analysis",
 			Context: map[string]any{
@@ -243,7 +245,7 @@ func hardcodedDecompose(goal, repoPath, reason string) []TaskSpec {
 		{
 			TaskID:    leaf2ID,
 			ParentIDs: nil,
-			Status:    "ready",
+			Status:    status.TaskReady,
 			Goal:      fmt.Sprintf("Run code quality scan (god objects, long functions, cohesion) on %s", repoPath),
 			AgentType: "quality_scan",
 			Context: map[string]any{
@@ -253,7 +255,7 @@ func hardcodedDecompose(goal, repoPath, reason string) []TaskSpec {
 		{
 			TaskID:    synthID,
 			ParentIDs: []string{leaf1ID, leaf2ID},
-			Status:    "blocked",
+			Status:    status.TaskBlocked,
 			Goal:      fmt.Sprintf("Synthesize static analysis and quality scan results for %s into a unified audit report", repoPath),
 			AgentType: "synthesis",
 			Context: map[string]any{

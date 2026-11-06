@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/aj-nt/gaap/internal/status"
 	"github.com/google/uuid"
 )
 
@@ -101,7 +102,7 @@ func (s *PlanningState) Enter(ctx context.Context, o *Orchestrator) error {
 
 	// Dispatch leaf tasks (ready status, no parents) to the daemon
 	for _, t := range tasks {
-		if t.Status == "ready" && len(t.ParentIDs) == 0 {
+		if t.Status == status.TaskReady && len(t.ParentIDs) == 0 {
 			// Circuit breaker: skip dispatch if this agent type is tripped
 			if o.breakerRegistry != nil {
 				if breaker, ok := o.breakerRegistry[t.AgentType]; ok {
@@ -302,9 +303,9 @@ func (s *FailedState) Enter(ctx context.Context, o *Orchestrator) error {
 
 	for _, node := range o.dag.nodes {
 		switch node.Status {
-		case "done":
+		case status.TaskDone:
 			completed++
-		case "dead_letter":
+		case status.TaskDeadLetter:
 			deadLettered++
 			deadLetterIDs = append(deadLetterIDs, node.ID)
 		default:
@@ -344,7 +345,7 @@ func (s *FailedState) Enter(ctx context.Context, o *Orchestrator) error {
 
 		results := make(map[string]*TaskResult)
 		for id, node := range o.dag.nodes {
-			if node.Status != "done" {
+			if node.Status != status.TaskDone {
 				continue
 			}
 			summary := node.Summary
