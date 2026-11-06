@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 
 	"github.com/aj-nt/gaap/internal/status"
@@ -178,10 +179,29 @@ func (s *WaitingState) HandleEvent(ctx context.Context, o *Orchestrator, evt Eve
 			}
 		}
 
-		// Check if all tasks are done.
-		if o.dag.AllTasksComplete() {
+		// Terminal: nothing further can happen.
+		if o.dag.AllTasksTerminal() {
+			if failed := o.dag.FailedIDs(); len(failed) > 0 {
+				slog.Warn("tasks failed, transitioning to failed", "failed", failed)
+				return &FailedState{}, nil
+			}
 			slog.Info("all tasks complete, transitioning to synthesizing")
 			return &SynthesizingState{}, nil
+		}
+
+	case EventTaskFailed:
+		taskID, _ := evt.Payload["task_id"].(string)
+		skipped, _ := evt.Payload["skipped"].([]string)
+		slog.Warn("task failed, advancing DAG", "task_id", taskID, "skipped", skipped)
+		// Digests first: a failure is something the audience-scoped report
+		// should carry, including which dependents it took out.
+		o.emitDigests(ctx)
+		if o.failFast() {
+			slog.Warn("fail_fast: ending run at the first failure", "task_id", taskID)
+			return &FailedState{}, nil
+		}
+		if o.dag.AllTasksTerminal() {
+			return &FailedState{}, nil
 		}
 	}
 
@@ -204,24 +224,8 @@ func (s *SynthesizingState) Enter(ctx context.Context, o *Orchestrator) error {
 		o.synthesis = NewSynthesisEngine(nil)
 	}
 
-	// Collect all task results from the DAG
-	results := make(map[string]*TaskResult)
-	for id, node := range o.dag.nodes {
-		summary := node.Summary
-		if summary == "" {
-			summary = node.Goal // fallback: use goal if no worker summary
-		}
-		results[id] = &TaskResult{
-			TaskID:    node.ID,
-			AgentType: node.AgentType,
-			Status:    node.Status,
-			Summary:   summary,
-			Findings:  node.Findings,
-		}
-	}
-
-	// Run synthesis
-	sr, err := o.synthesis.synthesizeResults(ctx, results)
+	// Run synthesis over what actually completed.
+	sr, err := o.synthesis.synthesizeResults(ctx, o.collectSynthesisInput())
 	if err != nil {
 		slog.Warn("synthesis failed, using empty result", "error", err)
 		sr = &SynthesisResult{
@@ -288,6 +292,32 @@ func (s *DoneState) HandleEvent(ctx context.Context, o *Orchestrator, evt Event)
 	return nil, nil
 }
 
+// collectSynthesisInput returns results for tasks that actually completed.
+// Failed and skipped tasks are the failure report's business, not the
+// synthesizer's: feeding them in makes an empty summary look like a result.
+// A completed task with no worker summary says so — its goal is context, never
+// a substitute for the result it did not report.
+func (o *Orchestrator) collectSynthesisInput() map[string]*TaskResult {
+	results := make(map[string]*TaskResult)
+	for id, node := range o.dag.nodes {
+		if node.Status != status.TaskDone {
+			continue
+		}
+		summary := node.Summary
+		if summary == "" {
+			summary = fmt.Sprintf("no summary reported (goal: %s)", node.Goal)
+		}
+		results[id] = &TaskResult{
+			TaskID:    node.ID,
+			AgentType: node.AgentType,
+			Status:    node.Status,
+			Summary:   summary,
+			Findings:  node.Findings,
+		}
+	}
+	return results
+}
+
 // FailedState is terminal. The orchestrator timed out or all dispatched tasks dead-lettered.
 // It synthesizes partial results (if any completed) and reports the failure clearly.
 type FailedState struct{}
@@ -295,29 +325,33 @@ type FailedState struct{}
 func (s *FailedState) Name() string { return "failed" }
 
 func (s *FailedState) Enter(ctx context.Context, o *Orchestrator) error {
-	// Count what happened
-	completed := 0
-	deadLettered := 0
-	stillWaiting := 0
-	var deadLetterIDs []string
+	// Count what happened, using the DAG's words rather than the daemon's.
+	completed, failed, skipped, pending := 0, 0, 0, 0
+	var failedIDs, skippedIDs []string
 
-	for _, node := range o.dag.nodes {
+	for id, node := range o.dag.nodes {
 		switch node.Status {
 		case status.TaskDone:
 			completed++
-		case status.TaskDeadLetter:
-			deadLettered++
-			deadLetterIDs = append(deadLetterIDs, node.ID)
+		case status.TaskFailed:
+			failed++
+			failedIDs = append(failedIDs, id)
+		case status.TaskSkipped:
+			skipped++
+			skippedIDs = append(skippedIDs, id)
 		default:
-			stillWaiting++
+			pending++
 		}
 	}
+	sort.Strings(failedIDs)
+	sort.Strings(skippedIDs)
 
 	slog.Warn("orchestration failed — not all tasks completed",
 		"goal", o.goal,
 		"completed", completed,
-		"dead_letter", deadLettered,
-		"still_waiting", stillWaiting,
+		"failed", failed,
+		"skipped", skipped,
+		"still_waiting", pending,
 	)
 
 	// Print a clear failure header
@@ -325,17 +359,26 @@ func (s *FailedState) Enter(ctx context.Context, o *Orchestrator) error {
 	fmt.Printf("  ORCHESTRATION FAILED\n")
 	fmt.Printf("%s\n\n", sepLine)
 	fmt.Printf("Goal: %s\n", o.goal)
-	fmt.Printf("Completed: %d  |  Dead-lettered: %d  |  Still pending: %d\n\n", completed, deadLettered, stillWaiting)
+	fmt.Printf("Completed: %d  |  Failed: %d  |  Skipped: %d  |  Still pending: %d\n\n",
+		completed, failed, skipped, pending)
 
-	if len(deadLetterIDs) > 0 {
-		fmt.Println("Dead-lettered tasks:")
-		for _, id := range deadLetterIDs {
-			fmt.Printf("  - %s\n", id)
+	if len(failedIDs) > 0 {
+		fmt.Println("Failed tasks:")
+		for _, id := range failedIDs {
+			summary := o.dag.nodes[id].Summary
+			if summary == "" {
+				summary = "no reason recorded"
+			}
+			fmt.Printf("  - %s — %s\n", id, summary)
 		}
 		fmt.Println()
 	}
+	if len(skippedIDs) > 0 {
+		fmt.Printf("Skipped (never ran, blocked by a failed parent): %s\n\n", strings.Join(skippedIDs, ", "))
+	}
 
-	// Run partial synthesis if anything completed
+	// Partial synthesis over completed work only: a failed task's goal is not
+	// a result, and leaving it out of the report is the point.
 	if completed > 0 {
 		fmt.Println("Partial synthesis (completed results only):")
 
@@ -343,31 +386,12 @@ func (s *FailedState) Enter(ctx context.Context, o *Orchestrator) error {
 			o.synthesis = NewSynthesisEngine(nil)
 		}
 
-		results := make(map[string]*TaskResult)
-		for id, node := range o.dag.nodes {
-			if node.Status != status.TaskDone {
-				continue
-			}
-			summary := node.Summary
-			if summary == "" {
-				summary = node.Goal
-			}
-			results[id] = &TaskResult{
-				TaskID:    node.ID,
-				AgentType: node.AgentType,
-				Status:    node.Status,
-				Summary:   summary,
-				Findings:  node.Findings,
-			}
-		}
-
-		sr, err := o.synthesis.synthesizeResults(ctx, results)
+		sr, err := o.synthesis.synthesizeResults(ctx, o.collectSynthesisInput())
 		if err != nil {
 			slog.Warn("partial synthesis failed", "error", err)
 		} else {
 			o.result = sr
-			report := formatSynthesisReport(sr)
-			fmt.Println(report)
+			fmt.Println(formatSynthesisReport(sr))
 		}
 	} else {
 		fmt.Println("No tasks completed — no synthesis possible.")
@@ -377,11 +401,13 @@ func (s *FailedState) Enter(ctx context.Context, o *Orchestrator) error {
 	runKey := o.RunKey()
 	if runKey != "" {
 		payload := map[string]any{
-			"goal":            o.goal,
-			"completed":       completed,
-			"dead_letter":     deadLettered,
-			"still_waiting":   stillWaiting,
-			"dead_letter_ids": deadLetterIDs,
+			"goal":          o.goal,
+			"completed":     completed,
+			"failed":        failed,
+			"skipped":       skipped,
+			"still_waiting": pending,
+			"failed_ids":    failedIDs,
+			"skipped_ids":   skippedIDs,
 		}
 		b, _ := json.Marshal(payload)
 		_, _ = o.daemon.AddMemory(ctx, "memory", "orchestration_failed", "failed_"+runKey,

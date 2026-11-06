@@ -3,6 +3,7 @@ package gaap
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -18,13 +19,41 @@ import (
 // Re-exported from the SDK so the orchestrator's signatures stay readable.
 type MnemoClient = client.MnemoClient
 
+// FailureMode is how a run reacts to a task failure.
+type FailureMode string
+
+const (
+	// FailSoft lets independent branches finish, then reports the failure.
+	FailSoft FailureMode = "fail_soft"
+	// FailFast ends the run as soon as any task fails.
+	FailFast FailureMode = "fail_fast"
+)
+
+// Mode returns the configured failure mode. The zero value and any unrecognized
+// string mean FailSoft: the safe default is to finish work already in flight
+// rather than to throw it away.
+func (c *Config) Mode() FailureMode {
+	if c.FailureMode == FailFast {
+		return FailFast
+	}
+	return FailSoft
+}
+
 // Config holds the orchestrator configuration.
 type Config struct {
 	DaemonAddr      string `yaml:"daemon_addr"`
 	RepoPath        string `yaml:"repo_path"`
 	MaxWaitSec      int    `yaml:"max_wait_sec"`
 	PollIntervalSec int    `yaml:"poll_interval_sec"`
+
+	// FailureMode decides what one failed task does to the run.
+	FailureMode FailureMode `yaml:"failure_mode"`
 }
+
+// ErrOrchestrationFailed is returned when a run finishes with at least one
+// failed task. The report is still produced and persisted — the error is what
+// makes the process exit non-zero instead of reporting success over a hole.
+var ErrOrchestrationFailed = errors.New("orchestration failed: one or more tasks did not complete")
 
 // RunState is a serializable snapshot of an orchestrator run that can be
 // stored to and loaded from the daemon. It captures just enough to rebuild
@@ -220,7 +249,7 @@ func (o *Orchestrator) runWaitingAndBeyond() error {
 			o.pollDaemon()
 		}
 
-		// Check if we timed out with pending tasks — transition to Failed.
+		// Timed out with work still pending — transition to Failed.
 		if !o.dag.AllTasksComplete() && o.state.Name() == "waiting" {
 			slog.Warn("orchestration incomplete after wait phase, transitioning to failed")
 			if err := o.Transition(&FailedState{}); err != nil {
@@ -248,6 +277,12 @@ func (o *Orchestrator) runWaitingAndBeyond() error {
 				return err
 			}
 		}
+	}
+
+	// A run that ended in FailedState produced a report, but it did not
+	// succeed: say so, so the process exits non-zero.
+	if o.state.Name() == "failed" {
+		return ErrOrchestrationFailed
 	}
 
 	return nil
@@ -338,8 +373,15 @@ func (o *Orchestrator) pollDaemon() {
 		// Query all dispatched leaf tasks
 		o.pollOnce()
 
-		// Check if all done
-		if o.dag.AllTasksComplete() {
+		// Stop when nothing further can happen. AllTasksTerminal covers the
+		// failed/skipped case that AllTasksComplete treats as "still running",
+		// which is how a dead-lettered task used to burn the whole maxWait.
+		if o.dag.AllTasksTerminal() {
+			return
+		}
+		// Fail-fast stops even when other branches are still in flight.
+		if o.failFast() && o.dag.HasFailures() {
+			slog.Warn("polling: stopping at first failure (fail_fast)")
 			return
 		}
 
@@ -373,24 +415,13 @@ func (o *Orchestrator) pollOnce() {
 			if entry == nil {
 				continue
 			}
-			if status.Task(entry.Status) == status.TaskDone || status.Task(entry.Status) == status.TaskDeadLetter {
-				node.Status = status.TaskDone
-
-				// Read the worker's result from the daemon.
-				// Workers store ExecuteResult JSON and pass the memory UUID
-				// via CompleteTask; ResultKey now holds that UUID.
-				if entry.ResultKey != "" {
-					if mem, err := o.daemon.GetMemory(o.ctx, entry.ResultKey); err == nil && mem != nil {
-						var wr worker.ExecuteResult
-						if json.Unmarshal([]byte(mem.Content), &wr) == nil {
-							node.Findings = wr.Findings
-							node.Summary = wr.Summary
-						}
-					}
-				}
-
-				o.fireTaskCompleted(node.ID, "poll")
-			}
+			o.handleTaskEvent(taskEvent{
+				ID:         entry.Id,
+				Status:     status.Task(entry.Status),
+				ResultKey:  entry.ResultKey,
+				RetryCount: entry.RetryCount,
+				Source:     "poll",
+			})
 		}
 	}
 
@@ -398,12 +429,7 @@ func (o *Orchestrator) pollOnce() {
 	// Synthesis runs in-process after all leaves complete, so there's no
 	// daemon task to poll -- we mark them done and fire completion events
 	// so the state machine can advance.
-	for _, node := range o.dag.nodes {
-		if node.AgentType == "synthesis" && node.Status == status.TaskReady {
-			node.Status = status.TaskDone
-			o.fireTaskCompleted(node.ID, "poll:synthesis")
-		}
-	}
+	o.autoCompleteSynthesis("poll:synthesis")
 }
 
 // fireTaskCompleted fires a task completion event through the state machine.
@@ -423,6 +449,106 @@ func (o *Orchestrator) fireTaskCompleted(taskID, logPrefix string) {
 			slog.Warn("state transition failed", "error", err)
 		}
 	}
+}
+
+// taskEvent is the subset of a daemon task entry either transport can supply:
+// the poll path speaks client.TaskEntry, the subscription path proto.TaskEntry,
+// and those are different structs in the SDK. Reducing both to these four
+// fields is what keeps one mapping instead of two.
+type taskEvent struct {
+	ID         string
+	Status     status.Task
+	ResultKey  string
+	RetryCount int32
+	Source     string // "poll" or "sub", for logging only
+}
+
+// handleTaskEvent advances the DAG for one daemon task event. Both transport
+// paths call it, so the mapping from daemon vocabulary to DAG vocabulary lives
+// in one place and cannot drift between them.
+func (o *Orchestrator) handleTaskEvent(evt taskEvent) {
+	node, ok := o.dag.nodes[evt.ID]
+	if !ok {
+		return // not one of our tasks
+	}
+	oldStatus := node.Status
+	switch evt.Status {
+	case status.TaskDone:
+		node.Status = status.TaskDone
+		o.loadWorkerResult(evt.ResultKey, node)
+		slog.Info(evt.Source+": task completed",
+			"id", evt.ID, "old_status", oldStatus, "new_status", node.Status)
+		o.fireTaskCompleted(evt.ID, evt.Source)
+	case status.TaskDeadLetter:
+		o.failTask(node, evt.RetryCount, evt.Source)
+	}
+}
+
+// failTask records a task the daemon gave up on. dead_letter is the daemon's
+// word for "retries exhausted"; failed is the DAG's word for what that means.
+// Descendants are skipped here because nothing will ever promote them, and
+// leaving them blocked would end the run by timeout instead of by fact.
+func (o *Orchestrator) failTask(node *TaskNode, attempts int32, logPrefix string) {
+	node.Status = status.TaskFailed
+	node.Summary = fmt.Sprintf("daemon dead-lettered the task after %d attempt(s)", attempts)
+	skipped := o.dag.SkipDescendants(node.ID)
+	o.fireTaskFailed(node.ID, logPrefix, skipped)
+}
+
+// loadWorkerResult reads the ExecuteResult a worker stored under the task's
+// ResultKey. A dead-lettered task has no result key at all, which is the point:
+// its summary comes from failTask, never from a missing entry read as empty.
+func (o *Orchestrator) loadWorkerResult(resultKey string, node *TaskNode) {
+	if resultKey == "" {
+		return
+	}
+	mem, err := o.daemon.GetMemory(o.ctx, resultKey)
+	if err != nil || mem == nil {
+		return
+	}
+	var wr worker.ExecuteResult
+	if json.Unmarshal([]byte(mem.Content), &wr) != nil {
+		return
+	}
+	node.Findings = wr.Findings
+	node.Summary = wr.Summary
+}
+
+// fireTaskFailed fires a failure event through the state machine. Skipped
+// descendants ride in the payload so the report and digest can name them
+// without re-deriving the DAG.
+func (o *Orchestrator) fireTaskFailed(taskID, logPrefix string, skipped []string) {
+	slog.Warn(logPrefix+": task failed", "id", taskID, "skipped", skipped)
+	evt := Event{
+		Type:    EventTaskFailed,
+		Payload: map[string]any{"task_id": taskID, "skipped": skipped},
+	}
+	next, err := o.state.HandleEvent(o.ctx, o, evt)
+	if err != nil {
+		slog.Warn("failure handler error", "task_id", taskID, "error", err)
+	}
+	if next != nil {
+		if err := o.Transition(next); err != nil {
+			slog.Warn("state transition failed", "error", err)
+		}
+	}
+}
+
+// autoCompleteSynthesis marks synthesis tasks promoted to ready as done — they
+// run in-process, so there is no daemon task to poll.
+func (o *Orchestrator) autoCompleteSynthesis(logPrefix string) {
+	for _, n := range o.dag.nodes {
+		if n.AgentType == "synthesis" && n.Status == status.TaskReady {
+			n.Status = status.TaskDone
+			o.fireTaskCompleted(n.ID, logPrefix)
+		}
+	}
+}
+
+// failFast reports whether the run should stop at the first task failure
+// instead of letting independent branches finish.
+func (o *Orchestrator) failFast() bool {
+	return o.cfg.Mode() == FailFast
 }
 
 // simulateCompletions marks all ready/leaf tasks as done and advances the DAG.
@@ -488,45 +614,19 @@ func (o *Orchestrator) subscribeDaemon() error {
 
 			eventsReceived = true
 
-			node, ok := o.dag.nodes[event.Task.Id]
-			if !ok {
-				continue // Not one of our tasks
-			}
+			o.handleTaskEvent(taskEvent{
+				ID:         event.Task.Id,
+				Status:     status.Task(event.Task.Status),
+				ResultKey:  event.Task.ResultKey,
+				RetryCount: event.Task.RetryCount,
+				Source:     "sub",
+			})
 
-			oldStatus := node.Status
-			switch status.Task(event.Task.Status) {
-			case status.TaskDone, status.TaskDeadLetter:
-				node.Status = status.TaskDone
+			// Also auto-complete synthesis tasks promoted to ready by that event.
+			o.autoCompleteSynthesis("sub:synthesis")
 
-				// Read worker results from daemon (same as pollOnce)
-				if event.Task.ResultKey != "" {
-					if mem, merr := o.daemon.GetMemory(o.ctx, event.Task.ResultKey); merr == nil && mem != nil {
-						var wr worker.ExecuteResult
-						if json.Unmarshal([]byte(mem.Content), &wr) == nil {
-							node.Findings = wr.Findings
-							node.Summary = wr.Summary
-						}
-					}
-				}
-
-				slog.Info("subscription: task completed",
-					"id", event.Task.Id,
-					"old_status", oldStatus,
-					"new_status", node.Status,
-				)
-				o.fireTaskCompleted(event.Task.Id, "sub")
-
-				// Also auto-complete synthesis tasks promoted to ready
-				for _, n := range o.dag.nodes {
-					if n.AgentType == "synthesis" && n.Status == status.TaskReady {
-						n.Status = status.TaskDone
-						o.fireTaskCompleted(n.ID, "sub:synthesis")
-					}
-				}
-
-				if o.dag.AllTasksComplete() {
-					return
-				}
+			if o.dag.AllTasksTerminal() || (o.failFast() && o.dag.HasFailures()) {
+				return
 			}
 		}
 	}()
@@ -536,7 +636,10 @@ func (o *Orchestrator) subscribeDaemon() error {
 	maxWait := time.Duration(o.cfg.MaxWaitSec) * time.Second
 
 	for {
-		if o.dag.AllTasksComplete() {
+		if o.dag.AllTasksTerminal() {
+			return nil
+		}
+		if o.failFast() && o.dag.HasFailures() {
 			return nil
 		}
 		if time.Since(start) > maxWait {
