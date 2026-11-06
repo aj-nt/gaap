@@ -5,7 +5,6 @@ import (
 	"log/slog"
 
 	"github.com/aj-nt/gaap/internal/status"
-	"github.com/aj-nt/vassago-sdk/client"
 )
 
 // TaskResult mirrors the result stored by workers after executing a task on the blackboard.
@@ -97,16 +96,6 @@ func NewSynthesisEngine(chatFn func(ctx context.Context, prompt string) (string,
 		e.llm = &LLMStrategy{chatFn: chatFn}
 	}
 	return e
-}
-
-// Synthesize runs the synthesis pipeline: LLM first, schema fallback.
-// Returns results fetched from the daemon (nil when no daemon available).
-func (e *SynthesisEngine) Synthesize(ctx context.Context, daemon client.MnemoClient, taskIDs []string) (*SynthesisResult, error) {
-	results := make(map[string]*TaskResult)
-	for _, id := range taskIDs {
-		results[id] = &TaskResult{TaskID: id, Status: status.TaskDone, Summary: "ok"}
-	}
-	return e.synthesizeResults(ctx, results)
 }
 
 // synthesizeResults is the core synthesis method — unit-testable without a daemon.
