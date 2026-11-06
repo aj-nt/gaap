@@ -32,6 +32,10 @@ type testDaemon struct {
 	// finds one ready returns it as dead_letter, exactly as FailTask would
 	// after the retries ran out.
 	deadLetter map[string]bool
+
+	// script, when set, is what Subscribe streams instead of the task store.
+	// Tests that build their DAG by hand have nothing in the store to replay.
+	script []*pb.TaskEntry
 }
 
 func (td *testDaemon) AddTask(_ context.Context, req *pb.AddTaskRequest) (*pb.TaskEntry, error) {
@@ -105,6 +109,56 @@ func (td *testDaemon) FailTask(_ context.Context, req *pb.FailTaskRequest) (*pb.
 	}
 	e.Status = "dead_letter"
 	return e, nil
+}
+
+// Subscribe emits the tasks currently in the store as task events, marking the
+// ones in deadLetter as given up on, then closes the stream. Tasks are replayed
+// repeatedly so the orchestrator's reader has real work to do while its loop
+// inspects the DAG — the concurrency the single-writer rule has to survive.
+func (td *testDaemon) Subscribe(_ *pb.SubscribeRequest, stream pb.Vassago_SubscribeServer) error {
+	td.mu.Lock()
+	if len(td.script) > 0 {
+		entries := make([]*pb.TaskEntry, 0, len(td.script))
+		for _, e := range td.script {
+			entries = append(entries, &pb.TaskEntry{Id: e.Id, Status: e.Status, AgentType: e.AgentType, Goal: e.Goal})
+		}
+		td.mu.Unlock()
+		return streamScript(stream, entries)
+	}
+	entries := make([]*pb.TaskEntry, 0, len(td.tasks))
+	for _, e := range td.tasks {
+		// proto messages embed a mutex, so build the event entry rather than
+		// copying one.
+		ev := &pb.TaskEntry{Id: e.Id, AgentType: e.AgentType, Goal: e.Goal, ResultKey: e.ResultKey, Status: "done"}
+		for name := range td.deadLetter {
+			if name != "" && strings.HasSuffix(ev.Id, name) {
+				ev.Status = "dead_letter"
+			}
+		}
+		entries = append(entries, ev)
+	}
+	td.mu.Unlock()
+
+	return streamScript(stream, entries)
+}
+
+// streamScript replays entries repeatedly, so a reader has real work to do
+// while the orchestrator's loop inspects the DAG.
+func streamScript(stream pb.Vassago_SubscribeServer, entries []*pb.TaskEntry) error {
+	for i := 0; i < 10; i++ {
+		for _, e := range entries {
+			if err := stream.Send(&pb.UpdateEvent{Task: e}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// setupDaemonScripted starts a daemon whose subscription replays script.
+func setupDaemonScripted(t *testing.T, script ...*pb.TaskEntry) (client.MnemoClient, func()) {
+	t.Helper()
+	return serveTestDaemon(t, &testDaemon{tasks: map[string]*pb.TaskEntry{}, script: script})
 }
 
 func (td *testDaemon) FindReadyTasks(_ context.Context, req *pb.FindReadyTasksRequest) (*pb.TaskList, error) {
