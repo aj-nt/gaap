@@ -59,9 +59,10 @@ var ErrOrchestrationFailed = errors.New("orchestration failed: one or more tasks
 // stored to and loaded from the daemon. It captures just enough to rebuild
 // the DAG and resume from the Waiting state after an orchestrator crash.
 type RunState struct {
-	Goal     string     `json:"goal"`
-	RepoPath string     `json:"repo_path"`
-	Tasks    []TaskSpec `json:"tasks"`
+	Goal        string      `json:"goal"`
+	RepoPath    string      `json:"repo_path"`
+	Tasks       []TaskSpec  `json:"tasks"`
+	FailureMode FailureMode `json:"failure_mode,omitempty"`
 }
 
 // Orchestrator coordinates the full pipeline: decompose -> dispatch -> poll -> synthesize -> publish.
@@ -179,6 +180,37 @@ func (o *Orchestrator) Run(goal string) error {
 	return o.runWaitingAndBeyond()
 }
 
+// resumeFromState rebuilds the DAG from a saved RunState, translating any
+// persisted status into the DAG's vocabulary. A RunState written by an older
+// build can carry the daemon's dead_letter, which the DAG does not speak.
+func (o *Orchestrator) resumeFromState(rs *RunState) error {
+	// Restore the failure policy the run started with. A RunState saved before
+	// this field existed has none, which normalizes to fail_soft.
+	if rs.FailureMode != "" {
+		o.cfg.FailureMode = rs.FailureMode
+	}
+
+	o.dag = NewDAG()
+	for _, t := range rs.Tasks {
+		st := t.Status
+		if st == status.TaskDeadLetter {
+			st = status.TaskFailed
+		}
+		err := o.dag.AddTask(&TaskNode{
+			ID:        t.TaskID,
+			ParentIDs: t.ParentIDs,
+			Status:    st,
+			Goal:      t.Goal,
+			AgentType: t.AgentType,
+			Context:   t.Context,
+		})
+		if err != nil {
+			return fmt.Errorf("resume: add task %s: %w", t.TaskID, err)
+		}
+	}
+	return nil
+}
+
 // Resume rebuilds the orchestrator's DAG from a saved RunState, skips the plan
 // phase, and resumes from the Waiting state. This implements crash recovery:
 // the daemon still has all task state; we just need to reconnect the DAG and
@@ -196,20 +228,8 @@ func (o *Orchestrator) Resume(rs *RunState) error {
 		o.cfg.RepoPath = rs.RepoPath
 	}
 
-	// Rebuild DAG from saved task specs.
-	o.dag = NewDAG()
-	for _, t := range rs.Tasks {
-		err := o.dag.AddTask(&TaskNode{
-			ID:        t.TaskID,
-			ParentIDs: t.ParentIDs,
-			Status:    t.Status,
-			Goal:      t.Goal,
-			AgentType: t.AgentType,
-			Context:   t.Context,
-		})
-		if err != nil {
-			return fmt.Errorf("resume: add task %s: %w", t.TaskID, err)
-		}
+	if err := o.resumeFromState(rs); err != nil {
+		return err
 	}
 
 	slog.Info("orchestrator resuming from saved state",
@@ -293,9 +313,10 @@ func (o *Orchestrator) runWaitingAndBeyond() error {
 // daemon memory key that can be passed to gaap resume.
 func (o *Orchestrator) SaveRunState(ctx context.Context, runKey string) error {
 	rs := &RunState{
-		Goal:     o.goal,
-		RepoPath: o.cfg.RepoPath,
-		Tasks:    make([]TaskSpec, 0, len(o.dag.nodes)),
+		Goal:        o.goal,
+		RepoPath:    o.cfg.RepoPath,
+		FailureMode: o.cfg.Mode(),
+		Tasks:       make([]TaskSpec, 0, len(o.dag.nodes)),
 	}
 	for _, node := range o.dag.nodes {
 		rs.Tasks = append(rs.Tasks, TaskSpec{

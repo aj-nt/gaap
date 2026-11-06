@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aj-nt/gaap"
 	pb "github.com/aj-nt/vassago-sdk/proto"
 	"google.golang.org/grpc"
 )
@@ -538,5 +539,43 @@ func TestParseResumeFlagsEnvVar(t *testing.T) {
 	}
 	if cfg.APIKey != "env-secret" {
 		t.Errorf("expected env API key, got %q", cfg.APIKey)
+	}
+}
+
+// TestParseRunFlagsFailFastDefault keeps the CLI's default safe: a run that
+// was never told otherwise finishes work already in flight.
+func TestParseRunFlagsFailureModeDefault(t *testing.T) {
+	t.Setenv("GAAP_FAILURE_MODE", "")
+
+	cfg, err := parseRunFlags("run", []string{"audit the codebase"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.FailureMode != gaap.FailSoft {
+		t.Fatalf("FailureMode = %q, want fail_soft", cfg.FailureMode)
+	}
+}
+
+func TestParseRunFlagsFailFast(t *testing.T) {
+	t.Setenv("GAAP_FAILURE_MODE", "")
+
+	cfg, err := parseRunFlags("run", []string{"--fail-fast", "audit the codebase"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.FailureMode != gaap.FailFast {
+		t.Fatalf("FailureMode = %q, want fail_fast", cfg.FailureMode)
+	}
+}
+
+func TestParseRunFlagsFailureModeFromEnv(t *testing.T) {
+	t.Setenv("GAAP_FAILURE_MODE", "fail_fast")
+
+	cfg, err := parseRunFlags("run", []string{"audit the codebase"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.FailureMode != gaap.FailFast {
+		t.Fatalf("FailureMode = %q, want fail_fast from GAAP_FAILURE_MODE", cfg.FailureMode)
 	}
 }

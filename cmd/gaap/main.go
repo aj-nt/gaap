@@ -12,6 +12,7 @@
 //		--repo string   Repository path to analyze (default: current directory)
 //		--timeout int   Max wait for workers in seconds (default: 300)
 //		--subscribe     Enable push-based task updates via gRPC (falls back to polling)
+//		--fail-fast     Stop the run at the first task failure (default: let other branches finish)
 //	 --agent-types string  Comma-separated agent types (default: static_analysis,quality_scan,file_analysis)
 //		--api-key string      Vassago daemon API key (Bearer token)
 //		--tls-cert string     Path to TLS CA certificate for daemon connection
@@ -97,6 +98,7 @@ Run flags:
   --repo string     Repository path to analyze (default: current directory)
   --timeout int     Max wait for workers in seconds (default: 300)
   --subscribe       Enable push-based task updates via gRPC (falls back to polling)
+  --fail-fast       Stop the run at the first task failure (default: finish other branches)
   --agent-types string  Comma-separated agent types (default: static_analysis,quality_scan,file_analysis)
   --api-key string      Vassago daemon API key (Bearer token)
   --tls-cert string     Path to TLS CA certificate for daemon connection
@@ -116,6 +118,7 @@ type runConfig struct {
 	PollIntervalSec int
 	DryRun          bool
 	Subscribe       bool
+	FailureMode     gaap.FailureMode
 	Model           string
 	OllamaURL       string
 	MaxTokens       int
@@ -123,6 +126,16 @@ type runConfig struct {
 	AgentTypes      []string
 	APIKey          string
 	TLSCert         string
+}
+
+// failureMode resolves the run's failure policy. The flag wins over the
+// environment; anything unrecognized falls back to fail_soft, which finishes
+// work already in flight instead of discarding it.
+func failureMode(failFastFlag bool, env string) gaap.FailureMode {
+	if failFastFlag || gaap.FailureMode(env) == gaap.FailFast {
+		return gaap.FailFast
+	}
+	return gaap.FailSoft
 }
 
 // parseRunFlags parses the flag set for "gaap run [flags] <goal>".
@@ -141,6 +154,7 @@ func parseRunFlags(name string, args []string) (*runConfig, error) {
 	maxTokens := fs.Int("max-tokens", 0, "Max tokens for LLM responses (default: 4096)")
 	temperature := fs.Float64("temperature", 0, "LLM temperature, 0.0-1.0 (default: 0.1)")
 	subscribe := fs.Bool("subscribe", false, "Use gRPC subscription for push-based task updates (falls back to polling)")
+	failFast := fs.Bool("fail-fast", false, "Stop the run at the first task failure instead of letting other branches finish")
 	agentTypes := fs.String("agent-types", "", "Comma-separated agent types to dispatch (default: static_analysis,quality_scan,file_analysis)")
 	apiKey := fs.String("api-key", "", "Vassago daemon API key (Bearer token)")
 	tlsCert := fs.String("tls-cert", "", "Path to TLS CA certificate for daemon connection")
@@ -162,6 +176,7 @@ func parseRunFlags(name string, args []string) (*runConfig, error) {
 		PollIntervalSec: 5,
 		DryRun:          *dryRun,
 		Subscribe:       *subscribe,
+		FailureMode:     failureMode(*failFast, os.Getenv("GAAP_FAILURE_MODE")),
 		Model:           envOr("GAAP_MODEL", *model, "glm-5.1:cloud"),
 		OllamaURL:       envOr("GAAP_OLLAMA_URL", *ollamaURL, "http://localhost:11434/v1"),
 		MaxTokens:       atoiOr(envOr("GAAP_MAX_TOKENS", "", ""), *maxTokens, 4096),
@@ -237,6 +252,7 @@ func run(args []string) error {
 		RepoPath:        rc.RepoPath,
 		MaxWaitSec:      rc.MaxWaitSec,
 		PollIntervalSec: rc.PollIntervalSec,
+		FailureMode:     rc.FailureMode,
 	}
 	orchestrator := gaap.NewOrchestrator(ctx, orchestratorCfg, daemonClient, decomposer)
 	orchestrator.SetSynthesisChatFn(chatFn) // LLM synthesis with schema fallback

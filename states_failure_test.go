@@ -162,3 +162,38 @@ func TestFailureModeDefaultsToFailSoft(t *testing.T) {
 		t.Fatalf("Mode(fail_fast) = %s, want fail_fast", got)
 	}
 }
+
+// TestResumeNormalizesPersistedStatuses guards the seam the DAG cannot see: a
+// RunState written before this change carries the daemon's dead_letter, and
+// resuming must not resurrect a status the DAG will treat as still running.
+func TestResumeNormalizesPersistedStatuses(t *testing.T) {
+	o := failureFixture(t, FailSoft)
+	rs := &RunState{Goal: "audit", Tasks: []TaskSpec{
+		{TaskID: "a", Status: status.TaskDeadLetter},
+		{TaskID: "b", ParentIDs: []string{"a"}, Status: status.TaskDone},
+	}}
+
+	if err := o.resumeFromState(rs); err != nil {
+		t.Fatal(err)
+	}
+	if got := o.dag.nodes["a"].Status; got != status.TaskFailed {
+		t.Fatalf("a = %s, want failed", got)
+	}
+	if got := o.dag.nodes["b"].Status; got != status.TaskDone {
+		t.Fatalf("b = %s, want done (persisted statuses survive)", got)
+	}
+}
+
+// TestResumeRestoresFailureMode keeps a resumed run behaving like the run it is
+// continuing: a fail_fast run that crashes must not come back fail_soft.
+func TestResumeRestoresFailureMode(t *testing.T) {
+	o := failureFixture(t, "") // zero value: fail_soft
+	rs := &RunState{Goal: "audit", FailureMode: FailFast}
+
+	if err := o.resumeFromState(rs); err != nil {
+		t.Fatal(err)
+	}
+	if o.cfg.Mode() != FailFast {
+		t.Fatalf("mode = %s, want fail_fast after restore", o.cfg.Mode())
+	}
+}
