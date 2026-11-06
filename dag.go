@@ -2,6 +2,7 @@ package gaap
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/aj-nt/gaap/internal/status"
 )
@@ -128,6 +129,74 @@ func (d *DAG) AllTasksComplete() bool {
 		}
 	}
 	return true
+}
+
+// AllTasksTerminal returns true when no task can make further progress: every
+// node is done, failed, or skipped (a descendant of a failed task that was
+// never dispatched). Deliberately distinct from AllTasksComplete, which means
+// "all succeeded" and gates the synthesizer.
+func (d *DAG) AllTasksTerminal() bool {
+	for _, node := range d.nodes {
+		switch node.Status {
+		case status.TaskDone, status.TaskFailed, status.TaskSkipped:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// HasFailures reports whether any task failed.
+func (d *DAG) HasFailures() bool {
+	for _, node := range d.nodes {
+		if node.Status == status.TaskFailed {
+			return true
+		}
+	}
+	return false
+}
+
+// FailedIDs returns the IDs of failed tasks, sorted for stable output.
+func (d *DAG) FailedIDs() []string {
+	var out []string
+	for id, node := range d.nodes {
+		if node.Status == status.TaskFailed {
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// SkipDescendants marks every task reachable from id as skipped and returns
+// the IDs it changed, sorted. A descendant of a failed task will never run, and
+// leaving it blocked would force the run to end by poll timeout rather than by
+// fact. Done tasks keep their status: completed work is evidence, not cleanup.
+// Skips are DAG-local and are never dispatched to the daemon.
+func (d *DAG) SkipDescendants(id string) []string {
+	var out []string
+	seen := map[string]bool{id: true}
+	queue := append([]string(nil), d.children[id]...)
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		if seen[cur] {
+			continue
+		}
+		seen[cur] = true
+		if node, ok := d.nodes[cur]; ok {
+			switch node.Status {
+			case status.TaskDone, status.TaskFailed:
+				// Keep the story it already earned.
+			default:
+				node.Status = status.TaskSkipped
+				out = append(out, cur)
+			}
+		}
+		queue = append(queue, d.children[cur]...)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Validate checks the DAG for structural issues. Currently detects circular
