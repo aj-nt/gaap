@@ -2,6 +2,21 @@
 
 All notable changes to Gaap.
 
+## [Unreleased]
+
+A failed task stops being reported as a finished one.
+
+### Fixed
+- **Dead-lettered tasks were recorded as done.** The daemon's `FailTask` ends in `dead_letter` when retries run out, and both the poll loop and the gRPC subscription wrote that into the DAG as `done`. The task's children were then promoted, synthesis ran over a result that did not exist, `AllTasksComplete` returned true, and the run exited 0 — with the task's *goal text* printed where its summary belonged. `dead_letter` now becomes `failed` at the boundary, and the mapping lives in one function because the two transports speak different SDK types and had already drifted (the push path duplicated the poll path's body).
+- **Descendants of a failed task are `skipped`.** They could never run, and leaving them `blocked` meant the only way to end the run was the poll timeout. `skipped` is DAG-local: never dispatched, never written to the daemon.
+- **`EventTaskFailed` now fires.** It has been declared since the state machine was written and never once emitted, which is why `FailedState`'s dead-letter counter was permanently 0 and the digest's "blocked by a failed parent" attribution could never trigger.
+- **Synthesis only sees completed tasks**, and a completed task with no worker summary says `no summary reported` instead of passing its goal off as its result.
+
+### Changed
+- **`gaap run` exits non-zero when the run fails.** A run that ends in `FailedState` returns `ErrOrchestrationFailed`. This is a breaking change for anything scripting gaap and checking only the exit status for "it ran".
+- **Failure policy is configurable**: `fail_soft` (default) lets independent branches finish and reports at the end; `fail_fast` ends the run at the first failure. Select with `--fail-fast`, `GAAP_FAILURE_MODE=fail_fast`, or `failure_mode` in config. The policy is persisted in the run state and restored by `gaap resume`, so a resumed run behaves like the run it is continuing.
+- **Polling ends when the DAG is terminal**, not when it is complete — a failed run now finishes in seconds instead of waiting out `--timeout` (default 300s).
+
 ## [v0.4.8] — 2026-10-27
 
 Governance becomes something an operator can run. Until now the governor had no CLI

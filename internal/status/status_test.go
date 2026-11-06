@@ -17,6 +17,7 @@ func TestWireVocabulary(t *testing.T) {
 		TaskDone:       "done",
 		TaskFailed:     "failed",
 		TaskDeadLetter: "dead_letter",
+		TaskSkipped:    "skipped",
 	}
 	for got, want := range tasks {
 		if string(got) != want {

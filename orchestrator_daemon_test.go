@@ -2,10 +2,14 @@ package gaap
 
 import (
 	"context"
+	"errors"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	gstatus "github.com/aj-nt/gaap/internal/status"
 
 	"github.com/aj-nt/vassago-sdk/client"
 	pb "github.com/aj-nt/vassago-sdk/proto"
@@ -23,6 +27,11 @@ type testDaemon struct {
 	mu           sync.Mutex
 	tasks        map[string]*pb.TaskEntry
 	autoComplete bool // if true, tasks become "done" on AddTask/ClaimTask
+
+	// deadLetter lists task IDs the daemon gives up on: the first poll that
+	// finds one ready returns it as dead_letter, exactly as FailTask would
+	// after the retries ran out.
+	deadLetter map[string]bool
 }
 
 func (td *testDaemon) AddTask(_ context.Context, req *pb.AddTaskRequest) (*pb.TaskEntry, error) {
@@ -49,6 +58,13 @@ func (td *testDaemon) GetTask(_ context.Context, req *pb.GetTaskRequest) (*pb.Ta
 	}
 	if td.autoComplete && e.Status == "ready" {
 		e.Status = "done"
+	}
+	if e.Status == "ready" {
+		for name := range td.deadLetter {
+			if strings.HasSuffix(e.Id, name) {
+				e.Status = "dead_letter"
+			}
+		}
 	}
 	return e, nil
 }
@@ -140,10 +156,27 @@ func setupDaemonNoAutoComplete(t *testing.T) (client.MnemoClient, func()) {
 	return setupDaemonWithAutoComplete(t, false)
 }
 
+// setupDaemonDeadLettering starts a daemon that gives up on the named tasks.
+func setupDaemonDeadLettering(t *testing.T, ids ...string) (client.MnemoClient, func()) {
+	t.Helper()
+	td := &testDaemon{tasks: make(map[string]*pb.TaskEntry), deadLetter: map[string]bool{}}
+	for _, id := range ids {
+		td.deadLetter[id] = true
+	}
+	return serveTestDaemon(t, td)
+}
+
 func setupDaemonWithAutoComplete(t *testing.T, auto bool) (client.MnemoClient, func()) {
 	t.Helper()
 
 	td := &testDaemon{tasks: make(map[string]*pb.TaskEntry), autoComplete: auto}
+	return serveTestDaemon(t, td)
+}
+
+// serveTestDaemon runs td behind a bufconn listener and returns a client for it.
+func serveTestDaemon(t *testing.T, td *testDaemon) (client.MnemoClient, func()) {
+	t.Helper()
+
 	lis := bufconn.Listen(256 * 1024)
 	s := grpc.NewServer()
 	pb.RegisterVassagoServer(s, td)
@@ -207,9 +240,10 @@ func TestOrchestratorAgainstRealDaemon(t *testing.T) {
 	}
 }
 
-// TestOrchestrator_DeadLetter_TriggersFailedState verifies that a
-// task that never completes triggers the FailedState after timeout.
-func TestOrchestrator_DeadLetter_TriggersFailedState(t *testing.T) {
+// TestOrchestrator_Timeout_TriggersFailedState covers the timeout path: a task
+// that never completes (and is never dead-lettered either) ends the run in
+// FailedState, and the run reports itself as failed.
+func TestOrchestrator_Timeout_TriggersFailedState(t *testing.T) {
 	daemon, cleanup := setupDaemonNoAutoComplete(t)
 	defer cleanup()
 
@@ -229,9 +263,69 @@ func TestOrchestrator_DeadLetter_TriggersFailedState(t *testing.T) {
 	})
 
 	orch := NewOrchestrator(ctx, cfg, daemon, decomp)
-	_ = orch.Run("dead letter test")
-	// Run returns nil even on failure — FailedState is graceful termination.
-	if orch.state == nil || orch.state.Name() != "failed" {
-		t.Errorf("expected state failed, got %q", orch.state.Name())
+	err := orch.Run("timeout test")
+
+	// The report is still produced, but the run must not claim success.
+	if !errors.Is(err, ErrOrchestrationFailed) {
+		t.Fatalf("Run err = %v, want ErrOrchestrationFailed", err)
 	}
+	if orch.state == nil {
+		t.Fatal("state is nil")
+	}
+	if got := orch.state.Name(); got != "failed" {
+		t.Errorf("expected state failed, got %q", got)
+	}
+}
+
+// TestOrchestrator_DeadLetteredTaskFailsRun is the end-to-end version of the
+// regression: over the real wire, the daemon gives up on a task, and the run
+// must end failed with its dependent skipped — never done.
+func TestOrchestrator_DeadLetteredTaskFailsRun(t *testing.T) {
+	daemon, cleanup := setupDaemonDeadLettering(t, "will-fail")
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	cfg := &Config{MaxWaitSec: 10, PollIntervalSec: 1}
+
+	decomp := NewDecomposer(&StaticDecomposition{
+		Tasks: []TaskSpec{
+			{TaskID: "will-fail", AgentType: "flaky_agent", Status: "ready", Goal: "Dies"},
+			{TaskID: "dependant", AgentType: "static_analysis", Status: "blocked", Goal: "Never runs", ParentIDs: []string{"will-fail"}},
+			{TaskID: "synthesis", AgentType: "synthesis", Status: "blocked", Goal: "Synthesize", ParentIDs: []string{"dependant"}},
+		},
+	})
+
+	orch := NewOrchestrator(ctx, cfg, daemon, decomp)
+	err := orch.Run("dead letter test")
+
+	if !errors.Is(err, ErrOrchestrationFailed) {
+		t.Fatalf("Run err = %v, want ErrOrchestrationFailed", err)
+	}
+	if got := nodeEndingIn(t, orch.dag, "will-fail").Status; got != gstatus.TaskFailed {
+		t.Fatalf("will-fail = %s, want failed", got)
+	}
+	if got := nodeEndingIn(t, orch.dag, "dependant").Status; got != gstatus.TaskSkipped {
+		t.Fatalf("dependant = %s, want skipped", got)
+	}
+	if got := nodeEndingIn(t, orch.dag, "synthesis").Status; got != gstatus.TaskSkipped {
+		t.Fatalf("synthesis = %s, want skipped", got)
+	}
+	if orch.dag.AllTasksComplete() {
+		t.Fatal("a dead-lettered task must never satisfy AllTasksComplete")
+	}
+}
+
+// nodeEndingIn finds a DAG node by its logical name. Planning prefixes task IDs
+// with a per-run token, so exact-ID lookups belong only in hand-built DAGs.
+func nodeEndingIn(t *testing.T, d *DAG, suffix string) *TaskNode {
+	t.Helper()
+	for id, n := range d.nodes {
+		if strings.HasSuffix(id, suffix) {
+			return n
+		}
+	}
+	t.Fatalf("no task ending in %q", suffix)
+	return nil
 }

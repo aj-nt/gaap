@@ -18,6 +18,12 @@ const (
 	TaskDone       Task = "done"
 	TaskFailed     Task = "failed"
 	TaskDeadLetter Task = "dead_letter"
+
+	// TaskSkipped is DAG-local: a descendant of a failed task that was never
+	// dispatched and never will be. It has no daemon equivalent — no task row
+	// is ever skipped — so it must be normalized before being persisted into a
+	// RunState or written to the store.
+	TaskSkipped Task = "skipped"
 )
 
 // Result is a worker's execution outcome, recorded inside ExecuteResult.
