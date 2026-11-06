@@ -22,21 +22,15 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
-	"os/signal"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"github.com/aj-nt/gaap"
-	"github.com/aj-nt/gaap/internal/ollama"
-	"github.com/aj-nt/gaap/internal/worker"
-	"github.com/aj-nt/vassago-sdk/client"
 )
 
 // Version is set at build time by -ldflags "-X main.Version=...".
@@ -201,17 +195,8 @@ func run(args []string) error {
 		rc.RepoPath = wd
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := signalContext()
 	defer cancel()
-
-	// Handle SIGINT/SIGTERM
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		slog.Info("Received shutdown signal")
-		cancel()
-	}()
 
 	slog.Info("Gaap starting",
 		"goal", rc.Goal,
@@ -222,33 +207,14 @@ func run(args []string) error {
 	)
 
 	// Connect to Vassago daemon
-	daemonClient, err := client.Connect(ctx, client.Config{
-		Address: rc.DaemonAddr,
-		APIKey:  rc.APIKey,
-		TLSCert: rc.TLSCert,
-	})
+	daemonClient, err := dialDaemon(ctx, rc.settings())
 	if err != nil {
-		return fmt.Errorf("failed to connect to Vassago daemon at %s: %w", rc.DaemonAddr, err)
+		return err
 	}
 	defer func() { _ = daemonClient.Close() }()
 
-	if err := daemonClient.HealthCheck(ctx); err != nil {
-		return fmt.Errorf("vassago daemon health check failed: %w", err)
-	}
-
 	// Build LLM decomposer
-	ollamaClient := ollama.NewClient(ollama.Config{
-		BaseURL:     rc.OllamaURL,
-		Model:       rc.Model,
-		MaxTokens:   rc.MaxTokens,
-		Temperature: rc.Temperature,
-		TimeoutSec:  120,
-	})
-
-	// Bridge ollama.Client.Chat ([]Message) → chatFn (ctx, prompt string)
-	chatFn := func(ctx context.Context, prompt string) (string, error) {
-		return ollamaClient.Chat([]ollama.Message{{Role: "user", Content: prompt}})
-	}
+	chatFn := chatFunc(rc.settings())
 
 	// Build agent catalog from CLI agent types
 	catalog := make(map[string]gaap.AgentSpec)
@@ -283,32 +249,8 @@ func run(args []string) error {
 
 	// Auto-workers: spawn worker pool to execute tasks in-process.
 	if !rc.DryRun {
-		wpCfg := worker.PoolConfig{
-			DaemonAddr:  rc.DaemonAddr,
-			AgentID:     "gaap-worker",
-			AgentName:   "gaap-worker",
-			AgentTypes:  rc.AgentTypes,
-			WorkerCount: 2,
-			PollSec:     2,
-			MaxTurns:    20,
-			RepoPath:    rc.RepoPath,
-			Ollama: ollama.Config{
-				BaseURL:     rc.OllamaURL,
-				Model:       rc.Model,
-				MaxTokens:   rc.MaxTokens,
-				Temperature: rc.Temperature,
-				TimeoutSec:  120,
-			},
-		}
-		pool, err := worker.NewPool(ctx, wpCfg, daemonClient)
-		if err != nil {
-			slog.Warn("Failed to create worker pool, running without auto-workers", "error", err)
-		} else {
-			orchestrator.SetWorkerPool(pool)
-			slog.Info("Auto-workers enabled", "agent_types", wpCfg.AgentTypes, "count", wpCfg.WorkerCount)
-		}
+		startWorkers(ctx, rc.settings(), rc.RepoPath, daemonClient, orchestrator)
 	}
-
 	if rc.DryRun {
 		tasks, err := decomposer.Decompose(ctx, rc.Goal, rc.RepoPath)
 		if err != nil {
@@ -435,16 +377,8 @@ func resume(args []string) error {
 		return fmt.Errorf("flag parsing: %w", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := signalContext()
 	defer cancel()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		slog.Info("Received shutdown signal")
-		cancel()
-	}()
 
 	slog.Info("Gaap resuming",
 		"run_key", rc.RunKey,
@@ -452,19 +386,11 @@ func resume(args []string) error {
 		"model", rc.Model,
 	)
 
-	daemonClient, err := client.Connect(ctx, client.Config{
-		Address: rc.DaemonAddr,
-		APIKey:  rc.APIKey,
-		TLSCert: rc.TLSCert,
-	})
+	daemonClient, err := dialDaemon(ctx, rc.settings())
 	if err != nil {
-		return fmt.Errorf("failed to connect to Vassago daemon at %s: %w", rc.DaemonAddr, err)
+		return err
 	}
 	defer func() { _ = daemonClient.Close() }()
-
-	if err := daemonClient.HealthCheck(ctx); err != nil {
-		return fmt.Errorf("vassago daemon health check failed: %w", err)
-	}
 
 	rs, err := gaap.LoadRunState(ctx, daemonClient, rc.RunKey)
 	if err != nil {
@@ -480,44 +406,11 @@ func resume(args []string) error {
 	orchestrator := gaap.NewOrchestrator(ctx, orchestratorCfg, daemonClient, nil)
 
 	// Build LLM decomposer for synthesis (not decomposition — DAG is already built)
-	ollamaClient := ollama.NewClient(ollama.Config{
-		BaseURL:     rc.OllamaURL,
-		Model:       rc.Model,
-		MaxTokens:   rc.MaxTokens,
-		Temperature: rc.Temperature,
-		TimeoutSec:  120,
-	})
-	chatFn := func(ctx context.Context, prompt string) (string, error) {
-		return ollamaClient.Chat([]ollama.Message{{Role: "user", Content: prompt}})
-	}
+	chatFn := chatFunc(rc.settings())
 	orchestrator.SetSynthesisChatFn(chatFn)
 
 	// Spawn auto-workers to execute dispatched tasks
-	wpCfg := worker.PoolConfig{
-		DaemonAddr:  rc.DaemonAddr,
-		AgentID:     "gaap-worker",
-		AgentName:   "gaap-worker",
-		AgentTypes:  rc.AgentTypes,
-		WorkerCount: 2,
-		PollSec:     2,
-		MaxTurns:    20,
-		RepoPath:    rs.RepoPath,
-		Ollama: ollama.Config{
-			BaseURL:     rc.OllamaURL,
-			Model:       rc.Model,
-			MaxTokens:   rc.MaxTokens,
-			Temperature: rc.Temperature,
-			TimeoutSec:  120,
-		},
-	}
-	pool, err := worker.NewPool(ctx, wpCfg, daemonClient)
-	if err != nil {
-		slog.Warn("Failed to create worker pool, running without auto-workers", "error", err)
-	} else {
-		orchestrator.SetWorkerPool(pool)
-		slog.Info("Auto-workers enabled", "agent_types", wpCfg.AgentTypes, "count", wpCfg.WorkerCount)
-	}
-
+	startWorkers(ctx, rc.settings(), rs.RepoPath, daemonClient, orchestrator)
 	if err := orchestrator.Resume(rs); err != nil {
 		return fmt.Errorf("resume: %w", err)
 	}
