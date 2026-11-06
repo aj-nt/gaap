@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/aj-nt/gaap/internal/ollama"
+	"github.com/aj-nt/gaap/internal/status"
 	"github.com/aj-nt/vassago-sdk/client"
 	"github.com/google/uuid"
 )
@@ -167,7 +168,7 @@ func (p *Pool) workerLoop(ctx context.Context, stopCh <-chan struct{}, agentType
 			slog.Warn("worker: ClaimTask failed", "id", tid, "error", err)
 			continue
 		}
-		if claimed == nil || claimed.Status != "claimed" {
+		if claimed == nil || status.Task(claimed.Status) != status.TaskClaimed {
 			slog.Info("worker: task already claimed", "id", tid)
 			continue
 		}
@@ -213,7 +214,7 @@ func (p *Pool) workerLoop(ctx context.Context, stopCh <-chan struct{}, agentType
 			resultUUID = memEntry.Id
 		}
 
-		if result.Status == "success" {
+		if result.Status == status.ResultSuccess {
 			if _, err := p.mnemo.CompleteTask(ctx, tid, resultUUID); err != nil {
 				slog.Warn("worker: failed to complete task", "id", tid, "error", err)
 			}

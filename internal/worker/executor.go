@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/aj-nt/gaap/internal/ollama"
+	"github.com/aj-nt/gaap/internal/status"
 	"github.com/aj-nt/vassago-sdk/client"
 )
 
@@ -130,7 +131,7 @@ func NewExecutor(llm ChatClient, maxTurns int) *Executor {
 type ExecuteResult struct {
 	TaskID      string         `json:"task_id"`
 	AgentType   string         `json:"agent_type,omitempty"`
-	Status      string         `json:"status"`
+	Status      status.Result  `json:"status"`
 	Summary     string         `json:"summary,omitempty"`
 	Error       string         `json:"error,omitempty"`
 	Findings    map[string]any `json:"findings"`
@@ -168,7 +169,7 @@ func (e *Executor) Execute(ctx context.Context, task *client.TaskEntry, repoPath
 	for turn := 1; turn <= e.maxTurns; turn++ {
 		select {
 		case <-ctx.Done():
-			return &ExecuteResult{TaskID: task.Id, Status: "failed", Error: "worker shutting down"}
+			return &ExecuteResult{TaskID: task.Id, Status: status.ResultFailed, Error: "worker shutting down"}
 		default:
 		}
 
@@ -176,7 +177,7 @@ func (e *Executor) Execute(ctx context.Context, task *client.TaskEntry, repoPath
 		if err != nil {
 			return &ExecuteResult{
 				TaskID:     task.Id,
-				Status:     "failed",
+				Status:     status.ResultFailed,
 				Error:      fmt.Sprintf("LLM error: %v", err),
 				Findings:   findings,
 				DurationMs: time.Since(t0).Milliseconds(),
@@ -225,7 +226,7 @@ func (e *Executor) Execute(ctx context.Context, task *client.TaskEntry, repoPath
 			return &ExecuteResult{
 				TaskID:      task.Id,
 				AgentType:   task.AgentType,
-				Status:      "success",
+				Status:      status.ResultSuccess,
 				Summary:     summary,
 				Findings:    findings,
 				Model:       e.llm.Model(),
@@ -239,7 +240,7 @@ func (e *Executor) Execute(ctx context.Context, task *client.TaskEntry, repoPath
 			slog.Warn("worker: task FAIL", "id", task.Id, "reason", truncate(reason, 100), "turns", turn)
 			return &ExecuteResult{
 				TaskID:     task.Id,
-				Status:     "failed",
+				Status:     status.ResultFailed,
 				Error:      reason,
 				Findings:   findings,
 				Model:      e.llm.Model(),
@@ -257,7 +258,7 @@ func (e *Executor) Execute(ctx context.Context, task *client.TaskEntry, repoPath
 
 	return &ExecuteResult{
 		TaskID:     task.Id,
-		Status:     "failed",
+		Status:     status.ResultFailed,
 		Error:      fmt.Sprintf("Exceeded %d turns without DONE/FAIL", e.maxTurns),
 		Findings:   findings,
 		Model:      e.llm.Model(),

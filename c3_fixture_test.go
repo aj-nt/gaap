@@ -18,6 +18,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aj-nt/gaap/internal/status"
 )
 
 type c3Task struct {
@@ -56,7 +58,7 @@ func buildC3Orchestrator(t *testing.T, sc c3Scenario) (*Orchestrator, *recording
 	o := NewOrchestrator(context.Background(), &Config{RepoPath: "/tmp/c3"}, m, nil)
 	o.goal = sc.Goal
 	for _, tt := range sc.Tasks {
-		node := &TaskNode{ID: tt.ID, Status: tt.Status, Goal: tt.Goal, AgentType: tt.AgentType, ParentIDs: tt.Parents, Summary: tt.Summary}
+		node := &TaskNode{ID: tt.ID, Status: status.Task(tt.Status), Goal: tt.Goal, AgentType: tt.AgentType, ParentIDs: tt.Parents, Summary: tt.Summary}
 		if err := o.dag.AddTask(node); err != nil {
 			t.Fatalf("add task %s: %v", tt.ID, err)
 		}

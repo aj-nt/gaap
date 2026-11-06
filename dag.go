@@ -2,13 +2,15 @@ package gaap
 
 import (
 	"fmt"
+
+	"github.com/aj-nt/gaap/internal/status"
 )
 
 // TaskNode represents a single task in the DAG with its status and parent dependencies.
 type TaskNode struct {
 	ID        string         `json:"task_id"`
 	ParentIDs []string       `json:"parent_ids"`
-	Status    string         `json:"status"`
+	Status    status.Task    `json:"status"`
 	Goal      string         `json:"goal"`
 	AgentType string         `json:"agent_type"`
 	Context   map[string]any `json:"context"`
@@ -85,7 +87,7 @@ func (d *DAG) AllParentsComplete(id string) (bool, error) {
 		if !ok {
 			return false, fmt.Errorf("parent task not found: %s", parentID)
 		}
-		if parent.Status != "done" {
+		if parent.Status != status.TaskDone {
 			return false, nil
 		}
 	}
@@ -100,11 +102,11 @@ func (d *DAG) PromoteToReady(id string) error {
 	if !ok {
 		return fmt.Errorf("task not found: %s", id)
 	}
-	if task.Status == "ready" || task.Status == "done" {
+	if task.Status == status.TaskReady || task.Status == status.TaskDone {
 		// Already promoted or completed — no-op success.
 		return nil
 	}
-	if task.Status != "blocked" {
+	if task.Status != status.TaskBlocked {
 		return fmt.Errorf("task %s is %s, not blocked", id, task.Status)
 	}
 	allDone, err := d.AllParentsComplete(id)
@@ -114,14 +116,14 @@ func (d *DAG) PromoteToReady(id string) error {
 	if !allDone {
 		return fmt.Errorf("not all parents complete for %s", id)
 	}
-	task.Status = "ready"
+	task.Status = status.TaskReady
 	return nil
 }
 
 // AllTasksComplete returns true when all tasks in the DAG have status "done".
 func (d *DAG) AllTasksComplete() bool {
 	for _, node := range d.nodes {
-		if node.Status != "done" {
+		if node.Status != status.TaskDone {
 			return false
 		}
 	}

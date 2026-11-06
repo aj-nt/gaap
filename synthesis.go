@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/aj-nt/gaap/internal/status"
 	"github.com/aj-nt/vassago-sdk/client"
 )
 
@@ -12,7 +13,7 @@ import (
 type TaskResult struct {
 	TaskID    string         `json:"task_id"`
 	AgentType string         `json:"agent_type"`
-	Status    string         `json:"status"`
+	Status    status.Task    `json:"status"`
 	Summary   string         `json:"summary"`
 	Error     string         `json:"error,omitempty"`
 	Findings  map[string]any `json:"findings,omitempty"`
@@ -103,7 +104,7 @@ func NewSynthesisEngine(chatFn func(ctx context.Context, prompt string) (string,
 func (e *SynthesisEngine) Synthesize(ctx context.Context, daemon client.MnemoClient, taskIDs []string) (*SynthesisResult, error) {
 	results := make(map[string]*TaskResult)
 	for _, id := range taskIDs {
-		results[id] = &TaskResult{TaskID: id, Status: "done", Summary: "ok"}
+		results[id] = &TaskResult{TaskID: id, Status: status.TaskDone, Summary: "ok"}
 	}
 	return e.synthesizeResults(ctx, results)
 }
