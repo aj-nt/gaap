@@ -197,3 +197,32 @@ func TestResumeRestoresFailureMode(t *testing.T) {
 		t.Fatalf("mode = %s, want fail_fast after restore", o.cfg.Mode())
 	}
 }
+
+// TestCountOutcomes pins the counting half of the failure report, which used to
+// be the first fifteen lines of a ninety-two line Enter. Counting is the part
+// that can be wrong without anyone noticing: the report would print a smaller
+// number and still look like a report.
+func TestCountOutcomes(t *testing.T) {
+	o := failureFixture(t, FailSoft)
+	_ = o.dag.AddTask(&TaskNode{ID: "b", Status: status.TaskFailed, Summary: "boom"})
+	_ = o.dag.AddTask(&TaskNode{ID: "a", Status: status.TaskDone})
+	_ = o.dag.AddTask(&TaskNode{ID: "c", Status: status.TaskSkipped})
+	_ = o.dag.AddTask(&TaskNode{ID: "d", Status: status.TaskClaimed})
+
+	c := o.countOutcomes()
+
+	if c.completed != 1 || c.failed != 1 || c.skipped != 1 || c.pending != 1 {
+		t.Fatalf("counts = %+v, want completed 1 failed 1 skipped 1 pending 1", c)
+	}
+	if len(c.failedIDs) != 1 || c.failedIDs[0] != "b" {
+		t.Fatalf("failedIDs = %v, want [b]", c.failedIDs)
+	}
+	if len(c.skippedIDs) != 1 || c.skippedIDs[0] != "c" {
+		t.Fatalf("skippedIDs = %v, want [c]", c.skippedIDs)
+	}
+	// Sorted, so the report and the persisted payload are stable.
+	_ = o.dag.AddTask(&TaskNode{ID: "a2", Status: status.TaskFailed})
+	if ids := o.countOutcomes().failedIDs; ids[0] != "a2" || ids[1] != "b" {
+		t.Fatalf("failedIDs = %v, want sorted [a2 b]", ids)
+	}
+}

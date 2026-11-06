@@ -280,8 +280,8 @@ func TestOrchestratorAgainstRealDaemon(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	if orch.state == nil || orch.state.Name() != "done" {
-		t.Errorf("expected state done, got %q", orch.state.Name())
+	if orch.state == nil || orch.state.Phase() != PhaseDone {
+		t.Errorf("expected state done, got %q", orch.state.Phase())
 	}
 	if !orch.dag.AllTasksComplete() {
 		t.Error("not all tasks completed")
@@ -326,7 +326,7 @@ func TestOrchestrator_Timeout_TriggersFailedState(t *testing.T) {
 	if orch.state == nil {
 		t.Fatal("state is nil")
 	}
-	if got := orch.state.Name(); got != "failed" {
+	if got := orch.state.Phase(); got != "failed" {
 		t.Errorf("expected state failed, got %q", got)
 	}
 }

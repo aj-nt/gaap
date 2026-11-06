@@ -33,20 +33,36 @@ type Event struct {
 	Payload map[string]any
 }
 
+// Phase names the orchestrator's stage. A typed value rather than a bare
+// string because the orchestrator gates on it in five places: a misspelled
+// literal used to compile and silently skip a transition, which turns a dead
+// run into a nil return.
+type Phase string
+
+const (
+	PhaseIdle         Phase = "idle"
+	PhasePlanning     Phase = "planning"
+	PhaseWaiting      Phase = "waiting"
+	PhaseSynthesizing Phase = "synthesizing"
+	PhaseDone         Phase = "done"
+	PhaseFailed       Phase = "failed"
+)
+
 // OrchestratorState defines the interface for all orchestrator states.
 type OrchestratorState interface {
 	// Enter is called when transitioning into this state.
 	Enter(ctx context.Context, o *Orchestrator) error
 	// HandleEvent processes an event and returns the next state (nil = stay).
 	HandleEvent(ctx context.Context, o *Orchestrator, evt Event) (OrchestratorState, error)
-	// Name returns a human-readable state name.
-	Name() string
+	// Phase returns this state's phase — the only vocabulary the orchestrator
+	// compares against.
+	Phase() Phase
 }
 
 // IdleState awaits a goal. On receiving a goal, transitions to PlanningState.
 type IdleState struct{}
 
-func (s *IdleState) Name() string { return "idle" }
+func (s *IdleState) Phase() Phase { return PhaseIdle }
 
 func (s *IdleState) Enter(ctx context.Context, o *Orchestrator) error {
 	slog.Info("orchestrator idle", "repo", o.cfg.RepoPath)
@@ -70,7 +86,7 @@ func (s *IdleState) HandleEvent(ctx context.Context, o *Orchestrator, evt Event)
 // dispatches to the daemon, then transitions to WaitingState.
 type PlanningState struct{}
 
-func (s *PlanningState) Name() string { return "planning" }
+func (s *PlanningState) Phase() Phase { return PhasePlanning }
 
 func (s *PlanningState) Enter(ctx context.Context, o *Orchestrator) error {
 	slog.Info("planning: decomposing goal", "goal", o.goal, "repo", o.cfg.RepoPath)
@@ -151,7 +167,7 @@ func (s *PlanningState) HandleEvent(ctx context.Context, o *Orchestrator, evt Ev
 // When all tasks are done, transitions to SynthesizingState.
 type WaitingState struct{}
 
-func (s *WaitingState) Name() string { return "waiting" }
+func (s *WaitingState) Phase() Phase { return PhaseWaiting }
 
 func (s *WaitingState) Enter(ctx context.Context, o *Orchestrator) error {
 	slog.Info("waiting: monitoring task completions", "dag_size", o.dag.TaskCount())
@@ -212,7 +228,7 @@ func (s *WaitingState) HandleEvent(ctx context.Context, o *Orchestrator, evt Eve
 // and transitions to DoneState.
 type SynthesizingState struct{}
 
-func (s *SynthesizingState) Name() string { return "synthesizing" }
+func (s *SynthesizingState) Phase() Phase { return PhaseSynthesizing }
 
 func (s *SynthesizingState) Enter(ctx context.Context, o *Orchestrator) error {
 	slog.Info("synthesizing: collecting results and generating report",
@@ -253,7 +269,7 @@ func (s *SynthesizingState) HandleEvent(ctx context.Context, o *Orchestrator, ev
 // DoneState is terminal. The orchestrator has finished its work.
 type DoneState struct{}
 
-func (s *DoneState) Name() string { return "done" }
+func (s *DoneState) Phase() Phase { return PhaseDone }
 
 func (s *DoneState) Enter(ctx context.Context, o *Orchestrator) error {
 	slog.Info("orchestrator done", "goal", o.goal, "dag_size", o.dag.TaskCount())
@@ -322,49 +338,68 @@ func (o *Orchestrator) collectSynthesisInput() map[string]*TaskResult {
 // It synthesizes partial results (if any completed) and reports the failure clearly.
 type FailedState struct{}
 
-func (s *FailedState) Name() string { return "failed" }
+func (s *FailedState) Phase() Phase { return PhaseFailed }
 
 func (s *FailedState) Enter(ctx context.Context, o *Orchestrator) error {
-	// Count what happened, using the DAG's words rather than the daemon's.
-	completed, failed, skipped, pending := 0, 0, 0, 0
-	var failedIDs, skippedIDs []string
+	c := o.countOutcomes()
+	o.reportFailure(c)
+	o.synthesizePartial(ctx, c)
+	o.persistFailure(ctx, c)
+	return nil
+}
 
+// outcomeCounts is what the failure report has to say: how each task ended, and
+// the IDs in stable order.
+type outcomeCounts struct {
+	completed, failed, skipped, pending int
+	failedIDs, skippedIDs               []string
+}
+
+// countOutcomes tallies the DAG by terminal state, in the DAG's vocabulary
+// rather than the daemon's.
+func (o *Orchestrator) countOutcomes() outcomeCounts {
+	var c outcomeCounts
 	for id, node := range o.dag.nodes {
 		switch node.Status {
 		case status.TaskDone:
-			completed++
+			c.completed++
 		case status.TaskFailed:
-			failed++
-			failedIDs = append(failedIDs, id)
+			c.failed++
+			c.failedIDs = append(c.failedIDs, id)
 		case status.TaskSkipped:
-			skipped++
-			skippedIDs = append(skippedIDs, id)
+			c.skipped++
+			c.skippedIDs = append(c.skippedIDs, id)
 		default:
-			pending++
+			c.pending++
 		}
 	}
-	sort.Strings(failedIDs)
-	sort.Strings(skippedIDs)
+	sort.Strings(c.failedIDs)
+	sort.Strings(c.skippedIDs)
+	return c
+}
 
+// reportFailure prints the human-facing header and names every task that did
+// not complete. A failed task with no recorded reason says so rather than
+// leaving the line blank and looking like a formatting bug.
+func (o *Orchestrator) reportFailure(c outcomeCounts) {
 	slog.Warn("orchestration failed — not all tasks completed",
 		"goal", o.goal,
-		"completed", completed,
-		"failed", failed,
-		"skipped", skipped,
-		"still_waiting", pending,
+		"completed", c.completed,
+		"failed", c.failed,
+		"skipped", c.skipped,
+		"still_waiting", c.pending,
 	)
 
-	// Print a clear failure header
 	fmt.Printf("\n%s\n", sepLine)
 	fmt.Printf("  ORCHESTRATION FAILED\n")
 	fmt.Printf("%s\n\n", sepLine)
 	fmt.Printf("Goal: %s\n", o.goal)
 	fmt.Printf("Completed: %d  |  Failed: %d  |  Skipped: %d  |  Still pending: %d\n\n",
-		completed, failed, skipped, pending)
+		c.completed, c.failed, c.skipped, c.pending)
 
-	if len(failedIDs) > 0 {
+	if len(c.failedIDs) > 0 {
 		fmt.Println("Failed tasks:")
-		for _, id := range failedIDs {
+		for _, id := range c.failedIDs {
 			summary := o.dag.nodes[id].Summary
 			if summary == "" {
 				summary = "no reason recorded"
@@ -373,48 +408,53 @@ func (s *FailedState) Enter(ctx context.Context, o *Orchestrator) error {
 		}
 		fmt.Println()
 	}
-	if len(skippedIDs) > 0 {
-		fmt.Printf("Skipped (never ran, blocked by a failed parent): %s\n\n", strings.Join(skippedIDs, ", "))
+	if len(c.skippedIDs) > 0 {
+		fmt.Printf("Skipped (never ran, blocked by a failed parent): %s\n\n", strings.Join(c.skippedIDs, ", "))
 	}
+}
 
-	// Partial synthesis over completed work only: a failed task's goal is not
-	// a result, and leaving it out of the report is the point.
-	if completed > 0 {
-		fmt.Println("Partial synthesis (completed results only):")
-
-		if o.synthesis == nil {
-			o.synthesis = NewSynthesisEngine(nil)
-		}
-
-		sr, err := o.synthesis.synthesizeResults(ctx, o.collectSynthesisInput())
-		if err != nil {
-			slog.Warn("partial synthesis failed", "error", err)
-		} else {
-			o.result = sr
-			fmt.Println(formatSynthesisReport(sr))
-		}
-	} else {
+// synthesizePartial reports whatever completed. A failed task's goal is not a
+// result, so it never reaches the synthesizer; when nothing completed there is
+// nothing to synthesize and the report says that instead of an empty document.
+func (o *Orchestrator) synthesizePartial(ctx context.Context, c outcomeCounts) {
+	if c.completed == 0 {
 		fmt.Println("No tasks completed — no synthesis possible.")
+		return
 	}
 
-	// Persist failure state to daemon for inspection
+	fmt.Println("Partial synthesis (completed results only):")
+	if o.synthesis == nil {
+		o.synthesis = NewSynthesisEngine(nil)
+	}
+
+	sr, err := o.synthesis.synthesizeResults(ctx, o.collectSynthesisInput())
+	if err != nil {
+		slog.Warn("partial synthesis failed", "error", err)
+		return
+	}
+	o.result = sr
+	fmt.Println(formatSynthesisReport(sr))
+}
+
+// persistFailure publishes the outcome counts under the run key so the failure
+// is inspectable after the process exits.
+func (o *Orchestrator) persistFailure(ctx context.Context, c outcomeCounts) {
 	runKey := o.RunKey()
-	if runKey != "" {
-		payload := map[string]any{
-			"goal":          o.goal,
-			"completed":     completed,
-			"failed":        failed,
-			"skipped":       skipped,
-			"still_waiting": pending,
-			"failed_ids":    failedIDs,
-			"skipped_ids":   skippedIDs,
-		}
-		b, _ := json.Marshal(payload)
-		_, _ = o.daemon.AddMemory(ctx, "memory", "orchestration_failed", "failed_"+runKey,
-			string(b), 3, "gaap-orchestrator")
+	if runKey == "" {
+		return
 	}
-
-	return nil
+	payload := map[string]any{
+		"goal":          o.goal,
+		"completed":     c.completed,
+		"failed":        c.failed,
+		"skipped":       c.skipped,
+		"still_waiting": c.pending,
+		"failed_ids":    c.failedIDs,
+		"skipped_ids":   c.skippedIDs,
+	}
+	b, _ := json.Marshal(payload)
+	_, _ = o.daemon.AddMemory(ctx, "memory", "orchestration_failed", "failed_"+runKey,
+		string(b), 3, "gaap-orchestrator")
 }
 
 func (s *FailedState) HandleEvent(ctx context.Context, o *Orchestrator, evt Event) (OrchestratorState, error) {
