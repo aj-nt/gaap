@@ -163,7 +163,7 @@ func (o *Orchestrator) Run(goal string) error {
 	}
 
 	// Planning completes synchronously and transitions to Waiting.
-	if o.state.Name() == "planning" {
+	if o.state.Phase() == PhasePlanning {
 		transition, err := o.state.HandleEvent(o.ctx, o, Event{
 			Type: EventTasksCreated,
 		})
@@ -250,7 +250,7 @@ func (o *Orchestrator) runWaitingAndBeyond() error {
 	// Polling loop — query daemon for task completions, advance DAG.
 	// Workers (if configured) execute tasks concurrently; pollOnce checks status.
 	// Falls back to simulation when daemon is unavailable (NullMnemo).
-	if o.state.Name() == "waiting" {
+	if o.state.Phase() == PhaseWaiting {
 		// Start workers if configured
 		var workerStopCh chan struct{}
 		if o.workerPool != nil {
@@ -270,7 +270,7 @@ func (o *Orchestrator) runWaitingAndBeyond() error {
 		}
 
 		// Timed out with work still pending — transition to Failed.
-		if !o.dag.AllTasksComplete() && o.state.Name() == "waiting" {
+		if !o.dag.AllTasksComplete() && o.state.Phase() == PhaseWaiting {
 			slog.Warn("orchestration incomplete after wait phase, transitioning to failed")
 			if err := o.Transition(&FailedState{}); err != nil {
 				return fmt.Errorf("failed transition: %w", err)
@@ -285,7 +285,7 @@ func (o *Orchestrator) runWaitingAndBeyond() error {
 	}
 
 	// Synthesizing completes synchronously and transitions to Done
-	if o.state.Name() == "synthesizing" {
+	if o.state.Phase() == PhaseSynthesizing {
 		transition, err := o.state.HandleEvent(o.ctx, o, Event{
 			Type: EventTasksComplete,
 		})
@@ -301,7 +301,7 @@ func (o *Orchestrator) runWaitingAndBeyond() error {
 
 	// A run that ended in FailedState produced a report, but it did not
 	// succeed: say so, so the process exits non-zero.
-	if o.state.Name() == "failed" {
+	if o.state.Phase() == PhaseFailed {
 		return ErrOrchestrationFailed
 	}
 
@@ -715,8 +715,8 @@ func (o *Orchestrator) subscribeDaemon() error {
 // Transition orchestrator to the next state.
 func (o *Orchestrator) Transition(next OrchestratorState) error {
 	slog.Info("orchestrator state transition",
-		"from", o.state.Name(),
-		"to", next.Name())
+		"from", o.state.Phase(),
+		"to", next.Phase())
 	o.state = next
 	return next.Enter(o.ctx, o)
 }

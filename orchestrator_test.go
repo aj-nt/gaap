@@ -68,8 +68,8 @@ func TestE2EStaticDecomposition(t *testing.T) {
 	}
 
 	// Verify state is Done
-	if o.state == nil || o.state.Name() != "done" {
-		t.Errorf("expected state done, got %q", o.state.Name())
+	if o.state == nil || o.state.Phase() != PhaseDone {
+		t.Errorf("expected state done, got %q", o.state.Phase())
 	}
 }
 
@@ -225,8 +225,8 @@ func TestResumeCompletesDAG(t *testing.T) {
 		t.Fatalf("Resume: %v", err)
 	}
 
-	if o.state == nil || o.state.Name() != "done" {
-		t.Errorf("expected state done, got %q", o.state.Name())
+	if o.state == nil || o.state.Phase() != PhaseDone {
+		t.Errorf("expected state done, got %q", o.state.Phase())
 	}
 	if !o.dag.AllTasksComplete() {
 		t.Error("all tasks should be complete")

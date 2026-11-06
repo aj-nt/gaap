@@ -116,8 +116,8 @@ func TestE2EWithRealDaemonAndWorkers(t *testing.T) {
 	comp, fail := pool.Stats()
 	t.Logf("Worker stats: completed=%d failed=%d", comp, fail)
 
-	if orchestrator.state == nil || orchestrator.state.Name() != "done" {
-		t.Errorf("expected state done, got %q", orchestrator.state.Name())
+	if orchestrator.state == nil || orchestrator.state.Phase() != PhaseDone {
+		t.Errorf("expected state done, got %q", orchestrator.state.Phase())
 	}
 }
 
@@ -198,8 +198,8 @@ func TestE2EWithAutoWorkersNullMnemo(t *testing.T) {
 	if orchestrator.dag.TaskCount() != 3 {
 		t.Errorf("expected 3 tasks, got %d", orchestrator.dag.TaskCount())
 	}
-	if orchestrator.state == nil || orchestrator.state.Name() != "done" {
-		t.Errorf("expected state done, got %q", orchestrator.state.Name())
+	if orchestrator.state == nil || orchestrator.state.Phase() != PhaseDone {
+		t.Errorf("expected state done, got %q", orchestrator.state.Phase())
 	}
 }
 

@@ -35,8 +35,8 @@ func TestSubscriptionFallsBackToPolling(t *testing.T) {
 	if !o.dag.AllTasksComplete() {
 		t.Error("not all tasks completed")
 	}
-	if o.state == nil || o.state.Name() != "done" {
-		t.Errorf("expected state done, got %q", o.state.Name())
+	if o.state == nil || o.state.Phase() != PhaseDone {
+		t.Errorf("expected state done, got %q", o.state.Phase())
 	}
 }
 
