@@ -608,79 +608,106 @@ func (o *Orchestrator) subscribeDaemon() error {
 
 	slog.Info("subscribed to task events via gRPC stream")
 
-	// Track whether we received any task events. If the stream closes
-	// without delivering any, fail so the caller falls back to polling.
-	eventsReceived := false
+	// Single writer: the reader goroutine owns the stream and nothing else. It
+	// turns wire events into taskEvents and hands them over; every DAG mutation
+	// stays on this goroutine, which is also the only one reading the DAG. The
+	// previous version mutated nodes from the reader while this loop iterated
+	// them, which is a data race on every status field it touched.
+	events := make(chan taskEvent, 64)
+	streamErr := make(chan error, 1)
+	streamClosed := make(chan struct{})
+	stop := make(chan struct{})
+	defer close(stop)
 
-	done := make(chan error, 1)
 	go func() {
-		defer func() {
-			done <- nil
-		}()
-
+		defer close(streamClosed)
 		for {
 			event, err := stream.Recv()
 			if err != nil {
-				if err == io.EOF {
-					slog.Info("subscription stream closed (io.EOF)")
+				if err != io.EOF {
+					select {
+					case streamErr <- fmt.Errorf("subscription stream error: %w", err):
+					default:
+					}
 					return
 				}
-				done <- fmt.Errorf("subscription stream error: %w", err)
+				slog.Info("subscription stream closed (io.EOF)")
 				return
 			}
-
 			if event.Task == nil {
 				continue
 			}
-
-			eventsReceived = true
-
-			o.handleTaskEvent(taskEvent{
+			evt := taskEvent{
 				ID:         event.Task.Id,
 				Status:     status.Task(event.Task.Status),
 				ResultKey:  event.Task.ResultKey,
 				RetryCount: event.Task.RetryCount,
 				Source:     "sub",
-			})
-
-			// Also auto-complete synthesis tasks promoted to ready by that event.
-			o.autoCompleteSynthesis("sub:synthesis")
-
-			if o.dag.AllTasksTerminal() || (o.failFast() && o.dag.HasFailures()) {
+			}
+			select {
+			case events <- evt:
+			case <-stop:
+				return
+			case <-o.ctx.Done():
 				return
 			}
 		}
 	}()
 
-	// Wait for completion or context cancellation
+	// apply drains one event and advances the DAG. Only this goroutine calls it.
+	received := 0
+	apply := func() bool {
+		select {
+		case evt := <-events:
+			received++
+			o.handleTaskEvent(evt)
+			o.autoCompleteSynthesis("sub:synthesis")
+			return true
+		default:
+			return false
+		}
+	}
+
 	start := time.Now()
 	maxWait := time.Duration(o.cfg.MaxWaitSec) * time.Second
+	tick := time.NewTicker(500 * time.Millisecond)
+	defer tick.Stop()
 
 	for {
-		if o.dag.AllTasksTerminal() {
-			return nil
-		}
-		if o.failFast() && o.dag.HasFailures() {
+		if o.dag.AllTasksTerminal() || (o.failFast() && o.dag.HasFailures()) {
+			// Drain what the reader already produced before leaving, so a fast
+			// stream is not truncated by a terminal decision made mid-flight.
+			for apply() {
+			}
 			return nil
 		}
 		if time.Since(start) > maxWait {
 			return fmt.Errorf("subscription timed out after %v", maxWait)
 		}
+
 		select {
-		case err := <-done:
-			if err != nil {
-				return err
+		case evt := <-events:
+			received++
+			o.handleTaskEvent(evt)
+			o.autoCompleteSynthesis("sub:synthesis")
+		case <-streamClosed:
+			// The reader is done: apply whatever it queued, then decide.
+			for apply() {
 			}
-			// Stream closed cleanly. If we received task events, success.
-			// If not (NullMnemo or hub not available), fail so caller falls back.
-			if !eventsReceived {
+			select {
+			case err := <-streamErr:
+				return err
+			default:
+			}
+			// A stream that delivered nothing means the hub is not really
+			// there (NullMnemo); fail so the caller falls back to polling.
+			if received == 0 {
 				return fmt.Errorf("subscription stream closed without receiving any task events")
 			}
 			return nil
 		case <-o.ctx.Done():
 			return fmt.Errorf("context cancelled: %w", o.ctx.Err())
-		case <-time.After(500 * time.Millisecond):
-			// Periodic check for AllTasksComplete
+		case <-tick.C:
 		}
 	}
 }
