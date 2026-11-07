@@ -56,8 +56,17 @@ var allowedCommands = map[string]bool{
 	"govulncheck":   true,
 
 	// Text processing (read-only, no -i)
-	"awk": true,
-	"sed": true,
+	"awk":      true,
+	"sed":      true,
+	"uniq":     true,
+	"cut":      true,
+	"tr":       true,
+	"nl":       true,
+	"printf":   true,
+	"comm":     true,
+	"gofmt":    true, // read-only forms only, see checkArguments
+	"basename": true,
+	"dirname":  true,
 
 	// Scripting (limited)
 	"python3": true,
@@ -188,6 +197,13 @@ func checkArguments(prog string, tokens []string) error {
 		for _, t := range tokens[1:] {
 			if t == "-i" || strings.HasPrefix(t, "-i.") || strings.HasPrefix(t, "--in-place") {
 				return fmt.Errorf("command blocked: sed edits in place (%q)", t)
+			}
+		}
+
+	case "gofmt":
+		for _, t := range tokens[1:] {
+			if t == "-w" || t == "--write" {
+				return fmt.Errorf("command blocked: gofmt rewrites files (%q)", t)
 			}
 		}
 

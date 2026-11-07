@@ -72,6 +72,36 @@ func TestParseReplyStripsTrailingMarkup(t *testing.T) {
 	}
 }
 
+// TestParseReplyStripsTruncatedTagToken covers the residue the sanitiser was
+// written for but did not yet handle: the model sometimes drops the closing
+// angle's prefix and leaves the tag name as a bare trailing token. The command
+// then runs with a bogus argument instead of failing honestly.
+func TestParseReplyStripsTruncatedTagToken(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct{ text, want string }{
+		{"CMD: find spikes examples -name '*.go' | head -30 parameter>", "find spikes examples -name '*.go' | head -30"},
+		{"CMD: ls -R examples parameter>", "ls -R examples"},
+		{"CMD: go vet ./... 2>&1 | head -60 <parameter>", "go vet ./... 2>&1 | head -60"},
+		{"CMD: ls invoke>", "ls"},
+	}
+	for _, c := range cases {
+		_, body, ok := parseReply(c.text)
+		if !ok {
+			t.Errorf("%q: expected a CMD action", c.text)
+			continue
+		}
+		if body != c.want {
+			t.Errorf("%q:\n  got  %q\n  want %q", c.text, body, c.want)
+		}
+	}
+
+	// A token that only looks similar must survive: this is a real command.
+	if _, body, _ := parseReply("CMD: grep -rn parameter internal/"); body != "grep -rn parameter internal/" {
+		t.Errorf("legitimate argument was stripped: %q", body)
+	}
+}
+
 // TestParseReplyStripsLeadingTag verifies a CMD wrapped in the model's own
 // parameter tag is still recognised as a command.
 func TestParseReplyStripsLeadingTag(t *testing.T) {

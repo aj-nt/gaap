@@ -115,7 +115,7 @@ func isASCII(s string) bool {
 // heredoc, whose body is data and runs to its terminator.
 func commandFrom(rest string) string {
 	lines := strings.Split(rest, "\n")
-	first := cutUnterminatedTag(strings.TrimSpace(lines[0]))
+	first := cutTrailingTagToken(cutUnterminatedTag(strings.TrimSpace(lines[0])))
 	if !strings.Contains(first, "<<") {
 		return first
 	}
@@ -147,6 +147,39 @@ func cutUnterminatedTag(line string) string {
 		return line
 	}
 	return strings.TrimSpace(line[:idx])
+}
+
+// tagNames are the tool-call elements whose names the model leaves behind when
+// its markup is truncated mid-tag. A trailing token that is nothing but one of
+// these, with at most one angle bracket, is residue — not an argument.
+var tagNames = map[string]bool{
+	"parameter": true, "invoke": true, "function_calls": true,
+	"tool_calls": true, "antml:parameter": true, "antml:invoke": true,
+	"function": true, "result": true,
+}
+
+// cutTrailingTagToken removes residue appended as the last word of a command,
+// e.g. "find spikes examples -name '*.go' parameter>". The token must contain
+// an angle bracket, so a real argument such as "grep -rn parameter internal/"
+// is left alone.
+func cutTrailingTagToken(line string) string {
+	for {
+		sp := strings.LastIndexAny(line, " \t")
+		if sp < 0 {
+			return line
+		}
+		tok := line[sp+1:]
+		if !strings.ContainsAny(tok, "<>") {
+			return line
+		}
+		name := strings.TrimPrefix(tok, "<")
+		name = strings.TrimPrefix(name, "/")
+		name = strings.TrimSuffix(name, ">")
+		if !tagNames[name] {
+			return line
+		}
+		line = strings.TrimSpace(line[:sp])
+	}
 }
 
 // heredocDelimiter returns the word after a heredoc operator, unquoted, or ""
