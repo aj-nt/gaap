@@ -40,9 +40,13 @@ type Event struct {
 type Phase string
 
 const (
-	PhaseIdle         Phase = "idle"
-	PhasePlanning     Phase = "planning"
-	PhaseWaiting      Phase = "waiting"
+	PhaseIdle     Phase = "idle"
+	PhasePlanning Phase = "planning"
+	PhaseWaiting  Phase = "waiting"
+	// PhaseApproving waits on a human decision about a task the daemon gave up
+	// on. It is the first phase that owns data (the pending request), and it
+	// sits between waiting and whatever the human's answer produces.
+	PhaseApproving    Phase = "approving"
 	PhaseSynthesizing Phase = "synthesizing"
 	PhaseDone         Phase = "done"
 	PhaseFailed       Phase = "failed"
