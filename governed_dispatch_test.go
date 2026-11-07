@@ -122,13 +122,23 @@ func TestAGoverningReviewAsksInsteadOfDispatching(t *testing.T) {
 func TestAReviewOpensAQuestion(t *testing.T) {
 	o, _ := reviewFixture(t, governedConfig(policyFor(t, platform.Decision{Action: platform.ActionReview, Reason: "new agent type"})))
 
-	st := o.waitVerdict()
-	if st == nil {
-		t.Fatal("a queued review produced no state")
+	// Entering the waiting phase has to announce the review: a held task is never
+	// dispatched, so it produces no daemon event and nothing else would tell the
+	// loop there is a question.
+	if err := o.state.Enter(context.Background(), o); err != nil {
+		t.Fatal(err)
 	}
-	next, ok := st.(*ApprovalState)
+	select {
+	case evt := <-o.events:
+		if err := o.step(evt); err != nil {
+			t.Fatalf("stepping the queued review: %v", err)
+		}
+	default:
+		t.Fatal("a queued review was never announced")
+	}
+	next, ok := o.state.(*ApprovalState)
 	if !ok {
-		t.Fatalf("state = %T, want *ApprovalState", st)
+		t.Fatalf("state = %T, want *ApprovalState", o.state)
 	}
 	if next.Request.Kind != ApprovalKindReview {
 		t.Errorf("kind = %q, want review", next.Request.Kind)
