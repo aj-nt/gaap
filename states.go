@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/aj-nt/gaap/internal/status"
 	"github.com/google/uuid"
@@ -334,6 +335,36 @@ func (o *Orchestrator) collectSynthesisInput() map[string]*TaskResult {
 		}
 	}
 	return results
+}
+
+// ApprovalState waits on a human decision about a task the daemon gave up on.
+//
+// It is the first phase that owns data: which task failed, where the question was
+// written down, and when it expires. The empty states stay empty because they
+// genuinely hold nothing — this one has something to hold.
+type ApprovalState struct {
+	Request        ApprovalRequest
+	ApprovalTaskID string
+	Deadline       time.Time
+}
+
+func (s *ApprovalState) Phase() Phase { return PhaseApproving }
+
+func (s *ApprovalState) Enter(ctx context.Context, o *Orchestrator) error {
+	// Opening the approval task in the daemon happens in M2 (openApproval). This
+	// phase exists here so the graph, the state, and its data are pinned before
+	// anything depends on them.
+	slog.Info("approving: waiting on a human decision",
+		"task_id", s.Request.TaskID,
+		"approval_task", s.ApprovalTaskID,
+		"deadline", s.Deadline.Format(time.RFC3339))
+	return nil
+}
+
+func (s *ApprovalState) HandleEvent(ctx context.Context, o *Orchestrator, evt Event) (OrchestratorState, error) {
+	// The human's answer and the deadline tick are handled in M2. An event this
+	// phase does not understand is not a reason to move.
+	return nil, nil
 }
 
 // FailedState is terminal. The orchestrator timed out or all dispatched tasks dead-lettered.
