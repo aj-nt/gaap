@@ -402,6 +402,13 @@ func (s *ApprovalState) Enter(ctx context.Context, o *Orchestrator) error {
 		if _, err := o.daemon.AddTask(ctx, s.ApprovalTaskID, ApprovalAgentType, goal, string(reqJSON), 3, 600, 0); err != nil {
 			return fmt.Errorf("approval: creating the request task %s: %w", s.ApprovalTaskID, err)
 		}
+		// The watcher only polls the tasks it was told about, and this task was
+		// not dispatched by dispatchTask. Without this the answer is written to
+		// the daemon and nobody ever looks.
+		select {
+		case o.dispatchFeed <- s.ApprovalTaskID:
+		case <-ctx.Done():
+		}
 	}
 
 	slog.Info("approving: waiting on a human decision",
@@ -412,8 +419,29 @@ func (s *ApprovalState) Enter(ctx context.Context, o *Orchestrator) error {
 }
 
 func (s *ApprovalState) HandleEvent(ctx context.Context, o *Orchestrator, evt Event) (OrchestratorState, error) {
-	// The human's answer and the deadline tick are handled in M2. An event this
-	// phase does not understand is not a reason to move.
+	switch evt.Type {
+	case EventTaskUpdate:
+		// The daemon keeps talking while the run is paused. Only this task's own
+		// answer is an answer; another branch finishing is not.
+		if evt.Task == nil || evt.Task.ID != s.ApprovalTaskID {
+			return nil, nil
+		}
+		switch evt.Task.Status {
+		case status.TaskDone:
+			decision, err := o.loadApprovalDecision(evt.Task.ResultKey)
+			if err != nil {
+				slog.Error("approval: could not read the decision", "task_id", s.Request.TaskID, "error", err)
+				return &FailedState{}, nil
+			}
+			return o.applyApproval(ctx, s, decision), nil
+		case status.TaskDeadLetter, status.TaskFailed:
+			// max_retries is 0, so a dead-lettered approval is an unanswered
+			// question, not an attempt to retry.
+			slog.Error("approval: the request task died without an answer", "task_id", s.Request.TaskID)
+			return &FailedState{}, nil
+		}
+	}
+	// An event this phase does not understand is not a reason to move.
 	return nil, nil
 }
 

@@ -1,9 +1,14 @@
 package gaap
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
+
+	"github.com/aj-nt/gaap/internal/status"
 )
 
 // ApprovalAgentType is the reserved agent type an approval travels under.
@@ -96,6 +101,109 @@ type ApprovalDecision struct {
 	Reason    string         `json:"reason"`               // required
 	DecidedBy string         `json:"decided_by"`
 	DecidedAt time.Time      `json:"decided_at"`
+}
+
+// loadApprovalDecision reads the answer a human left on the blackboard. The
+// result key travels on the approval task, exactly as a worker's result does, so
+// the answer arrives without a second channel.
+func (o *Orchestrator) loadApprovalDecision(resultKey string) (ApprovalDecision, error) {
+	var d ApprovalDecision
+	if resultKey == "" {
+		return d, fmt.Errorf("the approval task completed with no result key")
+	}
+	mem, err := o.daemon.GetMemory(o.ctx, resultKey)
+	if err != nil {
+		return d, fmt.Errorf("reading %q: %w", resultKey, err)
+	}
+	if mem == nil || mem.Content == "" {
+		return d, fmt.Errorf("memory %q is empty", resultKey)
+	}
+	if err := json.Unmarshal([]byte(mem.Content), &d); err != nil {
+		return d, fmt.Errorf("memory %q is not an ApprovalDecision: %w", resultKey, err)
+	}
+	return d, nil
+}
+
+// applyApproval enacts a human's answer.
+//
+// Three of the four answers replace the failed node with a new one — a
+// dead-lettered task is terminal in the daemon, so "try again" cannot mean
+// "reopen that row" — and cancel accepts the failure, which is what the run
+// would have done without the loop. A decision that cannot be enacted fails the
+// run: it is data that arrived over a daemon, and a run that quietly continues
+// after a broken instruction is worse than one that says so.
+func (o *Orchestrator) applyApproval(ctx context.Context, s *ApprovalState, d ApprovalDecision) OrchestratorState {
+	log := slog.With("task_id", s.Request.TaskID, "action", string(d.Action))
+
+	if err := d.Validate(); err != nil {
+		log.Error("approval: the decision cannot be enacted", "error", err, "decided_by", d.DecidedBy)
+		return &FailedState{}
+	}
+	node, ok := o.dag.nodes[s.Request.TaskID]
+	if !ok {
+		log.Error("approval: the task this decision is about is no longer in the graph")
+		return &FailedState{}
+	}
+
+	log.Info("approval: decision received",
+		"decided_by", d.DecidedBy, "agent_type", d.AgentType, "reason", d.Reason)
+
+	if d.Action == ApprovalCancel {
+		// Accepting the failure means exactly that: the branch stays lost. Any
+		// work still in flight elsewhere decides the run's outcome as usual.
+		if !o.dag.AllTasksTerminal() {
+			return &WaitingState{}
+		}
+		return &FailedState{}
+	}
+
+	replacement := &TaskNode{
+		ID:        o.nextReplacementID(node.ID),
+		AgentType: node.AgentType,
+		Goal:      node.Goal,
+		Context:   node.Context,
+	}
+	switch d.Action {
+	case ApprovalReassign:
+		replacement.AgentType = d.AgentType
+	case ApprovalEdit:
+		var amended map[string]any
+		if err := json.Unmarshal([]byte(d.Context), &amended); err != nil {
+			log.Error("approval: the edited context is not a JSON object", "error", err, "context", d.Context)
+			return &FailedState{}
+		}
+		replacement.Context = amended
+	}
+
+	reopened, err := o.dag.Supersede(node.ID, replacement)
+	if err != nil {
+		log.Error("approval: could not replace the task", "error", err)
+		return &FailedState{}
+	}
+	log.Info("approval: task replaced",
+		"replacement", replacement.ID, "agent_type", replacement.AgentType, "reopened", reopened)
+
+	// A replacement whose parents are done is ready now; one whose parents are
+	// still running is dispatched by the promotion path when they finish.
+	if replacement.Status == status.TaskReady {
+		if err := o.dispatchTask(ctx, replacement.ID); err != nil {
+			log.Warn("approval: the replacement could not be dispatched", "error", err)
+		}
+	}
+	return &WaitingState{}
+}
+
+// nextReplacementID returns an unused id for the task that replaces failedID:
+// "<id>_retry", then "_retry2", and so on. Deterministic, because the id shows
+// up in logs and in the daemon and a UUID would make the history unreadable.
+func (o *Orchestrator) nextReplacementID(failedID string) string {
+	candidate := failedID + "_retry"
+	for n := 2; ; n++ {
+		if _, taken := o.dag.nodes[candidate]; !taken {
+			return candidate
+		}
+		candidate = fmt.Sprintf("%s_retry%d", failedID, n)
+	}
 }
 
 // Validate reports whether this decision can be enacted. Every rejection names

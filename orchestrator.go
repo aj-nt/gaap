@@ -292,7 +292,17 @@ func (o *Orchestrator) dispatchTask(ctx context.Context, taskID string) error {
 		return nil
 	}
 
+	// The context is what the decomposer gave the task, or what a human amended
+	// it to with an edit decision. Serialising the node rather than hardcoding
+	// "{}" is what makes an edit reach the worker at all.
 	ctxJSON := "{}"
+	if len(node.Context) > 0 {
+		b, err := json.Marshal(node.Context)
+		if err != nil {
+			return fmt.Errorf("dispatch %s: encoding context: %w", node.ID, err)
+		}
+		ctxJSON = string(b)
+	}
 	if _, err := o.daemon.AddTask(ctx, node.ID, node.AgentType, node.Goal, ctxJSON, 3, 300, 2); err != nil {
 		slog.Warn("failed to dispatch task", "id", node.ID, "error", err)
 		return err

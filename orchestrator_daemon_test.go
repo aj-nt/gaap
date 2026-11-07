@@ -36,6 +36,11 @@ type testDaemon struct {
 	// script, when set, is what Subscribe streams instead of the task store.
 	// Tests that build their DAG by hand have nothing in the store to replay.
 	script []*pb.TaskEntry
+
+	// memories is the blackboard: AddMemory stores under a deterministic ID so a
+	// test can hand that ID to CompleteTask as a result key, exactly as a worker
+	// does with the UUID the real daemon assigns.
+	memories map[string]*pb.MemoryEntry
 }
 
 func (td *testDaemon) AddTask(_ context.Context, req *pb.AddTaskRequest) (*pb.TaskEntry, error) {
@@ -202,16 +207,27 @@ func (td *testDaemon) FindReadyTasks(_ context.Context, req *pb.FindReadyTasksRe
 func (td *testDaemon) AddMemory(_ context.Context, req *pb.AddMemoryRequest) (*pb.AddMemoryResponse, error) {
 	td.mu.Lock()
 	defer td.mu.Unlock()
-	id := "mem-" + time.Now().Format("150405")
-	return &pb.AddMemoryResponse{
-		Entry: &pb.MemoryEntry{
-			Id:       id,
-			Category: req.Category,
-			Key:      req.Key,
-			Content:  req.Content,
-			Priority: req.Priority,
-		},
-	}, nil
+	entry := &pb.MemoryEntry{
+		Id:       "mem-" + req.Key,
+		Category: req.Category,
+		Key:      req.Key,
+		Content:  req.Content,
+		Priority: req.Priority,
+	}
+	if td.memories == nil {
+		td.memories = map[string]*pb.MemoryEntry{}
+	}
+	td.memories[entry.Id] = entry
+	return &pb.AddMemoryResponse{Entry: entry}, nil
+}
+
+func (td *testDaemon) GetMemory(_ context.Context, req *pb.GetMemoryRequest) (*pb.MemoryEntry, error) {
+	td.mu.Lock()
+	defer td.mu.Unlock()
+	if e, ok := td.memories[req.Id]; ok {
+		return e, nil
+	}
+	return nil, status.Error(codes.NotFound, "memory not found: "+req.Id)
 }
 
 func (td *testDaemon) Ping(_ context.Context, _ *pb.HealthCheckRequest) (*pb.HealthCheckResponse, error) {

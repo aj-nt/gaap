@@ -107,6 +107,35 @@ func TestApprovalTaskIsInTheDaemon(t *testing.T) {
 	}
 }
 
+// TestApprovalTaskIsWatched: the answer arrives as a task update, and the
+// watcher only polls the ids it was handed. A request the watcher never heard of
+// is a question whose answer nobody reads.
+func TestApprovalTaskIsWatched(t *testing.T) {
+	td := &testDaemon{tasks: map[string]*pb.TaskEntry{}, deadLetter: map[string]bool{"t1": true}}
+	daemon, cleanup := serveTestDaemon(t, td)
+	defer cleanup()
+
+	cfg := approvalConfig(time.Minute)
+	o := NewOrchestrator(context.Background(), cfg, daemon, nil)
+	o.dag = NewDAG()
+	_ = o.dag.AddTask(&TaskNode{ID: "t1", Status: status.TaskReady, AgentType: "quality_scan", Goal: "inventory"})
+	o.state = &WaitingState{}
+
+	o.handleTaskEvent(taskEvent{ID: "t1", Status: status.TaskDeadLetter, RetryCount: 2})
+	if err := o.Transition(o.waitVerdict()); err != nil {
+		t.Fatalf("Transition: %v", err)
+	}
+
+	select {
+	case id := <-o.dispatchFeed:
+		if id != o.state.(*ApprovalState).ApprovalTaskID {
+			t.Errorf("watcher was handed %q, want the approval task", id)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the approval task was never handed to the watcher")
+	}
+}
+
 // TestApprovalOffKeepsTheOldBehaviour: without --approval a dead letter still
 // ends the run. The loop is off unless asked for.
 func TestApprovalOffKeepsTheOldBehaviour(t *testing.T) {
