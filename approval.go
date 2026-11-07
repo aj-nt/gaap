@@ -56,6 +56,11 @@ const (
 // JSON: the fields are the whole of what a restarted orchestrator has to know to
 // keep waiting for the same answer.
 type ApprovalRequest struct {
+	// Kind says why a human is being asked: a task that failed (dead_letter) or
+	// a call the policy would not authorize on its own (review). The answer means
+	// different things — a decline of a review is a refusal to run, not an
+	// accepted failure — so the request has to carry which question it is.
+	Kind      string    `json:"kind,omitempty"`
 	TaskID    string    `json:"task_id"`
 	AgentType string    `json:"agent_type"`
 	Attempts  int32     `json:"attempts"`
@@ -88,6 +93,22 @@ func NewApprovalRequest(taskID, agentType string, attempts int32, reason string,
 // Expired reports whether the deadline has passed at the given time.
 func (r ApprovalRequest) Expired(now time.Time) bool {
 	return !now.Before(r.Deadline)
+}
+
+const (
+	// ApprovalKindDeadLetter is a question about a task the daemon gave up on.
+	ApprovalKindDeadLetter = "dead_letter"
+	// ApprovalKindReview is a question the policy asked instead of deciding.
+	ApprovalKindReview = "review"
+)
+
+// ReviewReason is the question a review asks: the policy's own reason, so a
+// human reads the rule that stopped it rather than a summary of the rule.
+func ReviewReason(reason string) string {
+	if reason == "" {
+		return "policy review: no reason given"
+	}
+	return "policy review: " + reason
 }
 
 // ApprovalDecision is a human's answer to an approval request.
@@ -149,6 +170,12 @@ func (o *Orchestrator) applyApproval(ctx context.Context, s *ApprovalState, d Ap
 		"decided_by", d.DecidedBy, "agent_type", d.AgentType, "reason", d.Reason)
 
 	if d.Action == ApprovalCancel {
+		if s.Request.Kind == ApprovalKindReview {
+			// The question was "may this run?", so declining means it does not.
+			// It is a refusal, not an accepted failure: nothing was attempted.
+			o.denyTask(node, "review declined by "+d.DecidedBy+": "+d.Reason)
+			return o.afterDecision()
+		}
 		// Accepting the failure means exactly that: the branch stays lost. Any
 		// work still in flight elsewhere decides the run's outcome as usual —
 		// through the verdict, because another branch may be owed a question of
@@ -161,6 +188,9 @@ func (o *Orchestrator) applyApproval(ctx context.Context, s *ApprovalState, d Ap
 		AgentType: node.AgentType,
 		Goal:      node.Goal,
 		Context:   node.Context,
+		// A human decided this call. Asking the governor again would turn "yes"
+		// into "ask again", which is how a review loop never ends.
+		Approved: true,
 	}
 	switch d.Action {
 	case ApprovalReassign:
