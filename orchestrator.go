@@ -772,9 +772,16 @@ func (o *Orchestrator) subscribeDaemon() error {
 
 // Transition orchestrator to the next state.
 func (o *Orchestrator) Transition(next OrchestratorState) error {
+	from, to := o.state.Phase(), next.Phase()
+	if !allowedTransition(from, to) {
+		// Refuse before moving. A transition the graph does not contain means a
+		// caller is wrong, and the run should say so rather than arrive in a
+		// phase it can never leave.
+		return fmt.Errorf("illegal transition %s -> %s (see transitions.go)", from, to)
+	}
 	slog.Info("orchestrator state transition",
-		"from", o.state.Phase(),
-		"to", next.Phase())
+		"from", from,
+		"to", to)
 	o.state = next
 	return next.Enter(o.ctx, o)
 }
