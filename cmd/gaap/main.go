@@ -65,6 +65,16 @@ func main() {
 			slog.Error(err.Error())
 			os.Exit(1)
 		}
+	case "approvals":
+		if err := approvalsCommand(os.Args[2:], os.Stdout); err != nil {
+			slog.Error(err.Error())
+			os.Exit(1)
+		}
+	case "approve":
+		if err := approveCommand(os.Args[2:], os.Stdout); err != nil {
+			slog.Error(err.Error())
+			os.Exit(1)
+		}
 	case "govern":
 		if err := governCommand(os.Args[2:], os.Stdout); err != nil {
 			slog.Error(err.Error())
@@ -88,6 +98,9 @@ func printUsage() {
 Usage:
   gaap run [flags] <goal>
   gaap resume [--addr <daemon>] [--api-key <key>] [--tls-cert <path>] <run-key>
+  gaap approvals [--json] <run-id>
+  gaap approve <run-id> [--task <task-id>] [--action retry|reassign|edit|cancel]
+               [--agent-type <type>] [--context <json>] --reason <why> --agent <who>
   gaap govern decide --policy <file> --subject <id> --tool <name> [--args <json>]
   gaap govern erase --subject <id> [--reason <code>]
   gaap govern kill --scope <agent-id|global> [--reason <code>]
@@ -113,6 +126,19 @@ Run flags:
   --ollama-url string   Ollama base URL (default: http://localhost:11434/v1)
   --max-tokens int      Max tokens for LLM responses (default: 4096)
   --temperature float   LLM temperature, 0.0-1.0 (default: 0.1)
+  --approval            Ask a human about dead-lettered tasks instead of failing the run
+  --approval-timeout int  Seconds a pending approval stays open (default: 900)
+  --approval-agents string  Comma-separated allowlist of who may answer (default: anyone)
+
+Approve flags:
+  --task string     Which pending request to answer (default: the only one)
+  --action string   retry (default), reassign, edit or cancel
+  --agent-type string  New agent type, for --action reassign
+  --context string  JSON object of amended context, for --action edit
+  --reason string   Why — required, recorded with the decision
+  --agent string    Who is deciding — required, recorded
+  --agents string   Comma-separated allowlist of who may decide
+  --json            Print the decision as JSON
 `)
 }
 
