@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/aj-nt/gaap/internal/status"
+	"log/slog"
 )
 
 // TaskSpec represents a decomposed task to be dispatched to workers.
@@ -52,40 +53,30 @@ func (d *Decomposer) Decompose(ctx context.Context, goal, repoPath string) ([]Ta
 
 	// Step 1.5: Short-circuit file goals — no LLM decomposition needed.
 	if filePath := extractFilePathFromGoal(goal); filePath != "" {
-		return d.fileGoalTask(goal, filePath), nil
+		return namespaceTasks(d.fileGoalTask(goal, filePath)), nil
 	}
 
 	// Step 2: Build prompt (embedded in strategy call)
 	// Step 3: Call strategy (LLM or static)
 	tasks, err := d.strategy.Decompose(ctx, goal, repoPath)
 	if err != nil {
-		// Fallback to hardcoded decomposition on strategy failure
-		return hardcodedDecompose(goal, repoPath, "fallback"), nil
+		// Fallback to hardcoded decomposition on strategy failure. It falls
+		// through to the namespacing step rather than returning here: the
+		// fallback path used to hand back the same three IDs on every degraded
+		// run, so a second run collided with the first on the daemon's primary
+		// key — and, worse, read the first run's task state while it did.
+		slog.Warn("decomposition strategy failed, using hardcoded fallback", "error", err)
+		tasks = hardcodedDecompose(goal, repoPath, "fallback")
 	}
 
 	if len(tasks) == 0 {
 		return nil, fmt.Errorf("decomposition produced no tasks")
 	}
 
-	// Step 4: Prefix task IDs to avoid collisions across orchestrator runs
-	prefix := generatePrefix()
-	idMap := make(map[string]string)
-	for i := range tasks {
-		newID := prefix + "_" + tasks[i].TaskID
-		idMap[tasks[i].TaskID] = newID
-		tasks[i].TaskID = newID
-	}
-
-	// Rewrite parent IDs to use prefixed versions
-	for i := range tasks {
-		newParents := make([]string, 0, len(tasks[i].ParentIDs))
-		for _, pid := range tasks[i].ParentIDs {
-			if newID, ok := idMap[pid]; ok {
-				newParents = append(newParents, newID)
-			}
-		}
-		tasks[i].ParentIDs = newParents
-	}
+	// Step 4: Namespace the IDs. Every path out of Decompose goes through
+	// namespaceTasks, so "IDs are unique per run" is an invariant of the
+	// function rather than a property of the path that happens to exist.
+	tasks = namespaceTasks(tasks)
 
 	// Step 5: Validate DAG — check for cycles, ensure no self-references
 	if err := validateTaskDAG(tasks); err != nil {
@@ -177,6 +168,36 @@ func validateTaskDAG(tasks []TaskSpec) error {
 }
 
 // generatePrefix creates a short random prefix for task ID disambiguation.
+// namespaceTasks prefixes every task ID with a per-run prefix and rewrites
+// parent references to match.
+//
+// The prefix is what keeps two runs from sharing task IDs in the daemon. Without
+// it a repeated run either collides on insert (UNIQUE constraint on tasks.id) or,
+// if the row already exists, silently adopts the other run's status and result.
+func namespaceTasks(tasks []TaskSpec) []TaskSpec {
+	prefix := generatePrefix()
+	idMap := make(map[string]string, len(tasks))
+	for i := range tasks {
+		newID := prefix + "_" + tasks[i].TaskID
+		idMap[tasks[i].TaskID] = newID
+		tasks[i].TaskID = newID
+	}
+	for i := range tasks {
+		newParents := make([]string, 0, len(tasks[i].ParentIDs))
+		for _, pid := range tasks[i].ParentIDs {
+			if newID, ok := idMap[pid]; ok {
+				newParents = append(newParents, newID)
+				continue
+			}
+			// A parent outside the set is left as-is: validateTaskDAG will name
+			// it rather than the rewrite silently dropping the edge.
+			newParents = append(newParents, pid)
+		}
+		tasks[i].ParentIDs = newParents
+	}
+	return tasks
+}
+
 func generatePrefix() string {
 	b := make([]byte, 4)
 	_, _ = rand.Read(b)

@@ -43,7 +43,8 @@ func TestPollOnceMarksDeadLetterFailed(t *testing.T) {
 	_ = o.dag.AddTask(&TaskNode{ID: "a", Status: status.TaskClaimed, AgentType: "static_analysis"})
 	_ = o.dag.AddTask(&TaskNode{ID: "b", ParentIDs: []string{"a"}, Status: status.TaskBlocked, AgentType: "static_analysis"})
 
-	o.pollOnce()
+	// The watcher reduces a daemon entry to a taskEvent; the loop applies it.
+	o.handleTaskEvent(taskEventFromClient(m.entries["a"]))
 
 	if got := o.dag.nodes["a"].Status; got != status.TaskFailed {
 		t.Fatalf("a = %s, want failed", got)
@@ -69,7 +70,7 @@ func TestPollOnceKeepsSuccessfulNeighbour(t *testing.T) {
 	_ = o.dag.AddTask(&TaskNode{ID: "a", Status: status.TaskClaimed})
 	_ = o.dag.AddTask(&TaskNode{ID: "b", Status: status.TaskClaimed})
 
-	o.pollOnce()
+	o.handleTaskEvent(taskEventFromClient(m.entries["a"]))
 
 	if got := o.dag.nodes["b"].Status; got != status.TaskClaimed {
 		t.Fatalf("b = %s, want claimed (independent branch keeps running)", got)
@@ -109,25 +110,28 @@ func TestSubscriptionIgnoresUnknownTask(t *testing.T) {
 	}
 }
 
-// TestPollDaemonReturnsOnFailure pins the timeout question: a terminal DAG must
-// end the poll loop, not leave it sleeping until MaxWaitSec.
-func TestPollDaemonReturnsOnFailure(t *testing.T) {
+// TestWaitingEndsWhenTerminal pins the timeout question: a terminal DAG must end
+// the run, not leave it sleeping until MaxWaitSec.
+func TestWaitingEndsWhenTerminal(t *testing.T) {
 	m := &deadLetterMnemo{entries: map[string]*vclient.TaskEntry{
 		"a": {Id: "a", Status: string(status.TaskDeadLetter)},
 	}}
 	o := deadLetterOrchestrator(t, m)
 	_ = o.dag.AddTask(&TaskNode{ID: "a", Status: status.TaskClaimed})
 
-	done := make(chan struct{})
+	done := make(chan error, 1)
 	go func() {
-		o.pollDaemon()
-		close(done)
+		o.startWatcher()
+		done <- o.drive()
 	}()
 
 	select {
-	case <-done:
+	case err := <-done:
+		if !errors.Is(err, ErrOrchestrationFailed) {
+			t.Fatalf("err = %v, want ErrOrchestrationFailed", err)
+		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("pollDaemon waited on a terminal DAG — it is still gated on AllTasksComplete")
+		t.Fatal("the run waited on a terminal DAG — the loop is still gated on completion")
 	}
 }
 
@@ -140,7 +144,8 @@ func TestRunReturnsErrorWhenOrchestrationFails(t *testing.T) {
 	o := deadLetterOrchestrator(t, m)
 	_ = o.dag.AddTask(&TaskNode{ID: "a", Status: status.TaskClaimed})
 
-	err := o.runWaitingAndBeyond()
+	o.startWatcher()
+	err := o.drive()
 	if !errors.Is(err, ErrOrchestrationFailed) {
 		t.Fatalf("err = %v, want ErrOrchestrationFailed", err)
 	}
