@@ -42,7 +42,7 @@ func TestE2EWithRealDaemonAndWorkers(t *testing.T) {
 	// Build LLM decomposer
 	ollamaClient := ollama.NewClient(ollama.Config{
 		BaseURL:     "http://localhost:11434/v1",
-		Model:       envOrDefault("GAAP_MODEL", "glm-5.1:cloud"),
+		Model:       envOrDefault("GAAP_MODEL", DefaultModel),
 		MaxTokens:   4096,
 		Temperature: 0.1,
 		TimeoutSec:  120,
@@ -75,7 +75,7 @@ func TestE2EWithRealDaemonAndWorkers(t *testing.T) {
 		RepoPath:    repoPath,
 		Ollama: ollama.Config{
 			BaseURL:     "http://localhost:11434/v1",
-			Model:       envOrDefault("GAAP_MODEL", "glm-5.1:cloud"),
+			Model:       envOrDefault("GAAP_MODEL", DefaultModel),
 			MaxTokens:   2000,
 			Temperature: 0.1,
 			TimeoutSec:  120,
@@ -179,7 +179,7 @@ func TestE2EWithAutoWorkersNullMnemo(t *testing.T) {
 		MaxTurns:    10,
 		Ollama: ollama.Config{
 			BaseURL: "http://localhost:11434/v1",
-			Model:   "glm-5.1:cloud",
+			Model:   DefaultModel,
 		},
 	}, daemon)
 	if err != nil {

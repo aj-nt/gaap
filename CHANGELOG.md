@@ -16,6 +16,7 @@ surfaces do something when you touch them.
 - `--breaker-threshold` / `--breaker-cooldown` on `run` and `resume` — per-agent-type circuit breakers (off by default).
 
 ### Changed
+- **The default model is `deepseek-v4.1-flash:cloud`.** The previous default, `glm-5.1:cloud`, was retired by the provider on 2026-09-25, and nothing noticed: decomposition fell back to the hardcoded three-task DAG (which also had unnamespaced IDs), workers failed every task with HTTP 410, and the run ended with "one or more tasks did not complete" as though the work had been attempted. The default now lives in one exported constant, `gaap.DefaultModel`, used by `run`, `resume`, the help text and the tests.
 - **`Run` is an event loop.** It posts the goal and then processes events until the run is terminal; no phase is entered because the driver checked which phase it had just left. States announce what happened (`EventTasksCreated`, `EventTasksComplete`) instead of the driver re-deriving it, and `Transition` refuses any edge the graph in `transitions.go` does not contain.
 
 ### Fixed
@@ -86,7 +87,7 @@ First release. Multi-agent orchestrator with blackboard coordination, DAG planni
 - **Circuit breaker** — closed→open→half-open pattern per agent type; protects against dead-letter loops; auto-reset on recovery
 - **Auto-workers** — in-process worker goroutines execute dispatched tasks; makes `gaap run` fully self-contained
 - **Synthesis** — LLM semantic cross-referencing with schema-based fallback; outputs structured audit reports
-- **Model-agnostic** — `--model`, `--ollama-url`, `--max-tokens`, `--temperature` flags; defaults to glm-5.1:cloud
+- **Model-agnostic** — `--model`, `--ollama-url`, `--max-tokens`, `--temperature` flags; defaults to deepseek-v4.1-flash:cloud
 
 ### CLI
 

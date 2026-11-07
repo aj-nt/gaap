@@ -18,7 +18,7 @@
 //	 --agent-types string  Comma-separated agent types (default: static_analysis,quality_scan,file_analysis)
 //		--api-key string      Vassago daemon API key (Bearer token)
 //		--tls-cert string     Path to TLS CA certificate for daemon connection
-//		--model string        LLM model name (default: glm-5.1:cloud)
+//		--model string        LLM model name (default: gaap.DefaultModel)
 //		--ollama-url string   Ollama base URL (default: http://localhost:11434/v1)
 //		--max-tokens int      Max tokens for LLM responses (default: 4096)
 //		--temperature float   LLM temperature, 0.0-1.0 (default: 0.1)
@@ -109,7 +109,7 @@ Run flags:
   --agent-types string  Comma-separated agent types (default: static_analysis,quality_scan,file_analysis)
   --api-key string      Vassago daemon API key (Bearer token)
   --tls-cert string     Path to TLS CA certificate for daemon connection
-  --model string        LLM model name (default: glm-5.1:cloud)
+  --model string        LLM model name (default: `+gaap.DefaultModel+`)
   --ollama-url string   Ollama base URL (default: http://localhost:11434/v1)
   --max-tokens int      Max tokens for LLM responses (default: 4096)
   --temperature float   LLM temperature, 0.0-1.0 (default: 0.1)
@@ -160,7 +160,7 @@ func parseRunFlags(name string, args []string) (*runConfig, error) {
 	addr := fs.String("addr", "", "Vassago daemon address (e.g., localhost:50051)")
 	repo := fs.String("repo", "", "Repository path to analyze")
 	timeout := fs.Int("timeout", 0, "Max wait for workers in seconds (default: 300)")
-	model := fs.String("model", "", "LLM model name (default: glm-5.1:cloud)")
+	model := fs.String("model", "", "LLM model name (default: "+gaap.DefaultModel+")")
 	ollamaURL := fs.String("ollama-url", "", "Ollama base URL (default: http://localhost:11434/v1)")
 	maxTokens := fs.Int("max-tokens", 0, "Max tokens for LLM responses (default: 4096)")
 	temperature := fs.Float64("temperature", 0, "LLM temperature, 0.0-1.0 (default: 0.1)")
@@ -192,7 +192,7 @@ func parseRunFlags(name string, args []string) (*runConfig, error) {
 		FailureMode:        failureMode(*failFast, os.Getenv("GAAP_FAILURE_MODE")),
 		BreakerThreshold:   atoiOr(envOr("GAAP_BREAKER_THRESHOLD", "", ""), *breakerThreshold, 0),
 		BreakerCooldownSec: atoiOr(envOr("GAAP_BREAKER_COOLDOWN", "", ""), *breakerCooldown, 0),
-		Model:              envOr("GAAP_MODEL", *model, "glm-5.1:cloud"),
+		Model:              envOr("GAAP_MODEL", *model, gaap.DefaultModel),
 		OllamaURL:          envOr("GAAP_OLLAMA_URL", *ollamaURL, "http://localhost:11434/v1"),
 		MaxTokens:          atoiOr(envOr("GAAP_MAX_TOKENS", "", ""), *maxTokens, 4096),
 		Temperature:        atofOr(envOr("GAAP_TEMPERATURE", "", ""), *temperature, 0.1),
@@ -335,7 +335,7 @@ func parseResumeFlags(name string, args []string) (*resumeConfig, error) {
 	addr := fs.String("addr", "", "Vassago daemon address (default: localhost:50051)")
 	apiKey := fs.String("api-key", "", "Vassago daemon API key (Bearer token)")
 	tlsCert := fs.String("tls-cert", "", "Path to TLS CA certificate for daemon connection")
-	model := fs.String("model", "", "LLM model name (default: glm-5.1:cloud)")
+	model := fs.String("model", "", "LLM model name (default: "+gaap.DefaultModel+")")
 	ollamaURL := fs.String("ollama-url", "", "Ollama base URL (default: http://localhost:11434/v1)")
 	maxTokens := fs.Int("max-tokens", 0, "Max tokens for LLM responses (default: 4096)")
 	temperature := fs.Float64("temperature", 0, "LLM temperature, 0.0-1.0 (default: 0.1)")
@@ -358,7 +358,7 @@ func parseResumeFlags(name string, args []string) (*resumeConfig, error) {
 		DaemonAddr:         envOr("GAAP_DAEMON_ADDR", *addr, "localhost:50051"),
 		APIKey:             envOr("GAAP_API_KEY", *apiKey, ""),
 		TLSCert:            envOr("GAAP_TLS_CERT", *tlsCert, ""),
-		Model:              envOr("GAAP_MODEL", *model, "glm-5.1:cloud"),
+		Model:              envOr("GAAP_MODEL", *model, gaap.DefaultModel),
 		OllamaURL:          envOr("GAAP_OLLAMA_URL", *ollamaURL, "http://localhost:11434/v1"),
 		MaxTokens:          atoiOr(envOr("GAAP_MAX_TOKENS", "", ""), *maxTokens, 4096),
 		Temperature:        atofOr(envOr("GAAP_TEMPERATURE", "", ""), *temperature, 0.1),
