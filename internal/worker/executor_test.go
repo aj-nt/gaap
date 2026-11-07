@@ -418,7 +418,7 @@ func TestBuildExecutionPromptFileGoal(t *testing.T) {
 	goal := "Read and summarize /tmp/release_review.md"
 	contextStr := `{"source_path": "/tmp/release_review.md"}`
 
-	prompt := buildExecutionPrompt(goal, contextStr, "/tmp")
+	prompt := buildExecutionPrompt(goal, contextStr, "/tmp", 20)
 
 	// Should tell the worker to read the file directly
 	if !strings.Contains(prompt, "/tmp/release_review.md") {
