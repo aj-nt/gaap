@@ -97,6 +97,113 @@ func TestResumeReEntersApproving(t *testing.T) {
 	}
 }
 
+// TestResumeReusesTheRequestAlreadyInTheDaemon: the restart adopts the question
+// that is still waiting. Adding a second task under the same id would either
+// fail the run on a duplicate id or split the answer in two.
+func TestResumeReusesTheRequestAlreadyInTheDaemon(t *testing.T) {
+	td := &testDaemon{tasks: map[string]*pb.TaskEntry{}, memories: map[string]*pb.MemoryEntry{}}
+	daemon, cleanup := serveTestDaemon(t, td)
+	defer cleanup()
+
+	req := liveApprovalRequest()
+	_, _ = daemon.AddTask(context.Background(), "abc12345_scan_approval", ApprovalAgentType, "approve", "{}", 3, 600, 0)
+	before := len(td.addedIDs())
+
+	o := NewOrchestrator(context.Background(), &Config{PollIntervalSec: 1, MaxWaitSec: 2}, daemon, nil)
+	_ = o.Resume(&RunState{
+		Goal:     "inventory",
+		RepoPath: t.TempDir(),
+		RunID:    "abc12345",
+		Tasks:    []TaskSpec{{TaskID: "abc12345_scan", Status: status.TaskFailed, AgentType: "quality_scan", Goal: "inventory"}},
+		Pending:  &PendingApproval{Request: req, ApprovalTaskID: "abc12345_scan_approval", Deadline: req.Deadline},
+	})
+
+	for _, id := range td.addedIDs()[before:] {
+		if id == "abc12345_scan_approval" {
+			t.Error("resume asked the same question twice")
+		}
+	}
+}
+
+// TestResumeReCreatesAMissingRequest: the daemon can lose the question — expired
+// by its TTL, deleted, or restarted on a fresh database. A resumed run that
+// assumes the question is still there waits for an answer nobody can give until
+// its own deadline kills it. It should ask again, with the same id and deadline.
+func TestResumeReCreatesAMissingRequest(t *testing.T) {
+	td := &testDaemon{tasks: map[string]*pb.TaskEntry{}, memories: map[string]*pb.MemoryEntry{}}
+	daemon, cleanup := serveTestDaemon(t, td)
+	defer cleanup()
+
+	req := liveApprovalRequest()
+	o := NewOrchestrator(context.Background(), &Config{PollIntervalSec: 1, MaxWaitSec: 2}, daemon, nil)
+	_ = o.Resume(&RunState{
+		Goal:     "inventory",
+		RepoPath: t.TempDir(),
+		RunID:    "abc12345",
+		Tasks:    []TaskSpec{{TaskID: "abc12345_scan", Status: status.TaskFailed, AgentType: "quality_scan", Goal: "inventory"}},
+		Pending:  &PendingApproval{Request: req, ApprovalTaskID: "abc12345_scan_approval", Deadline: req.Deadline},
+	})
+
+	found := false
+	for _, id := range td.addedIDs() {
+		if id == "abc12345_scan_approval" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("resume did not re-create the missing request; added=%v", td.addedIDs())
+	}
+}
+
+// TestResumeReCreatesAFinishedRequest: a task already answered is not one that
+// will be answered again. The watcher sees an update once; waiting on a task
+// that is already done waits forever, so the run asks again instead.
+func TestResumeReCreatesAFinishedRequest(t *testing.T) {
+	td := &testDaemon{tasks: map[string]*pb.TaskEntry{}, memories: map[string]*pb.MemoryEntry{}}
+	daemon, cleanup := serveTestDaemon(t, td)
+	defer cleanup()
+
+	req := liveApprovalRequest()
+	_, _ = daemon.AddTask(context.Background(), "abc12345_scan_approval", ApprovalAgentType, "approve", "{}", 3, 600, 0)
+	// Simulate a request that was answered while the orchestrator was down.
+	td.mu.Lock()
+	td.tasks["abc12345_scan_approval"].Status = "done"
+	td.tasks["abc12345_scan_approval"].ResultKey = "mem-1"
+	td.mu.Unlock()
+	before := len(td.addedIDs())
+
+	o := NewOrchestrator(context.Background(), &Config{PollIntervalSec: 1, MaxWaitSec: 2}, daemon, nil)
+	_ = o.Resume(&RunState{
+		Goal:     "inventory",
+		RepoPath: t.TempDir(),
+		RunID:    "abc12345",
+		Tasks:    []TaskSpec{{TaskID: "abc12345_scan", Status: status.TaskFailed, AgentType: "quality_scan", Goal: "inventory"}},
+		Pending:  &PendingApproval{Request: req, ApprovalTaskID: "abc12345_scan_approval", Deadline: req.Deadline},
+	})
+
+	found := false
+	for _, id := range td.addedIDs()[before:] {
+		if id == "abc12345_scan_approval" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("a finished request was reused; added=%v", td.addedIDs()[before:])
+	}
+}
+
+// liveApprovalRequest is a request whose deadline has not passed.
+func liveApprovalRequest() ApprovalRequest {
+	return ApprovalRequest{
+		TaskID:    "abc12345_scan",
+		AgentType: "quality_scan",
+		Attempts:  2,
+		Reason:    "dead-lettered",
+		OpenedAt:  time.Now(),
+		Deadline:  time.Now().Add(60 * time.Second),
+	}
+}
+
 // TestResumeKeepsTheApprovalLoop: a run that asked humans before the crash must
 // keep asking after the resume. The policy is part of the run, not of the
 // invocation that resumed it.

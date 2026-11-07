@@ -396,6 +396,22 @@ type ApprovalState struct {
 
 func (s *ApprovalState) Phase() Phase { return PhaseApproving }
 
+// approvalTaskIsPending reports whether the question is still there to be
+// answered. A missing task, or one already finished, is not: a finished task
+// will never produce another update, so waiting on it is waiting on nothing.
+func (o *Orchestrator) approvalTaskIsPending(ctx context.Context, id string) bool {
+	task, err := o.daemon.GetTask(ctx, id)
+	if err != nil {
+		return false
+	}
+	switch task.Status {
+	case "ready", "claimed", "":
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *ApprovalState) Enter(ctx context.Context, o *Orchestrator) error {
 	// The question travels as a task. vassago already provides atomic claim, TTL
 	// reset and a result key, so the answer arrives through the same machinery
@@ -408,10 +424,21 @@ func (s *ApprovalState) Enter(ctx context.Context, o *Orchestrator) error {
 	if err != nil {
 		return fmt.Errorf("approval: encoding the request: %w", err)
 	}
-	if o.daemon != nil && !s.Resumed {
-		goal := fmt.Sprintf("Approve %s (%s): %s", s.Request.TaskID, s.Request.AgentType, s.Request.Reason)
-		if _, err := o.daemon.AddTask(ctx, s.ApprovalTaskID, ApprovalAgentType, goal, string(reqJSON), 3, 600, 0); err != nil {
-			return fmt.Errorf("approval: creating the request task %s: %w", s.ApprovalTaskID, err)
+	if o.daemon != nil {
+		// A resumed run adopts the question that is still waiting and asks again
+		// only if it is gone: the daemon can lose it to its TTL, to a delete, or
+		// to a restart on a fresh database, and a run that assumes otherwise
+		// waits for an answer nobody can give until its own deadline kills it.
+		reuse := s.Resumed && o.approvalTaskIsPending(ctx, s.ApprovalTaskID)
+		if s.Resumed && !reuse {
+			slog.Warn("approval: the request is no longer pending; asking again",
+				"task_id", s.Request.TaskID, "approval_task", s.ApprovalTaskID)
+		}
+		if !reuse {
+			goal := fmt.Sprintf("Approve %s (%s): %s", s.Request.TaskID, s.Request.AgentType, s.Request.Reason)
+			if _, err := o.daemon.AddTask(ctx, s.ApprovalTaskID, ApprovalAgentType, goal, string(reqJSON), 3, 600, 0); err != nil {
+				return fmt.Errorf("approval: creating the request task %s: %w", s.ApprovalTaskID, err)
+			}
 		}
 	}
 	if o.daemon != nil {
