@@ -167,7 +167,7 @@ gaap run [flags] <goal>
   --addr string     Vassago daemon address (default: localhost:50051)
   --repo string     Repository path to analyze (default: current directory)
   --timeout int     Max wait for workers in seconds (default: 300)
-  --model string    LLM model name (default: glm-5.1:cloud)
+  --model string    LLM model name (default: deepseek-v4.1-flash:cloud)
   --ollama-url string  Ollama base URL (default: http://localhost:11434/v1)
   --max-tokens int  Max tokens for LLM responses (default: 4096)
   --temperature float  LLM temperature, 0.0-1.0 (default: 0.1)

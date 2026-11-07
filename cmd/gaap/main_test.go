@@ -34,8 +34,8 @@ func TestParseRunFlagsDefaults(t *testing.T) {
 	if cfg.DryRun {
 		t.Error("expected DryRun=false by default")
 	}
-	if cfg.Model != "glm-5.1:cloud" {
-		t.Errorf("expected default model 'glm-5.1:cloud', got %q", cfg.Model)
+	if cfg.Model != gaap.DefaultModel {
+		t.Errorf("expected default model gaap.DefaultModel, got %q", cfg.Model)
 	}
 	if cfg.OllamaURL != "http://localhost:11434/v1" {
 		t.Errorf("expected default ollama URL, got %q", cfg.OllamaURL)
@@ -157,7 +157,7 @@ func TestRunConfigEquality(t *testing.T) {
 		MaxWaitSec:      300,
 		PollIntervalSec: 5,
 		DryRun:          false,
-		Model:           "glm-5.1:cloud",
+		Model:           gaap.DefaultModel,
 		OllamaURL:       "http://localhost:11434/v1",
 		MaxTokens:       4096,
 		Temperature:     0.1,
@@ -169,7 +169,7 @@ func TestRunConfigEquality(t *testing.T) {
 		MaxWaitSec:      300,
 		PollIntervalSec: 5,
 		DryRun:          false,
-		Model:           "glm-5.1:cloud",
+		Model:           gaap.DefaultModel,
 		OllamaURL:       "http://localhost:11434/v1",
 		MaxTokens:       4096,
 		Temperature:     0.1,
@@ -335,7 +335,7 @@ func TestParseResumeFlagsDefaults(t *testing.T) {
 	if cfg.MaxWaitSec != 300 {
 		t.Errorf("expected default timeout 300, got %d", cfg.MaxWaitSec)
 	}
-	if cfg.Model != "glm-5.1:cloud" {
+	if cfg.Model != gaap.DefaultModel {
 		t.Errorf("expected default model, got %q", cfg.Model)
 	}
 	if cfg.MaxTokens != 4096 {

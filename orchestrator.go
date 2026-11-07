@@ -21,6 +21,17 @@ import (
 // Re-exported from the SDK so the orchestrator's signatures stay readable.
 type MnemoClient = client.MnemoClient
 
+// DefaultModel is the model `gaap run` uses when neither --model nor
+// GAAP_MODEL says otherwise.
+//
+// It is a named constant rather than a literal in four places because the
+// previous default (glm-5.1:cloud) was retired by the provider and nothing
+// noticed: decomposition fell back to the hardcoded three-task DAG, workers
+// failed every task with HTTP 410, and the run reported "one or more tasks did
+// not complete" as if the work had been attempted. The default has to be one
+// place so the next retirement is a one-line change and a visible diff.
+const DefaultModel = "deepseek-v4.1-flash:cloud"
+
 // FailureMode is how a run reacts to a task failure.
 type FailureMode string
 
