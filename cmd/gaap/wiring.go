@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/aj-nt/gaap"
@@ -104,6 +105,22 @@ func chatFunc(s llmSettings) func(context.Context, string) (string, error) {
 	}
 }
 
+// workerAgentTypes drops the approval agent type from a pool's claim set. A
+// pool that claimed approvals would answer the orchestrator's questions itself —
+// the one thing an approval exists to prevent.
+func workerAgentTypes(types []string) []string {
+	out := make([]string, 0, len(types))
+	for _, t := range types {
+		if strings.TrimSpace(t) == gaap.ApprovalAgentType {
+			slog.Warn("ignoring the approval agent type: approvals are for humans, not workers",
+				"agent_type", t)
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
 // startWorkers spawns the in-process worker pool and attaches it to the
 // orchestrator. A pool that cannot start is a warning, not a failure: the run
 // continues without auto-workers and tasks stay queued.
@@ -112,7 +129,7 @@ func startWorkers(ctx context.Context, s llmSettings, repoPath string, daemon cl
 		DaemonAddr:  s.DaemonAddr,
 		AgentID:     "gaap-worker",
 		AgentName:   "gaap-worker",
-		AgentTypes:  s.AgentTypes,
+		AgentTypes:  workerAgentTypes(s.AgentTypes),
 		WorkerCount: 2,
 		PollSec:     2,
 		MaxTurns:    20,
