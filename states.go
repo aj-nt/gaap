@@ -196,10 +196,11 @@ func (s *WaitingState) Enter(ctx context.Context, o *Orchestrator) error {
 	// is applied by the loop, which is why a poll can no longer race the DAG.
 	o.startWatcher()
 
-	// A branch that failed while the run was paused on a question is still
-	// owed an answer. Nothing else will announce it: the watcher reported it
-	// once, to a phase that could only record it.
-	if len(o.pendingFailures) > 0 {
+	// A branch that failed, or a call the policy referred, while the run was
+	// paused is still owed an answer. Nothing else announces it: the watcher
+	// reports a terminal state once, and a review produces no event at all
+	// because its task was never dispatched.
+	if len(o.pendingFailures) > 0 || len(o.pendingReviews) > 0 {
 		o.post(Event{Type: EventVerdictDue})
 	}
 	return nil

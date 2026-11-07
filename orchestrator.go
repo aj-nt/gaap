@@ -13,6 +13,7 @@ import (
 
 	"github.com/aj-nt/gaap/internal/status"
 	"github.com/aj-nt/gaap/internal/worker"
+	"github.com/aj-nt/gaap/platform"
 	"github.com/aj-nt/vassago-sdk/client"
 	pb "github.com/aj-nt/vassago-sdk/proto"
 	"github.com/google/uuid"
@@ -75,6 +76,13 @@ type Config struct {
 	// Approval decides whether a dead-lettered task asks a human. Off by
 	// default; see ApprovalPolicy.
 	Approval ApprovalPolicy `yaml:"approval"`
+	// Governor decides whether a task may be dispatched at all. nil = ungoverned,
+	// which is the default: a run is not governed by accident, because the
+	// governor's answer changes what the run does.
+	Governor *platform.Governor
+	// AgentID is who the governor is deciding for. Empty means the orchestrator's
+	// own id: the run is the subject of its own decisions.
+	AgentID string
 }
 
 // ErrOrchestrationFailed is returned when a run finishes with at least one
@@ -149,6 +157,11 @@ type Orchestrator struct {
 	// news about branches that failed before the question was asked, and acting
 	// on them would kill a run that is waiting for an answer it still wants.
 	openQuestion bool
+
+	// pendingReviews are calls the policy would not decide on its own, oldest
+	// first. Like failures they are a queue: a run that is paused on one review
+	// keeps dispatching what it may, and each review is still owed an answer.
+	pendingReviews []reviewRecord
 
 	// pendingFailures are the dead letters the loop has not yet answered, oldest
 	// first. A queue rather than a slot because branches fail while the run is
@@ -332,6 +345,20 @@ func (o *Orchestrator) dispatchTask(ctx context.Context, taskID string) error {
 		slog.Warn("circuit breaker open, skipping dispatch",
 			"agent_type", node.AgentType, "task_id", node.ID)
 		return nil
+	}
+
+	// The governor decides whether this call happens at all. One place, before
+	// anything reaches the daemon, so there is no path that dispatches around it.
+	// A task a human approved is not asked again: the approval WAS the decision,
+	// and asking twice would make "yes" mean nothing.
+	if o.cfg.Governor != nil && !node.Approved {
+		if err := o.decide(node); err != nil {
+			return err
+		}
+		if node.Status != status.TaskReady {
+			// Denied or held for review: the governor already said what happens.
+			return nil
+		}
 	}
 
 	// The context is what the decomposer gave the task, or what a human amended
@@ -780,6 +807,9 @@ func (o *Orchestrator) waitVerdict() OrchestratorState {
 		// queued are answered afterwards, one at a time.
 		return nil
 	}
+	if st := o.reviewVerdict(); st != nil {
+		return st
+	}
 	if st := o.approvalVerdict(); st != nil {
 		return st
 	}
@@ -814,6 +844,34 @@ func (o *Orchestrator) afterDecision() OrchestratorState {
 		return st
 	}
 	return &WaitingState{}
+}
+
+// reviewVerdict turns the oldest policy review into a question. Reviews come
+// before failures: a task held by policy has not run and is not lost, so it is
+// the cheaper thing to resolve, and a failure that arrived while the run was
+// paused stays queued behind it.
+func (o *Orchestrator) reviewVerdict() OrchestratorState {
+	if len(o.pendingReviews) == 0 || !o.cfg.Approval.Enabled {
+		return nil
+	}
+	r := o.pendingReviews[0]
+	node, ok := o.dag.nodes[r.TaskID]
+	if !ok || node.Status != status.TaskBlocked {
+		o.pendingReviews = o.pendingReviews[1:]
+		return o.reviewVerdict()
+	}
+	o.pendingReviews = o.pendingReviews[1:]
+
+	req := NewApprovalRequest(node.ID, node.AgentType, 0, r.Reason, time.Now(), o.cfg.Approval.Timeout)
+	req.Kind = ApprovalKindReview
+	slog.Info("approval: the policy referred a task to a human",
+		"task_id", req.TaskID, "agent_type", req.AgentType, "reason", req.Reason,
+		"deadline", req.Deadline.Format(time.RFC3339))
+	return &ApprovalState{
+		Request:        req,
+		ApprovalTaskID: req.TaskID + "_approval",
+		Deadline:       req.Deadline,
+	}
 }
 
 // approvalVerdict answers the pending dead letter with a question, when the run
@@ -903,6 +961,72 @@ func (o *Orchestrator) failTask(node *TaskNode, attempts int32, logPrefix string
 	o.pendingFailures = append(o.pendingFailures, failureRecord{TaskID: node.ID, Attempts: attempts})
 	o.pendingFailure = &o.pendingFailures[len(o.pendingFailures)-1]
 	o.fireTaskFailed(node.ID, logPrefix, skipped)
+}
+
+// decide asks the governor about one task and enacts the answer: allow moves
+// nothing (dispatch continues), review queues a question instead of dispatching,
+// deny fails the task with the rule's own reason.
+//
+// The policy is asked about the agent type, because that is the unit the standing
+// orders name — "static_analysis may not run here" — and the arguments carry the
+// task identity so a rule can be narrower than a type when it needs to be.
+func (o *Orchestrator) decide(node *TaskNode) error {
+	agentID := o.cfg.AgentID
+	if agentID == "" {
+		agentID = "gaap-orchestrator"
+	}
+	d := o.cfg.Governor.Decide(agentID, node.AgentType, map[string]any{
+		"task_id": node.ID,
+		"goal":    node.Goal,
+		"repo":    o.cfg.RepoPath,
+		"context": node.Context,
+	})
+	slog.Info("govern: decision",
+		"task_id", node.ID,
+		"agent_type", node.AgentType,
+		"action", string(d.Action),
+		"rule", d.RuleID,
+		"reason", d.Reason)
+
+	switch d.Action {
+	case platform.ActionAllow:
+		return nil
+	case platform.ActionReview:
+		if !o.cfg.Approval.Enabled {
+			// A review nobody can answer is a hang. Without the approval loop the
+			// safe reading of "a person should look at this" is that it does not
+			// run.
+			o.denyTask(node, "policy asked for review and no approval loop is configured: "+d.Reason)
+			return nil
+		}
+		node.Status = status.TaskBlocked
+		o.pendingReviews = append(o.pendingReviews, reviewRecord{
+			TaskID:    node.ID,
+			AgentType: node.AgentType,
+			Reason:    ReviewReason(d.Reason),
+		})
+		return nil
+	default: // deny, and anything the kernel might add later
+		o.denyTask(node, d.Reason)
+		return nil
+	}
+}
+
+// denyTask fails a task the policy refused. It does not queue a question: a deny
+// is a decision, not a request for one, and asking a human to overrule the
+// standing orders would make the policy advisory.
+func (o *Orchestrator) denyTask(node *TaskNode, reason string) {
+	node.Status = status.TaskFailed
+	node.Summary = "policy deny: " + reason
+	skipped := o.dag.SkipDescendants(node.ID)
+	o.fireTaskFailed(node.ID, "govern", skipped)
+}
+
+// reviewRecord is a call the policy referred to a human.
+type reviewRecord struct {
+	TaskID    string
+	AgentType string
+	Reason    string
 }
 
 // failureRecord is the failure a verdict still has to answer for.

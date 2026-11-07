@@ -89,6 +89,42 @@ func openGovernState(dir string) (*governState, error) {
 
 func (s *governState) Close() error { return s.ledger.Close() }
 
+// buildGovernor opens the durable state and assembles the governor over it, so a
+// decision made during a run lands in the same record as one made from the CLI.
+// The caller owns the returned state and must close it.
+func buildGovernor(policyPath, stateDir string, trustFloor float64) (*platform.Governor, *governState, error) {
+	if stateDir == "" {
+		stateDir = ".gaap"
+	}
+	if policyPath == "" {
+		return nil, nil, fmt.Errorf("a governor needs --policy")
+	}
+	policy, err := platform.LoadPolicyFile(policyPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	state, err := openGovernState(stateDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	committer, err := platform.NewCommitter(state.ring)
+	if err != nil {
+		_ = state.Close()
+		return nil, nil, err
+	}
+	g := platform.NewGovernor()
+	g.Policy = policy
+	g.Ledger = state.ledger
+	g.Committer = committer
+	g.Refs = state.refs
+	g.Content = state.content
+	// The read side only: an operator trips the switch with `govern kill`, and
+	// the trip is durable, so a run cannot forget it.
+	g.Kill = state.kill
+	g.TrustFloor = trustFloor
+	return g, state, nil
+}
+
 // governDecide asks the governor for one decision about one tool call, records
 // it, and prints the outcome. A deny is a successful run: the decision is the
 // data, not an error.

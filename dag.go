@@ -9,6 +9,10 @@ import (
 
 // TaskNode represents a single task in the DAG with its status and parent dependencies.
 type TaskNode struct {
+	// Approved marks a task a human authorized. The governor is not asked again:
+	// the approval was the decision, and a second question would make "yes" mean
+	// nothing. Set on replacements and on tasks a review released.
+	Approved  bool           `json:"approved,omitempty"`
 	ID        string         `json:"task_id"`
 	ParentIDs []string       `json:"parent_ids"`
 	Status    status.Task    `json:"status"`

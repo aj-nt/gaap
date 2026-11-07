@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/aj-nt/gaap"
+	"github.com/aj-nt/gaap/platform"
 )
 
 // Version is set at build time by -ldflags "-X main.Version=...".
@@ -157,6 +158,12 @@ type runConfig struct {
 	// for the run; zero threshold leaves them off.
 	BreakerThreshold   int
 	BreakerCooldownSec int
+	// Policy governs the run: every dispatch is decided against it and recorded.
+	// Empty means ungoverned, which is the default — a run is not governed by
+	// accident.
+	Policy     string
+	StateDir   string
+	TrustFloor float64
 	// Approval asks a human about dead-lettered tasks. Off unless asked for.
 	Approval           bool
 	ApprovalTimeoutSec int
@@ -205,6 +212,9 @@ func parseRunFlags(name string, args []string) (*runConfig, error) {
 	approval := fs.Bool("approval", false, "Ask a human about dead-lettered tasks instead of failing the run")
 	approvalTimeout := fs.Int("approval-timeout", 0, "Seconds a pending approval stays open (default: 900)")
 	approvalAgents := fs.String("approval-agents", "", "Comma-separated allowlist of who may answer an approval")
+	policy := fs.String("policy", "", "Policy file: govern every dispatch against it")
+	stateDir := fs.String("state", ".gaap", "State directory for the ledger, keys and kill switch")
+	trustFloor := fs.Float64("trust-floor", 0, "Escalate allows to review while trust is below this (0 disables)")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -233,6 +243,9 @@ func parseRunFlags(name string, args []string) (*runConfig, error) {
 		Approval:           *approval || os.Getenv("GAAP_APPROVAL") != "",
 		ApprovalTimeoutSec: atoiOr(envOr("GAAP_APPROVAL_TIMEOUT", "", ""), *approvalTimeout, 900),
 		ApprovalAgents:     splitList(envOr("GAAP_APPROVAL_AGENTS", *approvalAgents, "")),
+		Policy:             envOr("GAAP_POLICY", *policy, ""),
+		StateDir:           envOr("GAAP_STATE", *stateDir, ".gaap"),
+		TrustFloor:         *trustFloor,
 		APIKey:             envOr("GAAP_API_KEY", *apiKey, ""),
 		TLSCert:            envOr("GAAP_TLS_CERT", *tlsCert, ""),
 	}
@@ -299,7 +312,22 @@ func run(args []string) error {
 
 	decomposer := gaap.NewDecomposer(gaap.NewLLMDecomposition(chatFn, catalog))
 
+	// A governed run asks the policy about every dispatch and records the answer.
+	// The state is opened before the run and closed after it, so the ledger holds
+	// the run's decisions and the files are not left open behind it.
+	var governor *platform.Governor
+	if rc.Policy != "" {
+		g, governState, err := buildGovernor(rc.Policy, rc.StateDir, rc.TrustFloor)
+		if err != nil {
+			return fmt.Errorf("governed run: %w", err)
+		}
+		defer func() { _ = governState.Close() }()
+		governor = g
+		slog.Info("govern: the run is governed", "policy", rc.Policy, "state", governState.dir)
+	}
+
 	orchestratorCfg := &gaap.Config{
+		Governor:           governor,
 		DaemonAddr:         rc.DaemonAddr,
 		RepoPath:           rc.RepoPath,
 		MaxWaitSec:         rc.MaxWaitSec,
@@ -371,6 +399,11 @@ type resumeConfig struct {
 	// disappears exactly when the run is recovering.
 	BreakerThreshold   int
 	BreakerCooldownSec int
+	// Governance is not part of the persisted run state either: a resumed run that
+	// is not told about the policy would dispatch around it.
+	Policy     string
+	StateDir   string
+	TrustFloor float64
 }
 
 // parseResumeFlags parses "gaap resume [--addr <daemon>] [--api-key <key>] [--tls-cert <path>] <run-key>".
@@ -389,6 +422,9 @@ func parseResumeFlags(name string, args []string) (*resumeConfig, error) {
 	timeout := fs.Int("timeout", 0, "Max wait for workers in seconds (default: 300)")
 	breakerThreshold := fs.Int("breaker-threshold", 0, "Open an agent type's circuit breaker after N dead-lettered tasks (default: 0 = off)")
 	breakerCooldown := fs.Int("breaker-cooldown", 0, "Seconds an open breaker refuses dispatch (default: 60 when breakers are on)")
+	policy := fs.String("policy", "", "Policy file: govern every dispatch against it")
+	stateDir := fs.String("state", ".gaap", "State directory for the ledger, keys and kill switch")
+	trustFloor := fs.Float64("trust-floor", 0, "Escalate allows to review while trust is below this (0 disables)")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -411,6 +447,9 @@ func parseResumeFlags(name string, args []string) (*resumeConfig, error) {
 		MaxWaitSec:         atoiOr(envOr("GAAP_TIMEOUT", "", ""), *timeout, 300),
 		BreakerThreshold:   atoiOr(envOr("GAAP_BREAKER_THRESHOLD", "", ""), *breakerThreshold, 0),
 		BreakerCooldownSec: atoiOr(envOr("GAAP_BREAKER_COOLDOWN", "", ""), *breakerCooldown, 0),
+		Policy:             envOr("GAAP_POLICY", *policy, ""),
+		StateDir:           envOr("GAAP_STATE", *stateDir, ".gaap"),
+		TrustFloor:         *trustFloor,
 	}
 	if *agentTypes != "" {
 		cfg.AgentTypes = strings.Split(*agentTypes, ",")
@@ -485,7 +524,19 @@ func resume(args []string) error {
 		return fmt.Errorf("load run state: %w", err)
 	}
 
+	var governor *platform.Governor
+	if rc.Policy != "" {
+		g, governState, err := buildGovernor(rc.Policy, rc.StateDir, rc.TrustFloor)
+		if err != nil {
+			return fmt.Errorf("governed resume: %w", err)
+		}
+		defer func() { _ = governState.Close() }()
+		governor = g
+		slog.Info("govern: the resumed run is governed", "policy", rc.Policy, "state", governState.dir)
+	}
+
 	orchestratorCfg := &gaap.Config{
+		Governor:           governor,
 		DaemonAddr:         rc.DaemonAddr,
 		RepoPath:           rs.RepoPath,
 		MaxWaitSec:         rc.MaxWaitSec,
