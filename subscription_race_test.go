@@ -3,7 +3,6 @@ package gaap
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -41,8 +40,10 @@ func TestSubscriptionIsSingleWriter(t *testing.T) {
 		_ = o.dag.AddTask(&TaskNode{ID: "child-" + name, ParentIDs: []string{"root"}, Status: gstatus.TaskBlocked})
 	}
 
-	if err := o.subscribeDaemon(); err != nil {
-		t.Fatalf("subscribeDaemon: %v", err)
+	// Observation starts on its own goroutine; the loop applies what it posts.
+	o.startWatcher()
+	if err := o.drive(); err != nil && !errors.Is(err, ErrOrchestrationFailed) {
+		t.Fatalf("drive: %v", err)
 	}
 
 	if got := o.dag.nodes["root"].Status; got != gstatus.TaskFailed {
@@ -73,13 +74,22 @@ func TestSubscriptionRequiresEvents(t *testing.T) {
 	o := NewOrchestrator(ctx, &Config{RepoPath: "/tmp/x", MaxWaitSec: 3, PollIntervalSec: 1}, daemon, nil)
 	o.goal = "empty stream"
 	o.state = &WaitingState{}
-	// Work in flight, so the DAG is not terminal and the loop must actually
+	o.subscribeFallbackToPoll = true
+	// Work in flight, so the DAG is not terminal and the observer must actually
 	// wait on the stream rather than returning on the first check.
 	_ = o.dag.AddTask(&TaskNode{ID: "pending", Status: gstatus.TaskClaimed})
 
-	err := o.subscribeDaemon()
-	if err == nil || !strings.Contains(err.Error(), "without receiving any task events") {
-		t.Fatalf("err = %v, want the no-events error so the caller falls back to polling", err)
+	o.startWatcher()
+
+	// A stream that closes without ever delivering a task event is not a working
+	// subscription: the watcher must fall back to polling rather than wait on
+	// silence.
+	deadline := time.Now().Add(5 * time.Second)
+	for o.pollFallbacks.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("an empty stream did not fall back to polling")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

@@ -23,6 +23,12 @@ const (
 	EventTaskFailed
 	EventTimeout
 	EventTasksComplete // fired when all tasks in the DAG are done
+	// EventTaskUpdate is a raw daemon status the watcher observed. The loop
+	// applies it to the DAG — the watcher never touches the DAG itself.
+	EventTaskUpdate
+	// EventSimulate asks the loop to complete the DAG in-process. Used when the
+	// daemon is not connected at all (tests, dry runs).
+	EventSimulate
 )
 
 // sepLine is the width of separator lines in state output reports.
@@ -32,6 +38,9 @@ var sepLine = strings.Repeat("=", 60)
 type Event struct {
 	Type    EventType
 	Payload map[string]any
+	// Task carries a watcher's observation. Typed rather than stuffed into
+	// Payload so the one mapping stays compile-checked.
+	Task *taskEvent
 }
 
 // Phase names the orchestrator's stage. A typed value rather than a bare
@@ -122,29 +131,13 @@ func (s *PlanningState) Enter(ctx context.Context, o *Orchestrator) error {
 		}
 	}
 
-	// Dispatch leaf tasks (ready status, no parents) to the daemon
+	// Dispatch the roots. Children are dispatched when their parents complete
+	// (WaitingState), through the same helper.
 	for _, t := range tasks {
 		if t.Status == status.TaskReady && len(t.ParentIDs) == 0 {
-			// Circuit breaker: skip dispatch if this agent type is tripped. An
-			// open breaker is a stop, and the task stays ready — the run will
-			// report it as unfinished rather than pretend it ran.
-			if breaker := o.breakerFor(t.AgentType); breaker != nil && !breaker.AllowRequest() {
-				slog.Warn("circuit breaker open, skipping dispatch",
-					"agent_type", t.AgentType, "task_id", t.TaskID)
-				continue
-			}
-
-			ctxJSON := "{}"
-			if t.Context != nil {
-				// Marshal context for the daemon
-				// For tests, we skip this — the NullMnemo is a no-op.
-				_ = ctxJSON
-			}
-			_, err := o.daemon.AddTask(ctx, t.TaskID, t.AgentType, t.Goal, ctxJSON, 3, 300, 2)
-			if err != nil {
-				slog.Warn("failed to dispatch task", "id", t.TaskID, "error", err)
-				// Non-fatal: task is in DAG, can be retried
-			}
+			// Non-fatal: a failed dispatch leaves the task in the DAG, and the
+			// run reports it unfinished rather than silently dropping it.
+			_ = o.dispatchTask(ctx, t.TaskID)
 		}
 	}
 
@@ -158,6 +151,11 @@ func (s *PlanningState) Enter(ctx context.Context, o *Orchestrator) error {
 	if err := o.SaveRunState(ctx, runKey); err != nil {
 		slog.Warn("planning: failed to save run state", "error", err)
 	}
+
+	// Planning is done. The state announces it rather than the driver checking
+	// which phase it just entered — that check is what made every new phase an
+	// edit to Run.
+	o.post(Event{Type: EventTasksCreated})
 	return nil
 }
 
@@ -174,11 +172,38 @@ func (s *WaitingState) Phase() Phase { return PhaseWaiting }
 
 func (s *WaitingState) Enter(ctx context.Context, o *Orchestrator) error {
 	slog.Info("waiting: monitoring task completions", "dag_size", o.dag.TaskCount())
+
+	// Workers first: they claim what planning just dispatched.
+	if o.workerPool != nil && o.workerStop == nil {
+		o.workerStop = make(chan struct{})
+		go o.workerPool.Run(o.ctx, o.workerStop)
+		slog.Info("auto-workers started")
+	}
+
+	// Observation runs on its own goroutine and only posts. Everything it finds
+	// is applied by the loop, which is why a poll can no longer race the DAG.
+	o.startWatcher()
 	return nil
 }
 
 func (s *WaitingState) HandleEvent(ctx context.Context, o *Orchestrator, evt Event) (OrchestratorState, error) {
 	switch evt.Type {
+	case EventTaskUpdate:
+		if evt.Task != nil {
+			o.handleTaskEvent(*evt.Task)
+			o.autoCompleteSynthesis("loop:synthesis")
+		}
+		return o.waitVerdict(), nil
+
+	case EventSimulate:
+		o.simulateCompletions()
+		o.autoCompleteSynthesis("sim:synthesis")
+		return o.waitVerdict(), nil
+
+	case EventTimeout:
+		slog.Warn("waiting: timeout elapsed with work still pending")
+		return &FailedState{}, nil
+
 	case EventTaskCompleted:
 		taskID, _ := evt.Payload["task_id"].(string)
 		if taskID != "" {
@@ -193,6 +218,13 @@ func (s *WaitingState) HandleEvent(ctx context.Context, o *Orchestrator, evt Eve
 						slog.Warn("failed to promote task", "task_id", child.ID, "error", err)
 					} else {
 						slog.Info("promoted task to ready", "task_id", child.ID)
+						// Dispatch it. Without this the child stays ready
+						// forever and the run waits out the clock — the bug
+						// every multi-level DAG used to hit. A child already
+						// terminal (simulation) has nothing to dispatch.
+						if child.Status == status.TaskReady {
+							_ = o.dispatchTask(ctx, child.ID)
+						}
 					}
 				}
 			}
@@ -261,6 +293,9 @@ func (s *SynthesizingState) Enter(ctx context.Context, o *Orchestrator) error {
 		"low_findings", len(sr.LowFindings),
 		"recommendations", len(sr.Recommendations),
 	)
+
+	// Synthesis ran synchronously here; announce that so the loop moves on.
+	o.post(Event{Type: EventTasksComplete})
 	return nil
 }
 

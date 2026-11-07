@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aj-nt/gaap/internal/status"
@@ -92,6 +94,26 @@ type Orchestrator struct {
 	workerPool      *worker.Pool
 	runKey          string
 
+	// events is the run's event queue. Every transition is driven by an event
+	// read here and every DAG mutation happens on the goroutine reading it: the
+	// watcher goroutines only post. That is the single-writer rule from #15,
+	// applied to the driver as well as to the subscription reader.
+	events chan Event
+	// dispatchFeed tells the watcher which task IDs are in play. The loop writes
+	// it, the watcher reads it, and neither shares a data structure with the
+	// other — which is why the watcher can poll without touching the DAG.
+	dispatchFeed chan string
+	watchOnce    sync.Once
+	stopCh       chan struct{}
+	stopOnce     sync.Once
+	workerStop   chan struct{}
+	// phaseLog records every phase entered, in order. Cheap, and it is how a
+	// test can assert the run followed the graph instead of merely ending.
+	phaseLog []Phase
+	// pollFallbacks counts subscription -> polling fallbacks. Diagnostics, and
+	// the only observable a test can use to see a fallback happened.
+	pollFallbacks atomic.Int32
+
 	// subscribeFallbackToPoll controls the observer pattern: when true,
 	// subscribeDaemon() attempts gRPC subscription first, falling back to
 	// polling on failure. False (default) uses polling only (backward compat).
@@ -120,6 +142,11 @@ func NewOrchestrator(ctx context.Context, cfg *Config, daemon MnemoClient, decom
 		dag:            NewDAG(),
 		state:          &IdleState{},
 		digestMaxChars: defaultDigestMaxChars,
+		// Buffered because a single step can post several events (a promotion
+		// cascade, a simulated run) before the loop reads again.
+		events:       make(chan Event, 256),
+		dispatchFeed: make(chan string, 512),
+		stopCh:       make(chan struct{}),
 	}
 	if o.cfg.BreakerThreshold > 0 {
 		if o.cfg.BreakerCooldownSec <= 0 {
@@ -163,36 +190,99 @@ func (o *Orchestrator) Run(goal string) error {
 		"repo", o.cfg.RepoPath,
 	)
 
-	// Kick off: IdleState → PlanningState
-	transition, err := o.state.HandleEvent(o.ctx, o, Event{
-		Type:    EventGoalReceived,
-		Payload: map[string]any{"goal": goal},
-	})
-	if err != nil {
-		return fmt.Errorf("idle handler: %w", err)
-	}
-	if transition != nil {
-		if err := o.Transition(transition); err != nil {
-			return err
-		}
-	}
+	// Post the goal and let the loop drive. No phase is inspected here: what
+	// happens next is the state's answer to an event, not this function's.
+	o.post(Event{Type: EventGoalReceived, Payload: map[string]any{"goal": goal}})
+	return o.drive()
+}
 
-	// Planning completes synchronously and transitions to Waiting.
-	if o.state.Phase() == PhasePlanning {
-		transition, err := o.state.HandleEvent(o.ctx, o, Event{
-			Type: EventTasksCreated,
-		})
-		if err != nil {
-			return fmt.Errorf("planning handler: %w", err)
-		}
-		if transition != nil {
-			if err := o.Transition(transition); err != nil {
+// drive is the run's single event loop, and the only goroutine that mutates the
+// DAG or the state. The watchers post; states answer events; this loop decides
+// when the run is over. Adding a phase is a new state, not a new branch here.
+func (o *Orchestrator) drive() error {
+	defer o.stopWatcher()
+	for {
+		select {
+		case <-o.ctx.Done():
+			return o.ctx.Err()
+		case evt := <-o.events:
+			if err := o.step(evt); err != nil {
 				return err
+			}
+			switch o.state.Phase() {
+			case PhaseDone:
+				return nil
+			case PhaseFailed:
+				return ErrOrchestrationFailed
 			}
 		}
 	}
+}
 
-	return o.runWaitingAndBeyond()
+// step hands one event to the current state and applies the transition it asks
+// for. A nil state means "stay" — the only way a phase declines to move.
+func (o *Orchestrator) step(evt Event) error {
+	next, err := o.state.HandleEvent(o.ctx, o, evt)
+	if err != nil {
+		return fmt.Errorf("%s handler: %w", o.state.Phase(), err)
+	}
+	if next == nil {
+		return nil
+	}
+	return o.Transition(next)
+}
+
+// post queues an event. A full queue blocks rather than dropping one: an event
+// that never arrives is a run that never finishes.
+func (o *Orchestrator) post(evt Event) {
+	select {
+	case o.events <- evt:
+	case <-o.ctx.Done():
+	}
+}
+
+// stopWatcher ends the observation goroutines. Safe to call more than once.
+func (o *Orchestrator) stopWatcher() {
+	o.stopOnce.Do(func() {
+		close(o.stopCh)
+		if o.workerStop != nil {
+			close(o.workerStop)
+			slog.Info("auto-workers stopped")
+		}
+	})
+}
+
+// dispatchTask sends one task to the daemon and tells the watcher to watch it.
+//
+// Planning uses it for roots; waiting uses it when a parent's completion promotes
+// a child. That second caller is not optional: a promoted task that is never
+// dispatched can never run, which is how every multi-level DAG used to sit at
+// "ready" until the wait timed out and the run reported failure.
+func (o *Orchestrator) dispatchTask(ctx context.Context, taskID string) error {
+	node, ok := o.dag.nodes[taskID]
+	if !ok {
+		return fmt.Errorf("dispatch: unknown task %q", taskID)
+	}
+
+	// An open breaker is a stop, and the task stays ready: the run reports it as
+	// unfinished rather than pretending it ran.
+	if breaker := o.breakerFor(node.AgentType); breaker != nil && !breaker.AllowRequest() {
+		slog.Warn("circuit breaker open, skipping dispatch",
+			"agent_type", node.AgentType, "task_id", node.ID)
+		return nil
+	}
+
+	ctxJSON := "{}"
+	if _, err := o.daemon.AddTask(ctx, node.ID, node.AgentType, node.Goal, ctxJSON, 3, 300, 2); err != nil {
+		slog.Warn("failed to dispatch task", "id", node.ID, "error", err)
+		return err
+	}
+
+	select {
+	case o.dispatchFeed <- node.ID:
+	case <-ctx.Done():
+	}
+	return nil
 }
 
 // resumeFromState rebuilds the DAG from a saved RunState, translating any
@@ -254,73 +344,121 @@ func (o *Orchestrator) Resume(rs *RunState) error {
 	)
 
 	// Jump directly to Waiting state — planning and dispatch are already done.
+	// Enter explicitly rather than through Transition: the phase is already
+	// waiting, and a waiting -> waiting transition is not an edge.
 	o.state = &WaitingState{}
-
-	return o.runWaitingAndBeyond()
+	if err := o.state.Enter(o.ctx, o); err != nil {
+		return err
+	}
+	return o.drive()
 }
 
-// runWaitingAndBeyond runs the shared post-planning pipeline: start workers,
-// poll daemon, synthesize, publish result.
-func (o *Orchestrator) runWaitingAndBeyond() error {
-	// Polling loop — query daemon for task completions, advance DAG.
-	// Workers (if configured) execute tasks concurrently; pollOnce checks status.
-	// Falls back to simulation when daemon is unavailable (NullMnemo).
-	if o.state.Phase() == PhaseWaiting {
-		// Start workers if configured
-		var workerStopCh chan struct{}
-		if o.workerPool != nil {
-			workerStopCh = make(chan struct{})
-			go o.workerPool.Run(o.ctx, workerStopCh)
-			slog.Info("auto-workers started")
-		}
-
-		// Observer pattern: try gRPC subscription first, fall back to polling.
+// startWatcher begins observing the daemon, once per orchestrator.
+//
+// Subscription when enabled, polling otherwise. A subscription that cannot open
+// falls back immediately; one that closes without ever delivering an event is
+// not a working subscription and also falls back, because waiting on silence is
+// how a run hangs instead of failing.
+func (o *Orchestrator) startWatcher() {
+	o.watchOnce.Do(func() {
+		o.seedWatcher()
 		if o.subscribeFallbackToPoll {
-			if err := o.subscribeDaemon(); err != nil {
-				slog.Info("subscription failed, falling back to polling", "error", err)
-				o.pollDaemon()
+			err := o.watchSubscription()
+			if err == nil {
+				return
 			}
-		} else {
-			o.pollDaemon()
+			slog.Info("subscription unavailable, falling back to polling", "error", err)
 		}
+		o.pollFallbacks.Add(1)
+		go o.watchPoll()
+	})
+}
 
-		// Timed out with work still pending — transition to Failed.
-		if !o.dag.AllTasksComplete() && o.state.Phase() == PhaseWaiting {
-			slog.Warn("orchestration incomplete after wait phase, transitioning to failed")
-			if err := o.Transition(&FailedState{}); err != nil {
-				return fmt.Errorf("failed transition: %w", err)
+// seedWatcher tells the watcher which tasks are already in play. A resumed run
+// re-dispatches nothing, so without this the watcher would watch an empty set and
+// the run would wait out the clock.
+func (o *Orchestrator) seedWatcher() {
+	for _, node := range o.dag.nodes {
+		if node.Status != status.TaskReady && node.Status != status.TaskClaimed {
+			continue
+		}
+		select {
+		case o.dispatchFeed <- node.ID:
+		default:
+			slog.Warn("dispatch feed full while seeding the watcher", "task_id", node.ID)
+		}
+	}
+}
+
+// watchPoll queries the daemon for the tasks this run dispatched and posts what
+// it finds. It keeps its own set of IDs, fed by the loop through dispatchFeed,
+// and never reads or writes the DAG.
+func (o *Orchestrator) watchPoll() {
+	// Detection: if the daemon is not connected at all, simulate completions.
+	// The simulation mutates the DAG, so it runs on the loop, not here.
+	if _, err := o.daemon.GetTask(o.ctx, "probe-detection"); err != nil && err.Error() == "vassago not connected" {
+		slog.Info("polling: daemon unavailable, using simulation fallback")
+		o.post(Event{Type: EventSimulate})
+		return
+	}
+
+	pollInterval := time.Duration(o.cfg.PollIntervalSec) * time.Second
+	maxWait := time.Duration(o.cfg.MaxWaitSec) * time.Second
+	slog.Info("polling: querying daemon for task completions",
+		"poll_interval_sec", o.cfg.PollIntervalSec,
+		"max_wait_sec", o.cfg.MaxWaitSec)
+
+	ids := make(map[string]struct{})
+	poll := func() {
+		for id := range ids {
+			entry, err := o.daemon.GetTask(o.ctx, id)
+			if err != nil || entry == nil {
+				continue
 			}
-		}
-
-		// Stop workers
-		if workerStopCh != nil {
-			close(workerStopCh)
-			slog.Info("auto-workers stopped")
+			evt := taskEventFromClient(entry)
+			o.post(Event{Type: EventTaskUpdate, Task: &evt})
+			if evt.Terminal() {
+				delete(ids, id)
+			}
 		}
 	}
 
-	// Synthesizing completes synchronously and transitions to Done
-	if o.state.Phase() == PhaseSynthesizing {
-		transition, err := o.state.HandleEvent(o.ctx, o, Event{
-			Type: EventTasksComplete,
-		})
-		if err != nil {
-			return fmt.Errorf("synthesizing handler: %w", err)
+	// Drain the IDs the loop already handed over, and look once immediately:
+	// waiting a whole interval to make the first query is latency no caller asked
+	// for, and it hid dispatch bugs behind a tick.
+	for {
+		select {
+		case id := <-o.dispatchFeed:
+			ids[id] = struct{}{}
+			continue
+		default:
 		}
-		if transition != nil {
-			if err := o.Transition(transition); err != nil {
-				return err
+		break
+	}
+	poll()
+
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+	start := time.Now()
+
+	for {
+		select {
+		case <-o.ctx.Done():
+			return
+		case <-o.stopCh:
+			return
+		case id := <-o.dispatchFeed:
+			ids[id] = struct{}{}
+		case <-ticker.C:
+			poll()
+			if time.Since(start) > maxWait {
+				slog.Warn("polling: timeout waiting for workers",
+					"elapsed_sec", int(time.Since(start).Seconds()))
+				o.post(Event{Type: EventTimeout})
+				return
 			}
 		}
 	}
-
-	// A run that ended in FailedState produced a report, but it did not
-	// succeed: say so, so the process exits non-zero.
-	if o.state.Phase() == PhaseFailed {
-		return ErrOrchestrationFailed
-	}
-
-	return nil
 }
 
 // SaveRunState persists the orchestrator's current DAG as a RunState to the
@@ -360,6 +498,11 @@ func (o *Orchestrator) SaveRunState(ctx context.Context, runKey string) error {
 	return nil
 }
 
+// PhaseHistory returns the phases this run entered, in order.
+func (o *Orchestrator) PhaseHistory() []Phase {
+	return append([]Phase(nil), o.phaseLog...)
+}
+
 // RunKey returns the saved daemon key for this run state.
 func (o *Orchestrator) RunKey() string {
 	return o.runKey
@@ -382,108 +525,45 @@ func LoadRunState(ctx context.Context, daemon MnemoClient, runKey string) (*RunS
 	return &rs, nil
 }
 
-// pollDaemon queries the daemon for task completions, advancing the DAG when
-// tasks transition to done. Falls back to simulation (mark-all-done) when the
-// daemon is unavailable.
-func (o *Orchestrator) pollDaemon() {
-	// Detection: try one daemon query. If NullMnemo (returns "not connected"),
-	// fall back to instant simulation (used by tests and dry runs).
-	_, err := o.daemon.GetTask(o.ctx, "probe-detection")
-	if err != nil && err.Error() == "vassago not connected" {
-		slog.Info("polling: daemon unavailable, using simulation fallback")
-		o.simulateCompletions()
-		return
-	}
-
-	start := time.Now()
-	pollInterval := time.Duration(o.cfg.PollIntervalSec) * time.Second
-	maxWait := time.Duration(o.cfg.MaxWaitSec) * time.Second
-
-	slog.Info("polling: querying daemon for task completions",
-		"task_count", o.dag.TaskCount(),
-		"poll_interval_sec", o.cfg.PollIntervalSec,
-		"max_wait_sec", o.cfg.MaxWaitSec,
-	)
-
-	for {
-		// Query all dispatched leaf tasks
-		o.pollOnce()
-
-		// Stop when nothing further can happen. AllTasksTerminal covers the
-		// failed/skipped case that AllTasksComplete treats as "still running",
-		// which is how a dead-lettered task used to burn the whole maxWait.
-		if o.dag.AllTasksTerminal() {
-			return
-		}
-		// Fail-fast stops even when other branches are still in flight.
-		if o.failFast() && o.dag.HasFailures() {
-			slog.Warn("polling: stopping at first failure (fail_fast)")
-			return
-		}
-
-		if time.Since(start) > maxWait {
-			slog.Warn("polling: timeout waiting for workers",
-				"elapsed_sec", int(time.Since(start).Seconds()))
-			return
-		}
-
-		select {
-		case <-o.ctx.Done():
-			slog.Info("polling: context cancelled")
-			return
-		case <-time.After(pollInterval):
-		}
-	}
-}
-
-// pollOnce queries the daemon for each dispatched task, fires completion
-// events, and advances the DAG. It also auto-completes synthesis tasks that
-// were promoted to ready (synthesis runs in-process, not on workers).
-func (o *Orchestrator) pollOnce() {
-	for _, node := range o.dag.nodes {
-		// Only query tasks that were dispatched to the daemon.
-		if node.Status == status.TaskReady || node.Status == status.TaskClaimed {
-			entry, err := o.daemon.GetTask(o.ctx, node.ID)
-			if err != nil {
-				slog.Warn("poll: failed to get task", "id", node.ID, "error", err)
-				continue
-			}
-			if entry == nil {
-				continue
-			}
-			o.handleTaskEvent(taskEvent{
-				ID:         entry.Id,
-				Status:     status.Task(entry.Status),
-				ResultKey:  entry.ResultKey,
-				RetryCount: entry.RetryCount,
-				Source:     "poll",
-			})
-		}
-	}
-
-	// Auto-complete synthesis tasks that were promoted to ready.
-	// Synthesis runs in-process after all leaves complete, so there's no
-	// daemon task to poll -- we mark them done and fire completion events
-	// so the state machine can advance.
-	o.autoCompleteSynthesis("poll:synthesis")
-}
-
-// fireTaskCompleted fires a task completion event through the state machine.
-// Extracted from pollOnce, simulateCompletions, and subscribeDaemon.
+// fireTaskCompleted and fireTaskFailed post the two task events the state machine
+// answers. They post rather than call HandleEvent directly: the loop is the only
+// caller, so ordering stays FIFO and no handler runs inside another handler.
 func (o *Orchestrator) fireTaskCompleted(taskID, logPrefix string) {
 	slog.Info(logPrefix+": task completed", "id", taskID)
-	evt := Event{
+	o.post(Event{
 		Type:    EventTaskCompleted,
 		Payload: map[string]any{"task_id": taskID},
+	})
+}
+
+func (o *Orchestrator) fireTaskFailed(taskID, logPrefix string, skipped []string) {
+	slog.Warn(logPrefix+": task failed", "id", taskID, "skipped", skipped)
+	o.post(Event{
+		Type:    EventTaskFailed,
+		Payload: map[string]any{"task_id": taskID, "skipped": skipped},
+	})
+}
+
+// taskEventFromClient and taskEventFromProto reduce the two SDK entry shapes to
+// the one vocabulary the DAG speaks, so the mapping is testable without a daemon
+// and cannot drift between transports.
+func taskEventFromClient(e *client.TaskEntry) taskEvent {
+	return taskEvent{
+		ID:         e.Id,
+		Status:     status.Task(e.Status),
+		ResultKey:  e.ResultKey,
+		RetryCount: e.RetryCount,
+		Source:     "poll",
 	}
-	next, err := o.state.HandleEvent(o.ctx, o, evt)
-	if err != nil {
-		slog.Warn("completion handler error", "task_id", taskID, "error", err)
-	}
-	if next != nil {
-		if err := o.Transition(next); err != nil {
-			slog.Warn("state transition failed", "error", err)
-		}
+}
+
+func taskEventFromProto(t *pb.TaskEntry) taskEvent {
+	return taskEvent{
+		ID:         t.Id,
+		Status:     status.Task(t.Status),
+		ResultKey:  t.ResultKey,
+		RetryCount: t.RetryCount,
+		Source:     "sub",
 	}
 }
 
@@ -497,6 +577,16 @@ type taskEvent struct {
 	ResultKey  string
 	RetryCount int32
 	Source     string // "poll" or "sub", for logging only
+}
+
+// Terminal reports whether this status means nothing further will happen to the
+// task, so the watcher can stop polling it.
+func (e taskEvent) Terminal() bool {
+	switch e.Status {
+	case status.TaskDone, status.TaskFailed, status.TaskDeadLetter, status.TaskSkipped:
+		return true
+	}
+	return false
 }
 
 // handleTaskEvent advances the DAG for one daemon task event. Both transport
@@ -522,6 +612,26 @@ func (o *Orchestrator) handleTaskEvent(evt taskEvent) {
 		o.recordBreakerFailure(node.AgentType)
 		o.failTask(node, evt.RetryCount, evt.Source)
 	}
+}
+
+// waitVerdict decides where a waiting run goes after an event was applied:
+// still waiting, failed, or synthesizing. One place, so the two paths that can
+// advance the DAG — a watcher update and a simulated run — cannot disagree about
+// when the run is over.
+func (o *Orchestrator) waitVerdict() OrchestratorState {
+	if o.failFast() && o.dag.HasFailures() {
+		slog.Warn("fail_fast: ending run at the first failure")
+		return &FailedState{}
+	}
+	if !o.dag.AllTasksTerminal() {
+		return nil
+	}
+	if failed := o.dag.FailedIDs(); len(failed) > 0 {
+		slog.Warn("tasks failed, transitioning to failed", "failed", failed)
+		return &FailedState{}
+	}
+	slog.Info("all tasks complete, transitioning to synthesizing")
+	return &SynthesizingState{}
 }
 
 // breakerFor returns the circuit breaker for an agent type, creating it on first
@@ -593,26 +703,6 @@ func (o *Orchestrator) loadWorkerResult(resultKey string, node *TaskNode) {
 	node.Summary = wr.Summary
 }
 
-// fireTaskFailed fires a failure event through the state machine. Skipped
-// descendants ride in the payload so the report and digest can name them
-// without re-deriving the DAG.
-func (o *Orchestrator) fireTaskFailed(taskID, logPrefix string, skipped []string) {
-	slog.Warn(logPrefix+": task failed", "id", taskID, "skipped", skipped)
-	evt := Event{
-		Type:    EventTaskFailed,
-		Payload: map[string]any{"task_id": taskID, "skipped": skipped},
-	}
-	next, err := o.state.HandleEvent(o.ctx, o, evt)
-	if err != nil {
-		slog.Warn("failure handler error", "task_id", taskID, "error", err)
-	}
-	if next != nil {
-		if err := o.Transition(next); err != nil {
-			slog.Warn("state transition failed", "error", err)
-		}
-	}
-}
-
 // autoCompleteSynthesis marks synthesis tasks promoted to ready as done — they
 // run in-process, so there is no daemon task to poll.
 func (o *Orchestrator) autoCompleteSynthesis(logPrefix string) {
@@ -633,29 +723,39 @@ func (o *Orchestrator) failFast() bool {
 // simulateCompletions marks all ready/leaf tasks as done and advances the DAG.
 // Used by tests and when the daemon is unavailable (NullMnemo).
 func (o *Orchestrator) simulateCompletions() {
-	// First pass: mark all ready tasks as done.
-	for id, node := range o.dag.nodes {
-		if node.Status == status.TaskReady && len(node.ParentIDs) == 0 {
-			node.Status = status.TaskDone
-			o.fireTaskCompleted(id, "sim")
+	// Completions are posted, not applied inline, so this loop cannot rely on a
+	// handler promoting children between passes: it promotes them itself and
+	// repeats until the DAG stops moving.
+	for {
+		progress := false
+		for id, node := range o.dag.nodes {
+			if node.Status == status.TaskReady {
+				node.Status = status.TaskDone
+				o.fireTaskCompleted(id, "sim")
+				progress = true
+			}
 		}
-	}
-
-	// Second pass: now promoted tasks may be ready (was blocked, now all parents done).
-	// Mark those as done too.
-	for id, node := range o.dag.nodes {
-		if node.Status == status.TaskReady {
-			node.Status = status.TaskDone
-			o.fireTaskCompleted(id, "sim")
+		for _, n := range o.dag.nodes {
+			if n.Status != status.TaskBlocked {
+				continue
+			}
+			if allDone, err := o.dag.AllParentsComplete(n.ID); err == nil && allDone {
+				if err := o.dag.PromoteToReady(n.ID); err == nil {
+					progress = true
+				}
+			}
+		}
+		if !progress {
+			return
 		}
 	}
 }
 
-// subscribeDaemon opens a gRPC subscription for task status changes, replacing
-// polling with event-driven DAG advancement. On failure, returns an error so
-// the caller can fall back to polling. The subscription runs until the DAG is
-// complete or the context is cancelled.
-func (o *Orchestrator) subscribeDaemon() error {
+// watchSubscription opens a gRPC subscription for task status changes and posts
+// each one. Returns an error when the stream cannot be opened, so the caller can
+// fall back to polling; once open, the reader goroutine owns the stream and only
+// posts — every DAG write stays on the loop.
+func (o *Orchestrator) watchSubscription() error {
 	stream, err := o.daemon.Subscribe(o.ctx, &pb.SubscribeRequest{
 		AgentId: "gaap-orchestrator",
 		Targets: []string{"task"},
@@ -666,108 +766,47 @@ func (o *Orchestrator) subscribeDaemon() error {
 
 	slog.Info("subscribed to task events via gRPC stream")
 
-	// Single writer: the reader goroutine owns the stream and nothing else. It
-	// turns wire events into taskEvents and hands them over; every DAG mutation
-	// stays on this goroutine, which is also the only one reading the DAG. The
-	// previous version mutated nodes from the reader while this loop iterated
-	// them, which is a data race on every status field it touched.
-	events := make(chan taskEvent, 64)
-	streamErr := make(chan error, 1)
-	streamClosed := make(chan struct{})
-	stop := make(chan struct{})
-	defer close(stop)
-
 	go func() {
-		defer close(streamClosed)
+		received := 0
 		for {
 			event, err := stream.Recv()
 			if err != nil {
 				if err != io.EOF {
-					select {
-					case streamErr <- fmt.Errorf("subscription stream error: %w", err):
-					default:
-					}
-					return
+					slog.Warn("subscription stream error", "error", err)
+				} else {
+					slog.Info("subscription stream closed (io.EOF)")
 				}
-				slog.Info("subscription stream closed (io.EOF)")
+				if received == 0 {
+					// A stream that delivered nothing is not a working
+					// subscription: fall back rather than wait on silence.
+					o.pollFallbacks.Add(1)
+					slog.Info("subscription delivered no events, falling back to polling")
+					go o.watchPoll()
+				}
 				return
 			}
 			if event.Task == nil {
 				continue
 			}
-			evt := taskEvent{
-				ID:         event.Task.Id,
-				Status:     status.Task(event.Task.Status),
-				ResultKey:  event.Task.ResultKey,
-				RetryCount: event.Task.RetryCount,
-				Source:     "sub",
-			}
-			select {
-			case events <- evt:
-			case <-stop:
-				return
-			case <-o.ctx.Done():
-				return
-			}
+			received++
+			evt := taskEventFromProto(event.Task)
+			o.post(Event{Type: EventTaskUpdate, Task: &evt})
 		}
 	}()
 
-	// apply drains one event and advances the DAG. Only this goroutine calls it.
-	received := 0
-	apply := func() bool {
+	// The stream can be silent for reasons that are not errors, so the wait
+	// still needs a clock. This is the only timer in the subscription path.
+	go func() {
+		maxWait := time.Duration(o.cfg.MaxWaitSec) * time.Second
 		select {
-		case evt := <-events:
-			received++
-			o.handleTaskEvent(evt)
-			o.autoCompleteSynthesis("sub:synthesis")
-			return true
-		default:
-			return false
-		}
-	}
-
-	start := time.Now()
-	maxWait := time.Duration(o.cfg.MaxWaitSec) * time.Second
-	tick := time.NewTicker(500 * time.Millisecond)
-	defer tick.Stop()
-
-	for {
-		if o.dag.AllTasksTerminal() || (o.failFast() && o.dag.HasFailures()) {
-			// Drain what the reader already produced before leaving, so a fast
-			// stream is not truncated by a terminal decision made mid-flight.
-			for apply() {
-			}
-			return nil
-		}
-		if time.Since(start) > maxWait {
-			return fmt.Errorf("subscription timed out after %v", maxWait)
-		}
-
-		select {
-		case evt := <-events:
-			received++
-			o.handleTaskEvent(evt)
-			o.autoCompleteSynthesis("sub:synthesis")
-		case <-streamClosed:
-			// The reader is done: apply whatever it queued, then decide.
-			for apply() {
-			}
-			select {
-			case err := <-streamErr:
-				return err
-			default:
-			}
-			// A stream that delivered nothing means the hub is not really
-			// there (NullMnemo); fail so the caller falls back to polling.
-			if received == 0 {
-				return fmt.Errorf("subscription stream closed without receiving any task events")
-			}
-			return nil
 		case <-o.ctx.Done():
-			return fmt.Errorf("context cancelled: %w", o.ctx.Err())
-		case <-tick.C:
+		case <-o.stopCh:
+		case <-time.After(maxWait):
+			o.post(Event{Type: EventTimeout})
 		}
-	}
+	}()
+
+	return nil
 }
 
 // Transition orchestrator to the next state.
@@ -782,6 +821,7 @@ func (o *Orchestrator) Transition(next OrchestratorState) error {
 	slog.Info("orchestrator state transition",
 		"from", from,
 		"to", to)
+	o.phaseLog = append(o.phaseLog, to)
 	o.state = next
 	return next.Enter(o.ctx, o)
 }
