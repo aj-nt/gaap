@@ -114,7 +114,9 @@ func (s *PlanningState) Enter(ctx context.Context, o *Orchestrator) error {
 		o.decomposer = NewDecomposer(nil) // defaults to StaticDecomposition
 	}
 
-	tasks, err := o.decomposer.Decompose(ctx, o.goal, o.cfg.RepoPath)
+	// The run id is the namespace, so every task id — and every approval task id
+	// derived from one — says which run it belongs to.
+	tasks, err := o.decomposer.DecomposeWithPrefix(ctx, o.goal, o.cfg.RepoPath, o.runID)
 	if err != nil {
 		return err
 	}

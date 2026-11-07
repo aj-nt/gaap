@@ -15,6 +15,7 @@ import (
 	"github.com/aj-nt/gaap/internal/worker"
 	"github.com/aj-nt/vassago-sdk/client"
 	pb "github.com/aj-nt/vassago-sdk/proto"
+	"github.com/google/uuid"
 )
 
 // MnemoClient is the Vassago daemon client interface the orchestrator talks to.
@@ -96,14 +97,17 @@ type RunState struct {
 // When a WorkerPool is configured, workers execute dispatched tasks concurrently — making
 // the orchestrator self-contained rather than requiring external worker processes.
 type Orchestrator struct {
-	cfg             *Config
-	ctx             context.Context
-	daemon          MnemoClient
-	decomposer      *Decomposer
-	synthesis       *SynthesisEngine
-	dag             *DAG
-	state           OrchestratorState
-	goal            string
+	cfg        *Config
+	ctx        context.Context
+	daemon     MnemoClient
+	decomposer *Decomposer
+	synthesis  *SynthesisEngine
+	dag        *DAG
+	state      OrchestratorState
+	goal       string
+	// runID names this run: it is the task-id namespace, so a human can find a
+	// run's tasks — and its approval requests — in the daemon by one string.
+	runID           string
 	result          *SynthesisResult
 	breakerRegistry map[string]*CircuitBreaker
 	workerPool      *worker.Pool
@@ -205,9 +209,13 @@ func (o *Orchestrator) Run(goal string) error {
 		return fmt.Errorf("goal is required")
 	}
 
+	if o.runID == "" {
+		o.runID = uuid.New().String()[:8]
+	}
 	slog.Info("orchestrator starting",
 		"goal", goal,
 		"repo", o.cfg.RepoPath,
+		"run_id", o.runID,
 	)
 
 	// Post the goal and let the loop drive. No phase is inspected here: what
@@ -215,6 +223,10 @@ func (o *Orchestrator) Run(goal string) error {
 	o.post(Event{Type: EventGoalReceived, Payload: map[string]any{"goal": goal}})
 	return o.drive()
 }
+
+// RunID returns the name this run's tasks are namespaced under. Empty until the
+// run starts.
+func (o *Orchestrator) RunID() string { return o.runID }
 
 // drive is the run's single event loop, and the only goroutine that mutates the
 // DAG or the state. The watchers post; states answer events; this loop decides

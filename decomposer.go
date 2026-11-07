@@ -45,6 +45,14 @@ func NewDecomposer(strategy DecomposerStrategy) *Decomposer {
 // If the goal references a specific file path, the pipeline short-circuits
 // to a single file_analysis task — LLM-based decomposition is skipped.
 func (d *Decomposer) Decompose(ctx context.Context, goal, repoPath string) ([]TaskSpec, error) {
+	return d.DecomposeWithPrefix(ctx, goal, repoPath, "")
+}
+
+// DecomposeWithPrefix is Decompose with a caller-chosen ID namespace. The
+// orchestrator passes its run id, so a task id names the run it belongs to and
+// `gaap approvals <run-id>` can find that run's questions. An empty prefix keeps
+// the random one, which is what a dry run and the tests want.
+func (d *Decomposer) DecomposeWithPrefix(ctx context.Context, goal, repoPath, prefix string) ([]TaskSpec, error) {
 	// Step 1: Validate input
 	goal = strings.TrimSpace(goal)
 	if goal == "" {
@@ -53,7 +61,7 @@ func (d *Decomposer) Decompose(ctx context.Context, goal, repoPath string) ([]Ta
 
 	// Step 1.5: Short-circuit file goals — no LLM decomposition needed.
 	if filePath := extractFilePathFromGoal(goal); filePath != "" {
-		return namespaceTasks(d.fileGoalTask(goal, filePath)), nil
+		return namespaceTasks(d.fileGoalTask(goal, filePath, prefix), prefix), nil
 	}
 
 	// Step 2: Build prompt (embedded in strategy call)
@@ -76,7 +84,7 @@ func (d *Decomposer) Decompose(ctx context.Context, goal, repoPath string) ([]Ta
 	// Step 4: Namespace the IDs. Every path out of Decompose goes through
 	// namespaceTasks, so "IDs are unique per run" is an invariant of the
 	// function rather than a property of the path that happens to exist.
-	tasks = namespaceTasks(tasks)
+	tasks = namespaceTasks(tasks, prefix)
 
 	// Step 5: Validate DAG — check for cycles, ensure no self-references
 	if err := validateTaskDAG(tasks); err != nil {
@@ -119,8 +127,10 @@ func extractFilePathFromGoal(goal string) string {
 
 // fileGoalTask returns a single file_analysis task for file-specific goals.
 // The strategy is bypassed entirely — a file goal needs no decomposition.
-func (d *Decomposer) fileGoalTask(goal, filePath string) []TaskSpec {
-	prefix := generatePrefix()
+func (d *Decomposer) fileGoalTask(goal, filePath, prefix string) []TaskSpec {
+	if prefix == "" {
+		prefix = generatePrefix()
+	}
 	return []TaskSpec{
 		{
 			TaskID:    prefix + "_file_analysis",
@@ -174,8 +184,10 @@ func validateTaskDAG(tasks []TaskSpec) error {
 // The prefix is what keeps two runs from sharing task IDs in the daemon. Without
 // it a repeated run either collides on insert (UNIQUE constraint on tasks.id) or,
 // if the row already exists, silently adopts the other run's status and result.
-func namespaceTasks(tasks []TaskSpec) []TaskSpec {
-	prefix := generatePrefix()
+func namespaceTasks(tasks []TaskSpec, prefix string) []TaskSpec {
+	if prefix == "" {
+		prefix = generatePrefix()
+	}
 	idMap := make(map[string]string, len(tasks))
 	for i := range tasks {
 		newID := prefix + "_" + tasks[i].TaskID
