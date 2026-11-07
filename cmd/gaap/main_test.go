@@ -579,3 +579,34 @@ func TestParseRunFlagsFailureModeFromEnv(t *testing.T) {
 		t.Fatalf("FailureMode = %q, want fail_fast from GAAP_FAILURE_MODE", cfg.FailureMode)
 	}
 }
+
+func TestParseRunFlagsBreakersOffByDefault(t *testing.T) {
+	cfg, err := parseRunFlags("run", []string{"do the thing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.BreakerThreshold != 0 || cfg.BreakerCooldownSec != 0 {
+		t.Fatalf("breakers = %d/%d, want off by default", cfg.BreakerThreshold, cfg.BreakerCooldownSec)
+	}
+}
+
+func TestParseRunFlagsBreakerThreshold(t *testing.T) {
+	cfg, err := parseRunFlags("run", []string{"--breaker-threshold", "3", "--breaker-cooldown", "45", "do the thing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.BreakerThreshold != 3 || cfg.BreakerCooldownSec != 45 {
+		t.Fatalf("breakers = %d/%d, want 3/45", cfg.BreakerThreshold, cfg.BreakerCooldownSec)
+	}
+}
+
+func TestParseRunFlagsBreakerThresholdFromEnv(t *testing.T) {
+	t.Setenv("GAAP_BREAKER_THRESHOLD", "2")
+	cfg, err := parseRunFlags("run", []string{"do the thing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.BreakerThreshold != 2 {
+		t.Fatalf("threshold = %d, want 2 from the environment", cfg.BreakerThreshold)
+	}
+}

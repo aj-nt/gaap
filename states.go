@@ -120,15 +120,13 @@ func (s *PlanningState) Enter(ctx context.Context, o *Orchestrator) error {
 	// Dispatch leaf tasks (ready status, no parents) to the daemon
 	for _, t := range tasks {
 		if t.Status == status.TaskReady && len(t.ParentIDs) == 0 {
-			// Circuit breaker: skip dispatch if this agent type is tripped
-			if o.breakerRegistry != nil {
-				if breaker, ok := o.breakerRegistry[t.AgentType]; ok {
-					if !breaker.AllowRequest() {
-						slog.Warn("circuit breaker open, skipping dispatch",
-							"agent_type", t.AgentType, "task_id", t.TaskID)
-						continue
-					}
-				}
+			// Circuit breaker: skip dispatch if this agent type is tripped. An
+			// open breaker is a stop, and the task stays ready — the run will
+			// report it as unfinished rather than pretend it ran.
+			if breaker := o.breakerFor(t.AgentType); breaker != nil && !breaker.AllowRequest() {
+				slog.Warn("circuit breaker open, skipping dispatch",
+					"agent_type", t.AgentType, "task_id", t.TaskID)
+				continue
 			}
 
 			ctxJSON := "{}"

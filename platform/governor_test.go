@@ -12,7 +12,9 @@ import (
 func TestGovernorKillSwitchWins(t *testing.T) {
 	g := NewGovernor()
 	g.Policy.AddRule(Rule{Tool: "*", Decision: Allow})
-	g.Kill.Trip("agent-7")
+	k := NewKillSwitch()
+	k.Trip("agent-7")
+	g.Kill = k
 
 	d := g.Decide("agent-7", "Execute", map[string]any{"command": "ls"})
 	if d.Action != ActionDeny {
