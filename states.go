@@ -388,6 +388,10 @@ type ApprovalState struct {
 	Request        ApprovalRequest
 	ApprovalTaskID string
 	Deadline       time.Time
+	// Resumed is set when this state was rebuilt from a RunState. The request
+	// is already in the daemon, so entering must adopt it rather than create a
+	// second one under the same id.
+	Resumed bool
 }
 
 func (s *ApprovalState) Phase() Phase { return PhaseApproving }
@@ -404,11 +408,13 @@ func (s *ApprovalState) Enter(ctx context.Context, o *Orchestrator) error {
 	if err != nil {
 		return fmt.Errorf("approval: encoding the request: %w", err)
 	}
-	if o.daemon != nil {
+	if o.daemon != nil && !s.Resumed {
 		goal := fmt.Sprintf("Approve %s (%s): %s", s.Request.TaskID, s.Request.AgentType, s.Request.Reason)
 		if _, err := o.daemon.AddTask(ctx, s.ApprovalTaskID, ApprovalAgentType, goal, string(reqJSON), 3, 600, 0); err != nil {
 			return fmt.Errorf("approval: creating the request task %s: %w", s.ApprovalTaskID, err)
 		}
+	}
+	if o.daemon != nil {
 		// The watcher only polls the tasks it was told about, and this task was
 		// not dispatched by dispatchTask. Without this the answer is written to
 		// the daemon and nobody ever looks.
@@ -418,6 +424,11 @@ func (s *ApprovalState) Enter(ctx context.Context, o *Orchestrator) error {
 		}
 	}
 
+	// The answer arrives as a task update, so the watcher has to be running even
+	// on a resume that never passed through WaitingState — and the run's own
+	// clock lives in the watcher, so without this an approval would wait out its
+	// request deadline with no MaxWaitSec behind it.
+	o.startWatcher()
 	o.startApprovalClock(s)
 
 	slog.Info("approving: waiting on a human decision",
@@ -473,6 +484,16 @@ func (s *ApprovalState) HandleEvent(ctx context.Context, o *Orchestrator, evt Ev
 			slog.Error("approval: the request task died without an answer", "task_id", s.Request.TaskID)
 			return &FailedState{}, nil
 		}
+
+	case EventTimeout:
+		// The run's own clock outranks the request's. Without this, an approval
+		// whose deadline is longer than MaxWaitSec parks the loop in this phase
+		// with nothing left to observe — a blocked run wearing a question's
+		// clothes.
+		o.withdrawApprovalRequest(s)
+		slog.Error("approval: the run timed out while waiting for a decision",
+			"task_id", s.Request.TaskID, "max_wait_sec", o.cfg.MaxWaitSec)
+		return &FailedState{}, nil
 
 	case EventApprovalTimeout:
 		// Only this request's clock moves this run. A timer left over from an

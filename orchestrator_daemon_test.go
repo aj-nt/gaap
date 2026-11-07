@@ -43,6 +43,14 @@ type testDaemon struct {
 	memories map[string]*pb.MemoryEntry
 }
 
+// cloneTask copies an entry. Handlers must return a copy, never the stored
+// pointer: gRPC marshals the response after the handler releases the lock, so a
+// live pointer races the next write to the stored entry.
+func cloneTask(e *pb.TaskEntry) *pb.TaskEntry {
+	c := *e
+	return &c
+}
+
 func (td *testDaemon) AddTask(_ context.Context, req *pb.AddTaskRequest) (*pb.TaskEntry, error) {
 	td.mu.Lock()
 	defer td.mu.Unlock()
@@ -57,7 +65,7 @@ func (td *testDaemon) AddTask(_ context.Context, req *pb.AddTaskRequest) (*pb.Ta
 		CreatedAt:  time.Now().Unix(),
 	}
 	td.tasks[req.Id] = e
-	return e, nil
+	return cloneTask(e), nil
 }
 
 func (td *testDaemon) GetTask(_ context.Context, req *pb.GetTaskRequest) (*pb.TaskEntry, error) {
@@ -79,7 +87,7 @@ func (td *testDaemon) GetTask(_ context.Context, req *pb.GetTaskRequest) (*pb.Ta
 	if td.autoComplete && e.Status == "ready" {
 		e.Status = "done"
 	}
-	return e, nil
+	return cloneTask(e), nil
 }
 
 func (td *testDaemon) ClaimTask(_ context.Context, req *pb.ClaimTaskRequest) (*pb.TaskEntry, error) {
@@ -94,7 +102,7 @@ func (td *testDaemon) ClaimTask(_ context.Context, req *pb.ClaimTaskRequest) (*p
 	}
 	e.Status = "claimed"
 	e.AssignedAgent = req.AgentId
-	return e, nil
+	return cloneTask(e), nil
 }
 
 func (td *testDaemon) CompleteTask(_ context.Context, req *pb.CompleteTaskRequest) (*pb.TaskEntry, error) {
@@ -106,7 +114,7 @@ func (td *testDaemon) CompleteTask(_ context.Context, req *pb.CompleteTaskReques
 	}
 	e.Status = "done"
 	e.ResultKey = req.ResultKey
-	return e, nil
+	return cloneTask(e), nil
 }
 
 func (td *testDaemon) FailTask(_ context.Context, req *pb.FailTaskRequest) (*pb.TaskEntry, error) {
@@ -117,7 +125,7 @@ func (td *testDaemon) FailTask(_ context.Context, req *pb.FailTaskRequest) (*pb.
 		return nil, status.Error(codes.NotFound, "task not found")
 	}
 	e.Status = "dead_letter"
-	return e, nil
+	return cloneTask(e), nil
 }
 
 // tasksOfType returns the tasks currently in the store with the given agent
@@ -197,7 +205,7 @@ func (td *testDaemon) FindReadyTasks(_ context.Context, req *pb.FindReadyTasksRe
 	var ready []*pb.TaskEntry
 	for _, e := range td.tasks {
 		if e.AgentType == req.AgentType && e.Status == "ready" {
-			ready = append(ready, e)
+			ready = append(ready, cloneTask(e))
 		}
 	}
 	if ready == nil {
@@ -233,11 +241,25 @@ func (td *testDaemon) DeleteTask(_ context.Context, req *pb.DeleteTaskRequest) (
 	return &pb.DeleteTaskResponse{Deleted: true}, nil
 }
 
+// memoryContent returns what was written under a key, for tests that read back
+// a saved RunState.
+func (td *testDaemon) memoryContent(key string) string {
+	td.mu.Lock()
+	defer td.mu.Unlock()
+	for _, e := range td.memories {
+		if e.Key == key {
+			return e.Content
+		}
+	}
+	return ""
+}
+
 func (td *testDaemon) GetMemory(_ context.Context, req *pb.GetMemoryRequest) (*pb.MemoryEntry, error) {
 	td.mu.Lock()
 	defer td.mu.Unlock()
 	if e, ok := td.memories[req.Id]; ok {
-		return e, nil
+		c := *e
+		return &c, nil
 	}
 	return nil, status.Error(codes.NotFound, "memory not found: "+req.Id)
 }

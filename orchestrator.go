@@ -86,10 +86,24 @@ var ErrOrchestrationFailed = errors.New("orchestration failed: one or more tasks
 // stored to and loaded from the daemon. It captures just enough to rebuild
 // the DAG and resume from the Waiting state after an orchestrator crash.
 type RunState struct {
-	Goal        string      `json:"goal"`
-	RepoPath    string      `json:"repo_path"`
-	Tasks       []TaskSpec  `json:"tasks"`
-	FailureMode FailureMode `json:"failure_mode,omitempty"`
+	Goal     string `json:"goal"`
+	RepoPath string `json:"repo_path"`
+	// RunID is the task-id namespace, so a resumed run keeps polling for the
+	// tasks it left behind instead of re-namespacing a new set.
+	RunID       string           `json:"run_id,omitempty"`
+	Tasks       []TaskSpec       `json:"tasks"`
+	FailureMode FailureMode      `json:"failure_mode,omitempty"`
+	Pending     *PendingApproval `json:"pending_approval,omitempty"`
+}
+
+// PendingApproval is the question a run was waiting on when it died. Persisted
+// with the run so a resume adopts the request already in the daemon rather than
+// asking it again — and keeps its original deadline, because a restart is not a
+// reason to give the human more time.
+type PendingApproval struct {
+	Request        ApprovalRequest `json:"request"`
+	ApprovalTaskID string          `json:"approval_task_id"`
+	Deadline       time.Time       `json:"deadline"`
 }
 
 // Orchestrator coordinates the full pipeline: decompose -> dispatch -> poll -> synthesize -> publish.
@@ -374,6 +388,9 @@ func (o *Orchestrator) Resume(rs *RunState) error {
 	if rs.RepoPath != "" {
 		o.cfg.RepoPath = rs.RepoPath
 	}
+	if rs.RunID != "" {
+		o.runID = rs.RunID
+	}
 
 	if err := o.resumeFromState(rs); err != nil {
 		return err
@@ -385,10 +402,31 @@ func (o *Orchestrator) Resume(rs *RunState) error {
 		"task_count", o.dag.TaskCount(),
 	)
 
-	// Jump directly to Waiting state — planning and dispatch are already done.
-	// Enter explicitly rather than through Transition: the phase is already
-	// waiting, and a waiting -> waiting transition is not an edge.
+	// Jump directly to the state the run was in — planning and dispatch are done.
+	// Enter explicitly rather than through Transition: idle -> waiting is not an
+	// edge, and the phase already is what it is.
+	if rs.Pending != nil {
+		o.state = &ApprovalState{
+			Request:        rs.Pending.Request,
+			ApprovalTaskID: rs.Pending.ApprovalTaskID,
+			Deadline:       rs.Pending.Deadline,
+			Resumed:        true,
+		}
+		// Recorded here because resume enters a state directly: a phase the run
+		// is in but never transitioned into would otherwise be missing from the
+		// history, which is exactly the phase a reader wants to see.
+		o.phaseLog = append(o.phaseLog, o.state.Phase())
+		slog.Info("orchestrator resuming into a pending approval",
+			"task_id", rs.Pending.Request.TaskID,
+			"approval_task", rs.Pending.ApprovalTaskID,
+			"deadline", rs.Pending.Deadline.Format(time.RFC3339))
+		if err := o.state.Enter(o.ctx, o); err != nil {
+			return err
+		}
+		return o.drive()
+	}
 	o.state = &WaitingState{}
+	o.phaseLog = append(o.phaseLog, o.state.Phase())
 	if err := o.state.Enter(o.ctx, o); err != nil {
 		return err
 	}
@@ -510,8 +548,16 @@ func (o *Orchestrator) SaveRunState(ctx context.Context, runKey string) error {
 	rs := &RunState{
 		Goal:        o.goal,
 		RepoPath:    o.cfg.RepoPath,
+		RunID:       o.runID,
 		FailureMode: o.cfg.Mode(),
 		Tasks:       make([]TaskSpec, 0, len(o.dag.nodes)),
+	}
+	if approval, ok := o.state.(*ApprovalState); ok {
+		rs.Pending = &PendingApproval{
+			Request:        approval.Request,
+			ApprovalTaskID: approval.ApprovalTaskID,
+			Deadline:       approval.Deadline,
+		}
 	}
 	for _, node := range o.dag.nodes {
 		rs.Tasks = append(rs.Tasks, TaskSpec{
