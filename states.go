@@ -658,7 +658,8 @@ func (o *Orchestrator) synthesizePartial(ctx context.Context, c outcomeCounts) {
 		slog.Warn("partial synthesis failed", "error", err)
 		return
 	}
-	o.result = sr
+	// Printed, not stored: a failed run's partial synthesis is the report, and
+	// nothing downstream reads o.result on this path.
 	fmt.Println(formatSynthesisReport(sr))
 }
 

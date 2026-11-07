@@ -46,7 +46,7 @@ func TestBuildGovernorRecordsToTheStateDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	g, state, err := buildGovernor(policyPath, filepath.Join(dir, "state"), 0)
+	g, state, err := buildGovernor(policyPath, filepath.Join(dir, "state"), 0, "")
 	if err != nil {
 		t.Fatalf("buildGovernor: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestBuildGovernorRecordsToTheStateDirectory(t *testing.T) {
 // TestBuildGovernorRefusesAMissingPolicy: a run told to be governed but pointed
 // at no policy would be governed by nothing, silently.
 func TestBuildGovernorRefusesAMissingPolicy(t *testing.T) {
-	if _, _, err := buildGovernor("", t.TempDir(), 0); err == nil {
+	if _, _, err := buildGovernor("", t.TempDir(), 0, ""); err == nil {
 		t.Fatal("a governor with no policy should be refused")
 	}
 }
