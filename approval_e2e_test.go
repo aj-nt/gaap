@@ -58,7 +58,7 @@ func TestRunAsksAHumanAndHonoursTheAnswer(t *testing.T) {
 		DecidedBy: "aj",
 		DecidedAt: time.Now(),
 	})
-	mem, err := daemon.AddMemory(context.Background(), "approval", "approval_decision",
+	mem, err := daemon.AddMemory(context.Background(), "memory", "approval_decision",
 		"approval_t1_result", string(body), 5, "gaap-approve")
 	if err != nil {
 		t.Fatalf("storing the decision: %v", err)

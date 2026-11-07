@@ -91,13 +91,16 @@ func parseApprovalsFlags(args []string) (*approvalsConfig, error) {
 	fs.StringVar(&cfg.TLSCert, "tls-cert", "", "Path to TLS CA certificate for daemon connection")
 	fs.BoolVar(&cfg.JSON, "json", false, "Print the requests as JSON")
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(reorderArgs(args, map[string]bool{
+		"addr": true, "api-key": true, "tls-cert": true,
+	})); err != nil {
 		return nil, err
 	}
 	if fs.NArg() != 1 {
 		return nil, fmt.Errorf("usage: gaap approvals <run-id>")
 	}
 	cfg.RunID = fs.Arg(0)
+	cfg.DaemonAddr = envOr("GAAP_DAEMON_ADDR", cfg.DaemonAddr, "localhost:50051")
 	return cfg, nil
 }
 
@@ -193,7 +196,11 @@ func parseApproveFlags(args []string) (*approveConfig, error) {
 	fs.StringVar(&cfg.APIKey, "api-key", "", "Vassago daemon API key (Bearer token)")
 	fs.StringVar(&cfg.TLSCert, "tls-cert", "", "Path to TLS CA certificate for daemon connection")
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(reorderArgs(args, map[string]bool{
+		"task": true, "action": true, "agent-type": true, "context": true,
+		"reason": true, "agent": true, "agents": true,
+		"addr": true, "api-key": true, "tls-cert": true,
+	})); err != nil {
 		return nil, err
 	}
 	if fs.NArg() != 1 {
@@ -201,6 +208,7 @@ func parseApproveFlags(args []string) (*approveConfig, error) {
 	}
 	cfg.RunID = fs.Arg(0)
 	cfg.Agents = splitList(*agents)
+	cfg.DaemonAddr = envOr("GAAP_DAEMON_ADDR", cfg.DaemonAddr, "localhost:50051")
 	return cfg, nil
 }
 
@@ -243,7 +251,9 @@ func approveRun(ctx context.Context, c approvalClient, cfg *approveConfig, stdou
 		return err
 	}
 	key := "approval_" + chosen.Request.TaskID + "_result"
-	mem, err := c.AddMemory(ctx, "approval", "approval_decision", key, string(body), 5, cfg.Agent)
+	// "memory" is the daemon's blackboard target; the category is what marks this
+	// entry as a decision. (vassago validates the target against an allowlist.)
+	mem, err := c.AddMemory(ctx, "memory", "approval_decision", key, string(body), 5, cfg.Agent)
 	if err != nil {
 		return fmt.Errorf("recording the decision: %w", err)
 	}
@@ -316,6 +326,33 @@ func selectApproval(pending []pendingApproval, task string) (pendingApproval, er
 		}
 	}
 	return pendingApproval{}, fmt.Errorf("no pending approval for task %q", task)
+}
+
+// reorderArgs lets a flag and the run id appear in either order. A human types
+// `gaap approve <run-id> --action retry`; Go's flag package stops at the first
+// non-flag word, so without this the documented form is a usage error. valueFlags
+// name the flags that take a separate value, so their argument is not mistaken
+// for the run id.
+func reorderArgs(args []string, valueFlags map[string]bool) []string {
+	flags := make([]string, 0, len(args))
+	positional := make([]string, 0, 1)
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if !strings.HasPrefix(a, "-") {
+			positional = append(positional, a)
+			continue
+		}
+		flags = append(flags, a)
+		name := strings.TrimLeft(a, "-")
+		if strings.Contains(name, "=") {
+			continue // --flag=value carries its own value
+		}
+		if valueFlags[name] && i+1 < len(args) {
+			i++
+			flags = append(flags, args[i])
+		}
+	}
+	return append(flags, positional...)
 }
 
 // splitList turns a comma-separated flag into trimmed, non-empty items.

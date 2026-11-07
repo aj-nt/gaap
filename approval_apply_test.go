@@ -57,7 +57,7 @@ func answerApproval(t *testing.T, o *Orchestrator, s *ApprovalState, d ApprovalD
 	if err != nil {
 		t.Fatal(err)
 	}
-	mem, err := o.daemon.AddMemory(context.Background(), "approval", "approval_decision",
+	mem, err := o.daemon.AddMemory(context.Background(), "memory", "approval_decision",
 		"approval_"+s.Request.TaskID+"_result", string(body), 5, "gaap-approve")
 	if err != nil {
 		t.Fatalf("storing the decision: %v", err)
