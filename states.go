@@ -386,9 +386,24 @@ type ApprovalState struct {
 func (s *ApprovalState) Phase() Phase { return PhaseApproving }
 
 func (s *ApprovalState) Enter(ctx context.Context, o *Orchestrator) error {
-	// Opening the approval task in the daemon happens in M2 (openApproval). This
-	// phase exists here so the graph, the state, and its data are pinned before
-	// anything depends on them.
+	// The question travels as a task. vassago already provides atomic claim, TTL
+	// reset and a result key, so the answer arrives through the same machinery
+	// every other actor uses and no second request channel is built.
+	//
+	// maxRetries is 0 on purpose: a question nobody answered is not a failed
+	// attempt to be retried automatically, and an auto-retry would silently
+	// ask the same person twice.
+	reqJSON, err := json.Marshal(s.Request)
+	if err != nil {
+		return fmt.Errorf("approval: encoding the request: %w", err)
+	}
+	if o.daemon != nil {
+		goal := fmt.Sprintf("Approve %s (%s): %s", s.Request.TaskID, s.Request.AgentType, s.Request.Reason)
+		if _, err := o.daemon.AddTask(ctx, s.ApprovalTaskID, ApprovalAgentType, goal, string(reqJSON), 3, 600, 0); err != nil {
+			return fmt.Errorf("approval: creating the request task %s: %w", s.ApprovalTaskID, err)
+		}
+	}
+
 	slog.Info("approving: waiting on a human decision",
 		"task_id", s.Request.TaskID,
 		"approval_task", s.ApprovalTaskID,

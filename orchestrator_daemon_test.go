@@ -42,12 +42,14 @@ func (td *testDaemon) AddTask(_ context.Context, req *pb.AddTaskRequest) (*pb.Ta
 	td.mu.Lock()
 	defer td.mu.Unlock()
 	e := &pb.TaskEntry{
-		Id:        req.Id,
-		Goal:      req.Goal,
-		AgentType: req.AgentType,
-		Status:    "ready",
-		Priority:  req.Priority,
-		CreatedAt: time.Now().Unix(),
+		Id:         req.Id,
+		Goal:       req.Goal,
+		AgentType:  req.AgentType,
+		Context:    req.Context,
+		Status:     "ready",
+		Priority:   req.Priority,
+		MaxRetries: req.MaxRetries,
+		CreatedAt:  time.Now().Unix(),
 	}
 	td.tasks[req.Id] = e
 	return e, nil
@@ -109,6 +111,27 @@ func (td *testDaemon) FailTask(_ context.Context, req *pb.FailTaskRequest) (*pb.
 	}
 	e.Status = "dead_letter"
 	return e, nil
+}
+
+// tasksOfType returns the tasks currently in the store with the given agent
+// type. Locked: a test polls this while the run is live.
+func (td *testDaemon) tasksOfType(agentType string) []*pb.TaskEntry {
+	td.mu.Lock()
+	defer td.mu.Unlock()
+	var out []*pb.TaskEntry
+	for _, e := range td.tasks {
+		if e.AgentType == agentType {
+			out = append(out, &pb.TaskEntry{
+				Id:         e.Id,
+				AgentType:  e.AgentType,
+				Goal:       e.Goal,
+				Context:    e.Context,
+				Status:     e.Status,
+				MaxRetries: e.MaxRetries,
+			})
+		}
+	}
+	return out
 }
 
 // Subscribe emits the tasks currently in the store as task events, marking the

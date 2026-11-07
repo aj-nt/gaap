@@ -70,6 +70,10 @@ type Config struct {
 	// BreakerCooldownSec is how long an open breaker refuses dispatch, and the
 	// window failures are counted in. Defaults to 60 when breakers are on.
 	BreakerCooldownSec int `yaml:"breaker_cooldown_sec"`
+
+	// Approval decides whether a dead-lettered task asks a human. Off by
+	// default; see ApprovalPolicy.
+	Approval ApprovalPolicy `yaml:"approval"`
 }
 
 // ErrOrchestrationFailed is returned when a run finishes with at least one
@@ -118,6 +122,11 @@ type Orchestrator struct {
 	stopCh       chan struct{}
 	stopOnce     sync.Once
 	workerStop   chan struct{}
+	// pendingFailure is the dead letter the loop has not yet answered. Set by
+	// failTask on the loop goroutine and consumed by waitVerdict, which is the
+	// only place that decides whether a failure ends the run or asks a human.
+	pendingFailure *failureRecord
+
 	// phaseLog records every phase entered, in order. Cheap, and it is how a
 	// test can assert the run followed the graph instead of merely ending.
 	phaseLog []Phase
@@ -630,6 +639,12 @@ func (o *Orchestrator) handleTaskEvent(evt taskEvent) {
 // advance the DAG — a watcher update and a simulated run — cannot disagree about
 // when the run is over.
 func (o *Orchestrator) waitVerdict() OrchestratorState {
+	// A failure with a human on the other end is not the end of the run. This
+	// is checked before fail_fast: fail_fast stops dispatching to other
+	// branches, it does not skip the question the operator opted into.
+	if st := o.approvalVerdict(); st != nil {
+		return st
+	}
 	if o.failFast() && o.dag.HasFailures() {
 		slog.Warn("fail_fast: ending run at the first failure")
 		return &FailedState{}
@@ -643,6 +658,34 @@ func (o *Orchestrator) waitVerdict() OrchestratorState {
 	}
 	slog.Info("all tasks complete, transitioning to synthesizing")
 	return &SynthesizingState{}
+}
+
+// approvalVerdict answers the pending dead letter with a question, when the run
+// opted into asking humans. nil means the failure stands as the run's answer.
+//
+// It consumes the failure: the request owns it now, so a second call cannot
+// open a second approval for the same dead letter.
+func (o *Orchestrator) approvalVerdict() OrchestratorState {
+	f := o.pendingFailure
+	if f == nil || !o.cfg.Approval.Enabled {
+		return nil
+	}
+	node, ok := o.dag.nodes[f.TaskID]
+	if !ok {
+		return nil
+	}
+	o.pendingFailure = nil
+
+	req := NewApprovalRequest(node.ID, node.AgentType, f.Attempts, node.Summary, time.Now(), o.cfg.Approval.Timeout)
+	slog.Info("approval: asking a human",
+		"task_id", req.TaskID, "agent_type", req.AgentType,
+		"attempts", req.Attempts, "deadline", req.Deadline.Format(time.RFC3339))
+
+	return &ApprovalState{
+		Request:        req,
+		ApprovalTaskID: node.ID + "_" + ApprovalAgentType,
+		Deadline:       req.Deadline,
+	}
 }
 
 // breakerFor returns the circuit breaker for an agent type, creating it on first
@@ -692,7 +735,17 @@ func (o *Orchestrator) failTask(node *TaskNode, attempts int32, logPrefix string
 	node.Status = status.TaskFailed
 	node.Summary = fmt.Sprintf("daemon dead-lettered the task after %d attempt(s)", attempts)
 	skipped := o.dag.SkipDescendants(node.ID)
+	// The verdict reads this to decide whether the failure ends the run or
+	// becomes a question for a human. Recorded here because this is the one
+	// place that sees a dead letter from either transport.
+	o.pendingFailure = &failureRecord{TaskID: node.ID, Attempts: attempts}
 	o.fireTaskFailed(node.ID, logPrefix, skipped)
+}
+
+// failureRecord is the failure a verdict still has to answer for.
+type failureRecord struct {
+	TaskID   string
+	Attempts int32
 }
 
 // loadWorkerResult reads the ExecuteResult a worker stored under the task's

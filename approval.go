@@ -13,6 +13,21 @@ import (
 // The CLI filters it out of --agent-types rather than trusting the operator to.
 const ApprovalAgentType = "approval"
 
+// ApprovalPolicy is a run's decision to involve a human. Off unless asked for:
+// an orchestrator that blocks on a person out of the box is one nobody runs
+// unattended, so the loop is a policy, not a default.
+type ApprovalPolicy struct {
+	Enabled bool
+	// Timeout is how long a pending request stays open before the run fails.
+	// Zero means the request expires immediately — a misconfiguration should
+	// not become an unbounded wait.
+	Timeout time.Duration
+	// Agents is the advisory allowlist of who may answer. Enforcement is in
+	// `gaap approve`; vassago has no ACL, so this catches mistakes and drift
+	// rather than restraining a determined principal.
+	Agents []string
+}
+
 // ApprovalAction is what a human can tell the orchestrator to do about a task
 // the daemon gave up on. Four answers, no free text: a decision the code cannot
 // act on is not a decision.
