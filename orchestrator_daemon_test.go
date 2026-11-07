@@ -36,21 +36,48 @@ type testDaemon struct {
 	// script, when set, is what Subscribe streams instead of the task store.
 	// Tests that build their DAG by hand have nothing in the store to replay.
 	script []*pb.TaskEntry
+
+	// memories is the blackboard: AddMemory stores under a deterministic ID so a
+	// test can hand that ID to CompleteTask as a result key, exactly as a worker
+	// does with the UUID the real daemon assigns.
+	memories map[string]*pb.MemoryEntry
+}
+
+// cloneTask copies an entry field by field. Handlers must return a copy, never
+// the stored pointer: gRPC marshals the response after the handler releases the
+// lock, so a live pointer races the next write to the stored entry. A struct
+// copy is not available — proto messages embed a mutex — hence the rebuild.
+func cloneTask(e *pb.TaskEntry) *pb.TaskEntry {
+	return &pb.TaskEntry{
+		Id:            e.Id,
+		Goal:          e.Goal,
+		AgentType:     e.AgentType,
+		Context:       e.Context,
+		Status:        e.Status,
+		Priority:      e.Priority,
+		MaxRetries:    e.MaxRetries,
+		RetryCount:    e.RetryCount,
+		ResultKey:     e.ResultKey,
+		AssignedAgent: e.AssignedAgent,
+		CreatedAt:     e.CreatedAt,
+	}
 }
 
 func (td *testDaemon) AddTask(_ context.Context, req *pb.AddTaskRequest) (*pb.TaskEntry, error) {
 	td.mu.Lock()
 	defer td.mu.Unlock()
 	e := &pb.TaskEntry{
-		Id:        req.Id,
-		Goal:      req.Goal,
-		AgentType: req.AgentType,
-		Status:    "ready",
-		Priority:  req.Priority,
-		CreatedAt: time.Now().Unix(),
+		Id:         req.Id,
+		Goal:       req.Goal,
+		AgentType:  req.AgentType,
+		Context:    req.Context,
+		Status:     "ready",
+		Priority:   req.Priority,
+		MaxRetries: req.MaxRetries,
+		CreatedAt:  time.Now().Unix(),
 	}
 	td.tasks[req.Id] = e
-	return e, nil
+	return cloneTask(e), nil
 }
 
 func (td *testDaemon) GetTask(_ context.Context, req *pb.GetTaskRequest) (*pb.TaskEntry, error) {
@@ -60,9 +87,8 @@ func (td *testDaemon) GetTask(_ context.Context, req *pb.GetTaskRequest) (*pb.Ta
 	if !ok {
 		return nil, status.Error(codes.NotFound, "task not found")
 	}
-	if td.autoComplete && e.Status == "ready" {
-		e.Status = "done"
-	}
+	// The dead-letter list wins over autoComplete: a test that asks for a
+	// failure wants the failure, not a simulated success that arrives first.
 	if e.Status == "ready" {
 		for name := range td.deadLetter {
 			if strings.HasSuffix(e.Id, name) {
@@ -70,7 +96,10 @@ func (td *testDaemon) GetTask(_ context.Context, req *pb.GetTaskRequest) (*pb.Ta
 			}
 		}
 	}
-	return e, nil
+	if td.autoComplete && e.Status == "ready" {
+		e.Status = "done"
+	}
+	return cloneTask(e), nil
 }
 
 func (td *testDaemon) ClaimTask(_ context.Context, req *pb.ClaimTaskRequest) (*pb.TaskEntry, error) {
@@ -85,7 +114,7 @@ func (td *testDaemon) ClaimTask(_ context.Context, req *pb.ClaimTaskRequest) (*p
 	}
 	e.Status = "claimed"
 	e.AssignedAgent = req.AgentId
-	return e, nil
+	return cloneTask(e), nil
 }
 
 func (td *testDaemon) CompleteTask(_ context.Context, req *pb.CompleteTaskRequest) (*pb.TaskEntry, error) {
@@ -97,7 +126,7 @@ func (td *testDaemon) CompleteTask(_ context.Context, req *pb.CompleteTaskReques
 	}
 	e.Status = "done"
 	e.ResultKey = req.ResultKey
-	return e, nil
+	return cloneTask(e), nil
 }
 
 func (td *testDaemon) FailTask(_ context.Context, req *pb.FailTaskRequest) (*pb.TaskEntry, error) {
@@ -108,7 +137,28 @@ func (td *testDaemon) FailTask(_ context.Context, req *pb.FailTaskRequest) (*pb.
 		return nil, status.Error(codes.NotFound, "task not found")
 	}
 	e.Status = "dead_letter"
-	return e, nil
+	return cloneTask(e), nil
+}
+
+// tasksOfType returns the tasks currently in the store with the given agent
+// type. Locked: a test polls this while the run is live.
+func (td *testDaemon) tasksOfType(agentType string) []*pb.TaskEntry {
+	td.mu.Lock()
+	defer td.mu.Unlock()
+	var out []*pb.TaskEntry
+	for _, e := range td.tasks {
+		if e.AgentType == agentType {
+			out = append(out, &pb.TaskEntry{
+				Id:         e.Id,
+				AgentType:  e.AgentType,
+				Goal:       e.Goal,
+				Context:    e.Context,
+				Status:     e.Status,
+				MaxRetries: e.MaxRetries,
+			})
+		}
+	}
+	return out
 }
 
 // Subscribe emits the tasks currently in the store as task events, marking the
@@ -167,7 +217,7 @@ func (td *testDaemon) FindReadyTasks(_ context.Context, req *pb.FindReadyTasksRe
 	var ready []*pb.TaskEntry
 	for _, e := range td.tasks {
 		if e.AgentType == req.AgentType && e.Status == "ready" {
-			ready = append(ready, e)
+			ready = append(ready, cloneTask(e))
 		}
 	}
 	if ready == nil {
@@ -179,16 +229,50 @@ func (td *testDaemon) FindReadyTasks(_ context.Context, req *pb.FindReadyTasksRe
 func (td *testDaemon) AddMemory(_ context.Context, req *pb.AddMemoryRequest) (*pb.AddMemoryResponse, error) {
 	td.mu.Lock()
 	defer td.mu.Unlock()
-	id := "mem-" + time.Now().Format("150405")
-	return &pb.AddMemoryResponse{
-		Entry: &pb.MemoryEntry{
-			Id:       id,
-			Category: req.Category,
-			Key:      req.Key,
-			Content:  req.Content,
-			Priority: req.Priority,
-		},
-	}, nil
+	entry := &pb.MemoryEntry{
+		Id:       "mem-" + req.Key,
+		Category: req.Category,
+		Key:      req.Key,
+		Content:  req.Content,
+		Priority: req.Priority,
+	}
+	if td.memories == nil {
+		td.memories = map[string]*pb.MemoryEntry{}
+	}
+	td.memories[entry.Id] = entry
+	return &pb.AddMemoryResponse{Entry: entry}, nil
+}
+
+func (td *testDaemon) DeleteTask(_ context.Context, req *pb.DeleteTaskRequest) (*pb.DeleteTaskResponse, error) {
+	td.mu.Lock()
+	defer td.mu.Unlock()
+	if _, ok := td.tasks[req.Id]; !ok {
+		return &pb.DeleteTaskResponse{Deleted: false}, nil
+	}
+	delete(td.tasks, req.Id)
+	return &pb.DeleteTaskResponse{Deleted: true}, nil
+}
+
+// memoryContent returns what was written under a key, for tests that read back
+// a saved RunState.
+func (td *testDaemon) memoryContent(key string) string {
+	td.mu.Lock()
+	defer td.mu.Unlock()
+	for _, e := range td.memories {
+		if e.Key == key {
+			return e.Content
+		}
+	}
+	return ""
+}
+
+func (td *testDaemon) GetMemory(_ context.Context, req *pb.GetMemoryRequest) (*pb.MemoryEntry, error) {
+	td.mu.Lock()
+	defer td.mu.Unlock()
+	if e, ok := td.memories[req.Id]; ok {
+		return &pb.MemoryEntry{Id: e.Id, Key: e.Key, Category: e.Category, Content: e.Content, Priority: e.Priority}, nil
+	}
+	return nil, status.Error(codes.NotFound, "memory not found: "+req.Id)
 }
 
 func (td *testDaemon) Ping(_ context.Context, _ *pb.HealthCheckRequest) (*pb.HealthCheckResponse, error) {

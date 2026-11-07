@@ -15,6 +15,7 @@ import (
 	"github.com/aj-nt/gaap/internal/worker"
 	"github.com/aj-nt/vassago-sdk/client"
 	pb "github.com/aj-nt/vassago-sdk/proto"
+	"github.com/google/uuid"
 )
 
 // MnemoClient is the Vassago daemon client interface the orchestrator talks to.
@@ -70,6 +71,10 @@ type Config struct {
 	// BreakerCooldownSec is how long an open breaker refuses dispatch, and the
 	// window failures are counted in. Defaults to 60 when breakers are on.
 	BreakerCooldownSec int `yaml:"breaker_cooldown_sec"`
+
+	// Approval decides whether a dead-lettered task asks a human. Off by
+	// default; see ApprovalPolicy.
+	Approval ApprovalPolicy `yaml:"approval"`
 }
 
 // ErrOrchestrationFailed is returned when a run finishes with at least one
@@ -81,10 +86,28 @@ var ErrOrchestrationFailed = errors.New("orchestration failed: one or more tasks
 // stored to and loaded from the daemon. It captures just enough to rebuild
 // the DAG and resume from the Waiting state after an orchestrator crash.
 type RunState struct {
-	Goal        string      `json:"goal"`
-	RepoPath    string      `json:"repo_path"`
+	Goal     string `json:"goal"`
+	RepoPath string `json:"repo_path"`
+	// RunID is the task-id namespace, so a resumed run keeps polling for the
+	// tasks it left behind instead of re-namespacing a new set.
+	RunID       string      `json:"run_id,omitempty"`
 	Tasks       []TaskSpec  `json:"tasks"`
 	FailureMode FailureMode `json:"failure_mode,omitempty"`
+	// ApprovalPolicy is the loop the run started with. Persisted for the same
+	// reason as FailureMode: a run that asked humans on Monday must not stop
+	// asking because it was resumed on Tuesday without the flag.
+	ApprovalPolicy ApprovalPolicy   `json:"approval_policy,omitempty"`
+	Pending        *PendingApproval `json:"pending_approval,omitempty"`
+}
+
+// PendingApproval is the question a run was waiting on when it died. Persisted
+// with the run so a resume adopts the request already in the daemon rather than
+// asking it again — and keeps its original deadline, because a restart is not a
+// reason to give the human more time.
+type PendingApproval struct {
+	Request        ApprovalRequest `json:"request"`
+	ApprovalTaskID string          `json:"approval_task_id"`
+	Deadline       time.Time       `json:"deadline"`
 }
 
 // Orchestrator coordinates the full pipeline: decompose -> dispatch -> poll -> synthesize -> publish.
@@ -92,14 +115,17 @@ type RunState struct {
 // When a WorkerPool is configured, workers execute dispatched tasks concurrently — making
 // the orchestrator self-contained rather than requiring external worker processes.
 type Orchestrator struct {
-	cfg             *Config
-	ctx             context.Context
-	daemon          MnemoClient
-	decomposer      *Decomposer
-	synthesis       *SynthesisEngine
-	dag             *DAG
-	state           OrchestratorState
-	goal            string
+	cfg        *Config
+	ctx        context.Context
+	daemon     MnemoClient
+	decomposer *Decomposer
+	synthesis  *SynthesisEngine
+	dag        *DAG
+	state      OrchestratorState
+	goal       string
+	// runID names this run: it is the task-id namespace, so a human can find a
+	// run's tasks — and its approval requests — in the daemon by one string.
+	runID           string
 	result          *SynthesisResult
 	breakerRegistry map[string]*CircuitBreaker
 	workerPool      *worker.Pool
@@ -118,6 +144,11 @@ type Orchestrator struct {
 	stopCh       chan struct{}
 	stopOnce     sync.Once
 	workerStop   chan struct{}
+	// pendingFailure is the dead letter the loop has not yet answered. Set by
+	// failTask on the loop goroutine and consumed by waitVerdict, which is the
+	// only place that decides whether a failure ends the run or asks a human.
+	pendingFailure *failureRecord
+
 	// phaseLog records every phase entered, in order. Cheap, and it is how a
 	// test can assert the run followed the graph instead of merely ending.
 	phaseLog []Phase
@@ -196,9 +227,13 @@ func (o *Orchestrator) Run(goal string) error {
 		return fmt.Errorf("goal is required")
 	}
 
+	if o.runID == "" {
+		o.runID = uuid.New().String()[:8]
+	}
 	slog.Info("orchestrator starting",
 		"goal", goal,
 		"repo", o.cfg.RepoPath,
+		"run_id", o.runID,
 	)
 
 	// Post the goal and let the loop drive. No phase is inspected here: what
@@ -206,6 +241,10 @@ func (o *Orchestrator) Run(goal string) error {
 	o.post(Event{Type: EventGoalReceived, Payload: map[string]any{"goal": goal}})
 	return o.drive()
 }
+
+// RunID returns the name this run's tasks are namespaced under. Empty until the
+// run starts.
+func (o *Orchestrator) RunID() string { return o.runID }
 
 // drive is the run's single event loop, and the only goroutine that mutates the
 // DAG or the state. The watchers post; states answer events; this loop decides
@@ -283,7 +322,17 @@ func (o *Orchestrator) dispatchTask(ctx context.Context, taskID string) error {
 		return nil
 	}
 
+	// The context is what the decomposer gave the task, or what a human amended
+	// it to with an edit decision. Serialising the node rather than hardcoding
+	// "{}" is what makes an edit reach the worker at all.
 	ctxJSON := "{}"
+	if len(node.Context) > 0 {
+		b, err := json.Marshal(node.Context)
+		if err != nil {
+			return fmt.Errorf("dispatch %s: encoding context: %w", node.ID, err)
+		}
+		ctxJSON = string(b)
+	}
 	if _, err := o.daemon.AddTask(ctx, node.ID, node.AgentType, node.Goal, ctxJSON, 3, 300, 2); err != nil {
 		slog.Warn("failed to dispatch task", "id", node.ID, "error", err)
 		return err
@@ -343,6 +392,14 @@ func (o *Orchestrator) Resume(rs *RunState) error {
 	if rs.RepoPath != "" {
 		o.cfg.RepoPath = rs.RepoPath
 	}
+	if rs.RunID != "" {
+		o.runID = rs.RunID
+	}
+	// A resumed run keeps the approval loop it started with. The policy is not a
+	// per-invocation flag any more than the failure mode is.
+	if rs.ApprovalPolicy.Enabled {
+		o.cfg.Approval = rs.ApprovalPolicy
+	}
 
 	if err := o.resumeFromState(rs); err != nil {
 		return err
@@ -354,10 +411,31 @@ func (o *Orchestrator) Resume(rs *RunState) error {
 		"task_count", o.dag.TaskCount(),
 	)
 
-	// Jump directly to Waiting state — planning and dispatch are already done.
-	// Enter explicitly rather than through Transition: the phase is already
-	// waiting, and a waiting -> waiting transition is not an edge.
+	// Jump directly to the state the run was in — planning and dispatch are done.
+	// Enter explicitly rather than through Transition: idle -> waiting is not an
+	// edge, and the phase already is what it is.
+	if rs.Pending != nil {
+		o.state = &ApprovalState{
+			Request:        rs.Pending.Request,
+			ApprovalTaskID: rs.Pending.ApprovalTaskID,
+			Deadline:       rs.Pending.Deadline,
+			Resumed:        true,
+		}
+		// Recorded here because resume enters a state directly: a phase the run
+		// is in but never transitioned into would otherwise be missing from the
+		// history, which is exactly the phase a reader wants to see.
+		o.phaseLog = append(o.phaseLog, o.state.Phase())
+		slog.Info("orchestrator resuming into a pending approval",
+			"task_id", rs.Pending.Request.TaskID,
+			"approval_task", rs.Pending.ApprovalTaskID,
+			"deadline", rs.Pending.Deadline.Format(time.RFC3339))
+		if err := o.state.Enter(o.ctx, o); err != nil {
+			return err
+		}
+		return o.drive()
+	}
 	o.state = &WaitingState{}
+	o.phaseLog = append(o.phaseLog, o.state.Phase())
 	if err := o.state.Enter(o.ctx, o); err != nil {
 		return err
 	}
@@ -477,10 +555,19 @@ func (o *Orchestrator) watchPoll() {
 // daemon memory key that can be passed to gaap resume.
 func (o *Orchestrator) SaveRunState(ctx context.Context, runKey string) error {
 	rs := &RunState{
-		Goal:        o.goal,
-		RepoPath:    o.cfg.RepoPath,
-		FailureMode: o.cfg.Mode(),
-		Tasks:       make([]TaskSpec, 0, len(o.dag.nodes)),
+		Goal:           o.goal,
+		RepoPath:       o.cfg.RepoPath,
+		RunID:          o.runID,
+		FailureMode:    o.cfg.Mode(),
+		ApprovalPolicy: o.cfg.Approval,
+		Tasks:          make([]TaskSpec, 0, len(o.dag.nodes)),
+	}
+	if approval, ok := o.state.(*ApprovalState); ok {
+		rs.Pending = &PendingApproval{
+			Request:        approval.Request,
+			ApprovalTaskID: approval.ApprovalTaskID,
+			Deadline:       approval.Deadline,
+		}
 	}
 	for _, node := range o.dag.nodes {
 		rs.Tasks = append(rs.Tasks, TaskSpec{
@@ -630,6 +717,12 @@ func (o *Orchestrator) handleTaskEvent(evt taskEvent) {
 // advance the DAG — a watcher update and a simulated run — cannot disagree about
 // when the run is over.
 func (o *Orchestrator) waitVerdict() OrchestratorState {
+	// A failure with a human on the other end is not the end of the run. This
+	// is checked before fail_fast: fail_fast stops dispatching to other
+	// branches, it does not skip the question the operator opted into.
+	if st := o.approvalVerdict(); st != nil {
+		return st
+	}
 	if o.failFast() && o.dag.HasFailures() {
 		slog.Warn("fail_fast: ending run at the first failure")
 		return &FailedState{}
@@ -643,6 +736,34 @@ func (o *Orchestrator) waitVerdict() OrchestratorState {
 	}
 	slog.Info("all tasks complete, transitioning to synthesizing")
 	return &SynthesizingState{}
+}
+
+// approvalVerdict answers the pending dead letter with a question, when the run
+// opted into asking humans. nil means the failure stands as the run's answer.
+//
+// It consumes the failure: the request owns it now, so a second call cannot
+// open a second approval for the same dead letter.
+func (o *Orchestrator) approvalVerdict() OrchestratorState {
+	f := o.pendingFailure
+	if f == nil || !o.cfg.Approval.Enabled {
+		return nil
+	}
+	node, ok := o.dag.nodes[f.TaskID]
+	if !ok {
+		return nil
+	}
+	o.pendingFailure = nil
+
+	req := NewApprovalRequest(node.ID, node.AgentType, f.Attempts, node.Summary, time.Now(), o.cfg.Approval.Timeout)
+	slog.Info("approval: asking a human",
+		"task_id", req.TaskID, "agent_type", req.AgentType,
+		"attempts", req.Attempts, "deadline", req.Deadline.Format(time.RFC3339))
+
+	return &ApprovalState{
+		Request:        req,
+		ApprovalTaskID: node.ID + "_" + ApprovalAgentType,
+		Deadline:       req.Deadline,
+	}
 }
 
 // breakerFor returns the circuit breaker for an agent type, creating it on first
@@ -692,7 +813,17 @@ func (o *Orchestrator) failTask(node *TaskNode, attempts int32, logPrefix string
 	node.Status = status.TaskFailed
 	node.Summary = fmt.Sprintf("daemon dead-lettered the task after %d attempt(s)", attempts)
 	skipped := o.dag.SkipDescendants(node.ID)
+	// The verdict reads this to decide whether the failure ends the run or
+	// becomes a question for a human. Recorded here because this is the one
+	// place that sees a dead letter from either transport.
+	o.pendingFailure = &failureRecord{TaskID: node.ID, Attempts: attempts}
 	o.fireTaskFailed(node.ID, logPrefix, skipped)
+}
+
+// failureRecord is the failure a verdict still has to answer for.
+type failureRecord struct {
+	TaskID   string
+	Attempts int32
 }
 
 // loadWorkerResult reads the ExecuteResult a worker stored under the task's

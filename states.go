@@ -29,6 +29,11 @@ const (
 	// EventSimulate asks the loop to complete the DAG in-process. Used when the
 	// daemon is not connected at all (tests, dry runs).
 	EventSimulate
+	// EventApprovalTimeout fires when a pending approval passes its own
+	// deadline. Separate from EventTimeout on purpose: a timer that outlives
+	// the approval it was set for must not be read as the run's clock expiring,
+	// or an answered approval would kill a healthy run from the grave.
+	EventApprovalTimeout
 )
 
 // sepLine is the width of separator lines in state output reports.
@@ -109,7 +114,9 @@ func (s *PlanningState) Enter(ctx context.Context, o *Orchestrator) error {
 		o.decomposer = NewDecomposer(nil) // defaults to StaticDecomposition
 	}
 
-	tasks, err := o.decomposer.Decompose(ctx, o.goal, o.cfg.RepoPath)
+	// The run id is the namespace, so every task id — and every approval task id
+	// derived from one — says which run it belongs to.
+	tasks, err := o.decomposer.DecomposeWithPrefix(ctx, o.goal, o.cfg.RepoPath, o.runID)
 	if err != nil {
 		return err
 	}
@@ -381,14 +388,49 @@ type ApprovalState struct {
 	Request        ApprovalRequest
 	ApprovalTaskID string
 	Deadline       time.Time
+	// Resumed is set when this state was rebuilt from a RunState. The request
+	// is already in the daemon, so entering must adopt it rather than create a
+	// second one under the same id.
+	Resumed bool
 }
 
 func (s *ApprovalState) Phase() Phase { return PhaseApproving }
 
 func (s *ApprovalState) Enter(ctx context.Context, o *Orchestrator) error {
-	// Opening the approval task in the daemon happens in M2 (openApproval). This
-	// phase exists here so the graph, the state, and its data are pinned before
-	// anything depends on them.
+	// The question travels as a task. vassago already provides atomic claim, TTL
+	// reset and a result key, so the answer arrives through the same machinery
+	// every other actor uses and no second request channel is built.
+	//
+	// maxRetries is 0 on purpose: a question nobody answered is not a failed
+	// attempt to be retried automatically, and an auto-retry would silently
+	// ask the same person twice.
+	reqJSON, err := json.Marshal(s.Request)
+	if err != nil {
+		return fmt.Errorf("approval: encoding the request: %w", err)
+	}
+	if o.daemon != nil && !s.Resumed {
+		goal := fmt.Sprintf("Approve %s (%s): %s", s.Request.TaskID, s.Request.AgentType, s.Request.Reason)
+		if _, err := o.daemon.AddTask(ctx, s.ApprovalTaskID, ApprovalAgentType, goal, string(reqJSON), 3, 600, 0); err != nil {
+			return fmt.Errorf("approval: creating the request task %s: %w", s.ApprovalTaskID, err)
+		}
+	}
+	if o.daemon != nil {
+		// The watcher only polls the tasks it was told about, and this task was
+		// not dispatched by dispatchTask. Without this the answer is written to
+		// the daemon and nobody ever looks.
+		select {
+		case o.dispatchFeed <- s.ApprovalTaskID:
+		case <-ctx.Done():
+		}
+	}
+
+	// The answer arrives as a task update, so the watcher has to be running even
+	// on a resume that never passed through WaitingState — and the run's own
+	// clock lives in the watcher, so without this an approval would wait out its
+	// request deadline with no MaxWaitSec behind it.
+	o.startWatcher()
+	o.startApprovalClock(s)
+
 	slog.Info("approving: waiting on a human decision",
 		"task_id", s.Request.TaskID,
 		"approval_task", s.ApprovalTaskID,
@@ -396,9 +438,75 @@ func (s *ApprovalState) Enter(ctx context.Context, o *Orchestrator) error {
 	return nil
 }
 
+// startApprovalClock posts an EventApprovalTimeout when this request's deadline
+// passes. The approval has its own clock because it usually has its own, shorter
+// deadline: waiting out MaxWaitSec would mean a run that asked for five minutes
+// of a human's attention actually held the graph for thirty.
+func (o *Orchestrator) startApprovalClock(s *ApprovalState) {
+	go func() {
+		wait := time.Until(s.Deadline)
+		if wait < 0 {
+			wait = 0
+		}
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		select {
+		case <-o.ctx.Done():
+			return
+		case <-timer.C:
+			o.post(Event{
+				Type:    EventApprovalTimeout,
+				Payload: map[string]any{"approval_task": s.ApprovalTaskID},
+			})
+		}
+	}()
+}
+
 func (s *ApprovalState) HandleEvent(ctx context.Context, o *Orchestrator, evt Event) (OrchestratorState, error) {
-	// The human's answer and the deadline tick are handled in M2. An event this
-	// phase does not understand is not a reason to move.
+	switch evt.Type {
+	case EventTaskUpdate:
+		// The daemon keeps talking while the run is paused. Only this task's own
+		// answer is an answer; another branch finishing is not.
+		if evt.Task == nil || evt.Task.ID != s.ApprovalTaskID {
+			return nil, nil
+		}
+		switch evt.Task.Status {
+		case status.TaskDone:
+			decision, err := o.loadApprovalDecision(evt.Task.ResultKey)
+			if err != nil {
+				slog.Error("approval: could not read the decision", "task_id", s.Request.TaskID, "error", err)
+				return &FailedState{}, nil
+			}
+			return o.applyApproval(ctx, s, decision), nil
+		case status.TaskDeadLetter, status.TaskFailed:
+			// max_retries is 0, so a dead-lettered approval is an unanswered
+			// question, not an attempt to retry.
+			slog.Error("approval: the request task died without an answer", "task_id", s.Request.TaskID)
+			return &FailedState{}, nil
+		}
+
+	case EventTimeout:
+		// The run's own clock outranks the request's. Without this, an approval
+		// whose deadline is longer than MaxWaitSec parks the loop in this phase
+		// with nothing left to observe — a blocked run wearing a question's
+		// clothes.
+		o.withdrawApprovalRequest(s)
+		slog.Error("approval: the run timed out while waiting for a decision",
+			"task_id", s.Request.TaskID, "max_wait_sec", o.cfg.MaxWaitSec)
+		return &FailedState{}, nil
+
+	case EventApprovalTimeout:
+		// Only this request's clock moves this run. A timer left over from an
+		// earlier approval names a different task and is ignored.
+		if id, _ := evt.Payload["approval_task"].(string); id != s.ApprovalTaskID {
+			return nil, nil
+		}
+		o.withdrawApprovalRequest(s)
+		slog.Error("approval: no decision within the deadline, failing the run",
+			"task_id", s.Request.TaskID, "deadline", s.Deadline.Format(time.RFC3339))
+		return &FailedState{}, nil
+	}
+	// An event this phase does not understand is not a reason to move.
 	return nil, nil
 }
 

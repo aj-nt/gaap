@@ -32,6 +32,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aj-nt/gaap"
 )
@@ -65,6 +66,16 @@ func main() {
 			slog.Error(err.Error())
 			os.Exit(1)
 		}
+	case "approvals":
+		if err := approvalsCommand(os.Args[2:], os.Stdout); err != nil {
+			slog.Error(err.Error())
+			os.Exit(1)
+		}
+	case "approve":
+		if err := approveCommand(os.Args[2:], os.Stdout); err != nil {
+			slog.Error(err.Error())
+			os.Exit(1)
+		}
 	case "govern":
 		if err := governCommand(os.Args[2:], os.Stdout); err != nil {
 			slog.Error(err.Error())
@@ -88,6 +99,9 @@ func printUsage() {
 Usage:
   gaap run [flags] <goal>
   gaap resume [--addr <daemon>] [--api-key <key>] [--tls-cert <path>] <run-key>
+  gaap approvals [--json] <run-id>
+  gaap approve <run-id> [--task <task-id>] [--action retry|reassign|edit|cancel]
+               [--agent-type <type>] [--context <json>] --reason <why> --agent <who>
   gaap govern decide --policy <file> --subject <id> --tool <name> [--args <json>]
   gaap govern erase --subject <id> [--reason <code>]
   gaap govern kill --scope <agent-id|global> [--reason <code>]
@@ -113,6 +127,19 @@ Run flags:
   --ollama-url string   Ollama base URL (default: http://localhost:11434/v1)
   --max-tokens int      Max tokens for LLM responses (default: 4096)
   --temperature float   LLM temperature, 0.0-1.0 (default: 0.1)
+  --approval            Ask a human about dead-lettered tasks instead of failing the run
+  --approval-timeout int  Seconds a pending approval stays open (default: 900)
+  --approval-agents string  Comma-separated allowlist of who may answer (default: anyone)
+
+Approve flags:
+  --task string     Which pending request to answer (default: the only one)
+  --action string   retry (default), reassign, edit or cancel
+  --agent-type string  New agent type, for --action reassign
+  --context string  JSON object of amended context, for --action edit
+  --reason string   Why — required, recorded with the decision
+  --agent string    Who is deciding — required, recorded
+  --agents string   Comma-separated allowlist of who may decide
+  --json            Print the decision as JSON
 `)
 }
 
@@ -130,6 +157,10 @@ type runConfig struct {
 	// for the run; zero threshold leaves them off.
 	BreakerThreshold   int
 	BreakerCooldownSec int
+	// Approval asks a human about dead-lettered tasks. Off unless asked for.
+	Approval           bool
+	ApprovalTimeoutSec int
+	ApprovalAgents     []string
 	Model              string
 	OllamaURL          string
 	MaxTokens          int
@@ -171,6 +202,9 @@ func parseRunFlags(name string, args []string) (*runConfig, error) {
 	agentTypes := fs.String("agent-types", "", "Comma-separated agent types to dispatch (default: static_analysis,quality_scan,file_analysis)")
 	apiKey := fs.String("api-key", "", "Vassago daemon API key (Bearer token)")
 	tlsCert := fs.String("tls-cert", "", "Path to TLS CA certificate for daemon connection")
+	approval := fs.Bool("approval", false, "Ask a human about dead-lettered tasks instead of failing the run")
+	approvalTimeout := fs.Int("approval-timeout", 0, "Seconds a pending approval stays open (default: 900)")
+	approvalAgents := fs.String("approval-agents", "", "Comma-separated allowlist of who may answer an approval")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -196,6 +230,9 @@ func parseRunFlags(name string, args []string) (*runConfig, error) {
 		OllamaURL:          envOr("GAAP_OLLAMA_URL", *ollamaURL, "http://localhost:11434/v1"),
 		MaxTokens:          atoiOr(envOr("GAAP_MAX_TOKENS", "", ""), *maxTokens, 4096),
 		Temperature:        atofOr(envOr("GAAP_TEMPERATURE", "", ""), *temperature, 0.1),
+		Approval:           *approval || os.Getenv("GAAP_APPROVAL") != "",
+		ApprovalTimeoutSec: atoiOr(envOr("GAAP_APPROVAL_TIMEOUT", "", ""), *approvalTimeout, 900),
+		ApprovalAgents:     splitList(envOr("GAAP_APPROVAL_AGENTS", *approvalAgents, "")),
 		APIKey:             envOr("GAAP_API_KEY", *apiKey, ""),
 		TLSCert:            envOr("GAAP_TLS_CERT", *tlsCert, ""),
 	}
@@ -270,6 +307,15 @@ func run(args []string) error {
 		FailureMode:        rc.FailureMode,
 		BreakerThreshold:   rc.BreakerThreshold,
 		BreakerCooldownSec: rc.BreakerCooldownSec,
+		Approval: gaap.ApprovalPolicy{
+			Enabled: rc.Approval,
+			Timeout: time.Duration(rc.ApprovalTimeoutSec) * time.Second,
+			Agents:  rc.ApprovalAgents,
+		},
+	}
+	if rc.Approval {
+		slog.Info("approval loop enabled: dead-lettered tasks will wait for a human",
+			"timeout_sec", rc.ApprovalTimeoutSec)
 	}
 	orchestrator := gaap.NewOrchestrator(ctx, orchestratorCfg, daemonClient, decomposer)
 	orchestrator.SetSynthesisChatFn(chatFn) // LLM synthesis with schema fallback
