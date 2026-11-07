@@ -48,6 +48,15 @@ type Config struct {
 
 	// FailureMode decides what one failed task does to the run.
 	FailureMode FailureMode `yaml:"failure_mode"`
+
+	// BreakerThreshold is how many dead-lettered tasks for one agent type, inside
+	// the cooldown window, open that type's circuit breaker. Zero disables
+	// breakers entirely (the default): a breaker stops dispatch to an agent type
+	// mid-run, which should be a decision an operator makes, not a surprise.
+	BreakerThreshold int `yaml:"breaker_threshold"`
+	// BreakerCooldownSec is how long an open breaker refuses dispatch, and the
+	// window failures are counted in. Defaults to 60 when breakers are on.
+	BreakerCooldownSec int `yaml:"breaker_cooldown_sec"`
 }
 
 // ErrOrchestrationFailed is returned when a run finishes with at least one
@@ -111,6 +120,12 @@ func NewOrchestrator(ctx context.Context, cfg *Config, daemon MnemoClient, decom
 		dag:            NewDAG(),
 		state:          &IdleState{},
 		digestMaxChars: defaultDigestMaxChars,
+	}
+	if o.cfg.BreakerThreshold > 0 {
+		if o.cfg.BreakerCooldownSec <= 0 {
+			o.cfg.BreakerCooldownSec = 60
+		}
+		o.breakerRegistry = make(map[string]*CircuitBreaker)
 	}
 	return o
 }
@@ -499,9 +514,52 @@ func (o *Orchestrator) handleTaskEvent(evt taskEvent) {
 		o.loadWorkerResult(evt.ResultKey, node)
 		slog.Info(evt.Source+": task completed",
 			"id", evt.ID, "old_status", oldStatus, "new_status", node.Status)
+		o.recordBreakerSuccess(node.AgentType)
 		o.fireTaskCompleted(evt.ID, evt.Source)
 	case status.TaskDeadLetter:
+		// The breaker counts terminal failures, not retries: a task that failed
+		// twice and then succeeded is not evidence the agent type is broken.
+		o.recordBreakerFailure(node.AgentType)
 		o.failTask(node, evt.RetryCount, evt.Source)
+	}
+}
+
+// breakerFor returns the circuit breaker for an agent type, creating it on first
+// use. nil means breakers are off. Created lazily because the set of agent types
+// is a property of the decomposition, which does not exist when the orchestrator
+// is constructed.
+func (o *Orchestrator) breakerFor(agentType string) *CircuitBreaker {
+	if o.breakerRegistry == nil || agentType == "" {
+		return nil
+	}
+	if cb, ok := o.breakerRegistry[agentType]; ok {
+		return cb
+	}
+	cb := NewCircuitBreaker(agentType, o.cfg.BreakerThreshold,
+		time.Duration(o.cfg.BreakerCooldownSec)*time.Second)
+	o.breakerRegistry[agentType] = cb
+	return cb
+}
+
+// recordBreakerFailure opens the agent type's breaker once its dead-letter count
+// reaches the threshold. A tripped type is not dispatched to again until its
+// cooldown expires.
+func (o *Orchestrator) recordBreakerFailure(agentType string) {
+	cb := o.breakerFor(agentType)
+	if cb == nil {
+		return
+	}
+	cb.RecordFailure()
+	if cb.State() == StateOpen {
+		slog.Warn("circuit breaker opened, no further dispatch to this agent type",
+			"agent_type", agentType, "failures", cb.FailureCount())
+	}
+}
+
+// recordBreakerSuccess lets a successful probe close a half-open breaker.
+func (o *Orchestrator) recordBreakerSuccess(agentType string) {
+	if cb := o.breakerFor(agentType); cb != nil {
+		cb.RecordSuccess()
 	}
 }
 

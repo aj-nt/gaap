@@ -13,6 +13,8 @@
 //		--timeout int   Max wait for workers in seconds (default: 300)
 //		--subscribe     Enable push-based task updates via gRPC (falls back to polling)
 //		--fail-fast     Stop the run at the first task failure (default: let other branches finish)
+//		--breaker-threshold int  Open an agent type's circuit breaker after N dead-lettered tasks (0 = off)
+//		--breaker-cooldown int   Seconds an open breaker refuses dispatch (default: 60)
 //	 --agent-types string  Comma-separated agent types (default: static_analysis,quality_scan,file_analysis)
 //		--api-key string      Vassago daemon API key (Bearer token)
 //		--tls-cert string     Path to TLS CA certificate for daemon connection
@@ -88,8 +90,11 @@ Usage:
   gaap resume [--addr <daemon>] [--api-key <key>] [--tls-cert <path>] <run-key>
   gaap govern decide --policy <file> --subject <id> --tool <name> [--args <json>]
   gaap govern erase --subject <id> [--reason <code>]
-  gaap ledger verify <path>
+  gaap govern kill --scope <agent-id|global> [--reason <code>]
+  gaap govern status
+  gaap ledger verify [--state <dir>] <path>
   gaap ledger tail [--n N] <path>
+  gaap ledger export --out <file> <path>
   gaap version
 
 Run flags:
@@ -99,6 +104,8 @@ Run flags:
   --timeout int     Max wait for workers in seconds (default: 300)
   --subscribe       Enable push-based task updates via gRPC (falls back to polling)
   --fail-fast       Stop the run at the first task failure (default: finish other branches)
+  --breaker-threshold int  Open an agent type's circuit breaker after N dead-lettered tasks (default: 0 = off)
+  --breaker-cooldown int   Seconds an open breaker refuses dispatch (default: 60 when breakers are on)
   --agent-types string  Comma-separated agent types (default: static_analysis,quality_scan,file_analysis)
   --api-key string      Vassago daemon API key (Bearer token)
   --tls-cert string     Path to TLS CA certificate for daemon connection
@@ -119,13 +126,17 @@ type runConfig struct {
 	DryRun          bool
 	Subscribe       bool
 	FailureMode     gaap.FailureMode
-	Model           string
-	OllamaURL       string
-	MaxTokens       int
-	Temperature     float64
-	AgentTypes      []string
-	APIKey          string
-	TLSCert         string
+	// BreakerThreshold/BreakerCooldownSec enable per-agent-type circuit breakers
+	// for the run; zero threshold leaves them off.
+	BreakerThreshold   int
+	BreakerCooldownSec int
+	Model              string
+	OllamaURL          string
+	MaxTokens          int
+	Temperature        float64
+	AgentTypes         []string
+	APIKey             string
+	TLSCert            string
 }
 
 // failureMode resolves the run's failure policy. The flag wins over the
@@ -155,6 +166,8 @@ func parseRunFlags(name string, args []string) (*runConfig, error) {
 	temperature := fs.Float64("temperature", 0, "LLM temperature, 0.0-1.0 (default: 0.1)")
 	subscribe := fs.Bool("subscribe", false, "Use gRPC subscription for push-based task updates (falls back to polling)")
 	failFast := fs.Bool("fail-fast", false, "Stop the run at the first task failure instead of letting other branches finish")
+	breakerThreshold := fs.Int("breaker-threshold", 0, "Open an agent type's circuit breaker after N dead-lettered tasks (default: 0 = off)")
+	breakerCooldown := fs.Int("breaker-cooldown", 0, "Seconds an open breaker refuses dispatch (default: 60 when breakers are on)")
 	agentTypes := fs.String("agent-types", "", "Comma-separated agent types to dispatch (default: static_analysis,quality_scan,file_analysis)")
 	apiKey := fs.String("api-key", "", "Vassago daemon API key (Bearer token)")
 	tlsCert := fs.String("tls-cert", "", "Path to TLS CA certificate for daemon connection")
@@ -169,20 +182,22 @@ func parseRunFlags(name string, args []string) (*runConfig, error) {
 	}
 
 	cfg := &runConfig{
-		Goal:            goal,
-		DaemonAddr:      envOr("GAAP_DAEMON_ADDR", *addr, "localhost:50051"),
-		RepoPath:        envOr("GAAP_REPO", *repo, ""),
-		MaxWaitSec:      atoiOr(envOr("GAAP_TIMEOUT", "", ""), *timeout, 300),
-		PollIntervalSec: 5,
-		DryRun:          *dryRun,
-		Subscribe:       *subscribe,
-		FailureMode:     failureMode(*failFast, os.Getenv("GAAP_FAILURE_MODE")),
-		Model:           envOr("GAAP_MODEL", *model, "glm-5.1:cloud"),
-		OllamaURL:       envOr("GAAP_OLLAMA_URL", *ollamaURL, "http://localhost:11434/v1"),
-		MaxTokens:       atoiOr(envOr("GAAP_MAX_TOKENS", "", ""), *maxTokens, 4096),
-		Temperature:     atofOr(envOr("GAAP_TEMPERATURE", "", ""), *temperature, 0.1),
-		APIKey:          envOr("GAAP_API_KEY", *apiKey, ""),
-		TLSCert:         envOr("GAAP_TLS_CERT", *tlsCert, ""),
+		Goal:               goal,
+		DaemonAddr:         envOr("GAAP_DAEMON_ADDR", *addr, "localhost:50051"),
+		RepoPath:           envOr("GAAP_REPO", *repo, ""),
+		MaxWaitSec:         atoiOr(envOr("GAAP_TIMEOUT", "", ""), *timeout, 300),
+		PollIntervalSec:    5,
+		DryRun:             *dryRun,
+		Subscribe:          *subscribe,
+		FailureMode:        failureMode(*failFast, os.Getenv("GAAP_FAILURE_MODE")),
+		BreakerThreshold:   atoiOr(envOr("GAAP_BREAKER_THRESHOLD", "", ""), *breakerThreshold, 0),
+		BreakerCooldownSec: atoiOr(envOr("GAAP_BREAKER_COOLDOWN", "", ""), *breakerCooldown, 0),
+		Model:              envOr("GAAP_MODEL", *model, "glm-5.1:cloud"),
+		OllamaURL:          envOr("GAAP_OLLAMA_URL", *ollamaURL, "http://localhost:11434/v1"),
+		MaxTokens:          atoiOr(envOr("GAAP_MAX_TOKENS", "", ""), *maxTokens, 4096),
+		Temperature:        atofOr(envOr("GAAP_TEMPERATURE", "", ""), *temperature, 0.1),
+		APIKey:             envOr("GAAP_API_KEY", *apiKey, ""),
+		TLSCert:            envOr("GAAP_TLS_CERT", *tlsCert, ""),
 	}
 	if *agentTypes != "" {
 		cfg.AgentTypes = strings.Split(*agentTypes, ",")
@@ -248,11 +263,13 @@ func run(args []string) error {
 	decomposer := gaap.NewDecomposer(gaap.NewLLMDecomposition(chatFn, catalog))
 
 	orchestratorCfg := &gaap.Config{
-		DaemonAddr:      rc.DaemonAddr,
-		RepoPath:        rc.RepoPath,
-		MaxWaitSec:      rc.MaxWaitSec,
-		PollIntervalSec: rc.PollIntervalSec,
-		FailureMode:     rc.FailureMode,
+		DaemonAddr:         rc.DaemonAddr,
+		RepoPath:           rc.RepoPath,
+		MaxWaitSec:         rc.MaxWaitSec,
+		PollIntervalSec:    rc.PollIntervalSec,
+		FailureMode:        rc.FailureMode,
+		BreakerThreshold:   rc.BreakerThreshold,
+		BreakerCooldownSec: rc.BreakerCooldownSec,
 	}
 	orchestrator := gaap.NewOrchestrator(ctx, orchestratorCfg, daemonClient, decomposer)
 	orchestrator.SetSynthesisChatFn(chatFn) // LLM synthesis with schema fallback
@@ -303,6 +320,11 @@ type resumeConfig struct {
 	Temperature float64
 	AgentTypes  []string
 	MaxWaitSec  int
+	// Breakers are not part of the persisted run state, so a resumed run has to
+	// be told about them again — otherwise a guard the operator turned on
+	// disappears exactly when the run is recovering.
+	BreakerThreshold   int
+	BreakerCooldownSec int
 }
 
 // parseResumeFlags parses "gaap resume [--addr <daemon>] [--api-key <key>] [--tls-cert <path>] <run-key>".
@@ -319,6 +341,8 @@ func parseResumeFlags(name string, args []string) (*resumeConfig, error) {
 	temperature := fs.Float64("temperature", 0, "LLM temperature, 0.0-1.0 (default: 0.1)")
 	agentTypes := fs.String("agent-types", "", "Comma-separated agent types to dispatch (default: static_analysis,quality_scan,file_analysis)")
 	timeout := fs.Int("timeout", 0, "Max wait for workers in seconds (default: 300)")
+	breakerThreshold := fs.Int("breaker-threshold", 0, "Open an agent type's circuit breaker after N dead-lettered tasks (default: 0 = off)")
+	breakerCooldown := fs.Int("breaker-cooldown", 0, "Seconds an open breaker refuses dispatch (default: 60 when breakers are on)")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -330,15 +354,17 @@ func parseResumeFlags(name string, args []string) (*resumeConfig, error) {
 	}
 
 	cfg := &resumeConfig{
-		RunKey:      runKey,
-		DaemonAddr:  envOr("GAAP_DAEMON_ADDR", *addr, "localhost:50051"),
-		APIKey:      envOr("GAAP_API_KEY", *apiKey, ""),
-		TLSCert:     envOr("GAAP_TLS_CERT", *tlsCert, ""),
-		Model:       envOr("GAAP_MODEL", *model, "glm-5.1:cloud"),
-		OllamaURL:   envOr("GAAP_OLLAMA_URL", *ollamaURL, "http://localhost:11434/v1"),
-		MaxTokens:   atoiOr(envOr("GAAP_MAX_TOKENS", "", ""), *maxTokens, 4096),
-		Temperature: atofOr(envOr("GAAP_TEMPERATURE", "", ""), *temperature, 0.1),
-		MaxWaitSec:  atoiOr(envOr("GAAP_TIMEOUT", "", ""), *timeout, 300),
+		RunKey:             runKey,
+		DaemonAddr:         envOr("GAAP_DAEMON_ADDR", *addr, "localhost:50051"),
+		APIKey:             envOr("GAAP_API_KEY", *apiKey, ""),
+		TLSCert:            envOr("GAAP_TLS_CERT", *tlsCert, ""),
+		Model:              envOr("GAAP_MODEL", *model, "glm-5.1:cloud"),
+		OllamaURL:          envOr("GAAP_OLLAMA_URL", *ollamaURL, "http://localhost:11434/v1"),
+		MaxTokens:          atoiOr(envOr("GAAP_MAX_TOKENS", "", ""), *maxTokens, 4096),
+		Temperature:        atofOr(envOr("GAAP_TEMPERATURE", "", ""), *temperature, 0.1),
+		MaxWaitSec:         atoiOr(envOr("GAAP_TIMEOUT", "", ""), *timeout, 300),
+		BreakerThreshold:   atoiOr(envOr("GAAP_BREAKER_THRESHOLD", "", ""), *breakerThreshold, 0),
+		BreakerCooldownSec: atoiOr(envOr("GAAP_BREAKER_COOLDOWN", "", ""), *breakerCooldown, 0),
 	}
 	if *agentTypes != "" {
 		cfg.AgentTypes = strings.Split(*agentTypes, ",")
@@ -414,10 +440,12 @@ func resume(args []string) error {
 	}
 
 	orchestratorCfg := &gaap.Config{
-		DaemonAddr:      rc.DaemonAddr,
-		RepoPath:        rs.RepoPath,
-		MaxWaitSec:      rc.MaxWaitSec,
-		PollIntervalSec: 5,
+		DaemonAddr:         rc.DaemonAddr,
+		RepoPath:           rs.RepoPath,
+		MaxWaitSec:         rc.MaxWaitSec,
+		PollIntervalSec:    5,
+		BreakerThreshold:   rc.BreakerThreshold,
+		BreakerCooldownSec: rc.BreakerCooldownSec,
 	}
 	orchestrator := gaap.NewOrchestrator(ctx, orchestratorCfg, daemonClient, nil)
 
