@@ -13,7 +13,7 @@ import (
 func TestPromptStatesTheWorkingDirectory(t *testing.T) {
 	const workdir = "/Users/aj/Documents/repos/gaap"
 
-	prompt := buildExecutionPrompt("inventory the Go files", `{"source_path":"/tmp/x/main.go"}`, workdir)
+	prompt := buildExecutionPrompt("inventory the Go files", `{"source_path":"/tmp/x/main.go"}`, workdir, 20)
 
 	if !strings.Contains(prompt, workdir) {
 		t.Fatalf("prompt does not name the working directory %q:\n%s", workdir, prompt)
@@ -30,7 +30,7 @@ func TestPromptStatesTheWorkingDirectory(t *testing.T) {
 // TestPromptWithoutWorkdirSaysSo: a run with no repo path still must not let the
 // model invent one. It is told to find out rather than assume.
 func TestPromptWithoutWorkdirSaysSo(t *testing.T) {
-	prompt := buildExecutionPrompt("inventory the Go files", "{}", "")
+	prompt := buildExecutionPrompt("inventory the Go files", "{}", "", 20)
 
 	if !strings.Contains(prompt, "pwd") {
 		t.Fatalf("prompt should tell the model to run pwd when the directory is unknown:\n%s", prompt)
@@ -46,7 +46,7 @@ func TestPromptWithoutWorkdirSaysSo(t *testing.T) {
 func TestGenericPromptMentionsWorkdir(t *testing.T) {
 	const workdir = "/Users/aj/Documents/repos/gaap"
 
-	prompt := buildExecutionPrompt("inventory the Go files", "{}", workdir)
+	prompt := buildExecutionPrompt("inventory the Go files", "{}", workdir, 20)
 
 	if !strings.Contains(prompt, workdir) {
 		t.Fatalf("generic prompt does not name the working directory:\n%s", prompt)

@@ -16,8 +16,14 @@ import (
 )
 
 // allowedCommands is the set of commands workers are permitted to run.
-// Only the first word of a CMD: line is checked against this list.
-// Commands with pipes/redirects still use sh -c, but the first word gates access.
+// Every simple command in a CMD: line (split on unquoted ; && || | and
+// newlines) is checked: its program word must appear here.
+//
+// This is a blast-radius limiter, not a security boundary: python3, node and
+// sh are on the list, so a worker that wants to do something is never more
+// than one line away from doing it. Its job is to keep the honest model on
+// read-only tools and to make the intent of a command legible, not to contain
+// a hostile one.
 var allowedCommands = map[string]bool{
 	// File discovery and inspection
 	"find": true,
@@ -56,27 +62,61 @@ var allowedCommands = map[string]bool{
 	// Scripting (limited)
 	"python3": true,
 	"node":    true,
-	"sh":      true, // needed for pipelines; guarded by pattern checks
+	"sh":      true, // needed for pipelines; guarded per-segment below
 
-	// Source control (read-only)
+	// Source control (read-only subcommands only)
 	"git": true,
 }
 
-// blockedPatterns are substrings that, if present anywhere in the command,
-// cause it to be rejected. These catch destructive operations regardless
-// of which tool name is used.
-var blockedPatterns = []string{
-	"rm ", "rm\t", "rmdir", "chmod", "chown", "chgrp",
-	"kill", "killall", "pkill", "shutdown", "reboot", "halt",
-	"sudo ", "su ", "doas ",
-	"> /dev/", "dd if=", "mkfs", "mount ", "umount",
-	"curl ", "wget ", "nc ", "ncat ",
-	"git push", "git commit", "git tag", "git branch -D", "git branch -d",
-	"openssl", "ssh ", "scp ", "sftp ",
-	"~/.ssh", "~/.aws", "/etc/passwd", "/etc/shadow",
-	"| sh", "| bash", "| zsh",
+// shellInterpreters are allowed as the first word of a command but not as the
+// target of a pipe — `echo x | sh` executes arbitrary text, which is the whole
+// reason the pipeline form is refused.
+var shellInterpreters = map[string]bool{"sh": true, "bash": true, "zsh": true}
+
+// findExecSafe is the set of programs a `find -exec` may invoke. `find
+// -exec <prog>` is the only form of find that reports per-file facts (sizes,
+// line counts), so it has to be allowed; what actually matters is <prog>.
+var findExecSafe = map[string]bool{
+	"wc": true, "grep": true, "cat": true, "head": true, "tail": true,
+	"du": true, "file": true, "stat": true, "echo": true, "printf": true,
+	"sort": true, "md5sum": true, "shasum": true, "cmp": true, "diff": true,
+	"basename": true, "dirname": true, "tee": false, // tee writes, listed to stay explicit
+}
+
+// gitReadOnly is the set of git subcommands that cannot move a ref, write the
+// index, or touch the network.
+var gitReadOnly = map[string]bool{
+	"status": true, "log": true, "diff": true, "show": true,
+	"rev-parse": true, "ls-files": true, "grep": true, "blame": true,
+	"describe": true, "cat-file": true, "shortlog": true,
+	"for-each-ref": true, "name-rev": true,
+	"branch": true, "tag": true, "remote": true, // read-only forms only, see below
+}
+
+// gitWriteFlags are the flags that turn an otherwise read-only subcommand into
+// a write, so `git branch -D x` and `git tag -a v1` stay blocked.
+var gitWriteFlags = map[string]map[string]bool{
+	"branch": {
+		"-d": true, "-D": true, "-m": true, "-M": true, "-f": true,
+		"--delete": true, "--move": true, "--force": true, "--set-upstream-to": true,
+	},
+	"tag": {
+		"-a": true, "-d": true, "-f": true, "-m": true, "-s": true,
+		"--annotate": true, "--delete": true, "--force": true, "--sign": true,
+	},
+}
+
+// gitRemoteReadOnly are the sub-forms of `git remote` that only read.
+var gitRemoteReadOnly = map[string]bool{
+	"-v": true, "--verbose": true, "show": true, "get-url": true,
+}
+
+// sensitiveTokens are substrings that must not appear in a command argument.
+// They are matched against tokens, never against the whole command string, so
+// a grep pattern or an echo string that merely names a path is not a violation.
+var sensitiveTokens = []string{
+	"~/.ssh", ".ssh/id_", "~/.aws", "/etc/passwd", "/etc/shadow",
 	".bashrc", ".zshrc", ".profile",
-	"eval ", "exec ",
 }
 
 // ChatClient is the interface the executor uses to communicate with an LLM.
@@ -88,29 +128,310 @@ type ChatClient interface {
 
 // commandAllowed checks whether a shell command string is safe to execute.
 // Returns nil if allowed, or an error explaining why it was blocked.
+//
+// The command is split into simple commands and each one is checked on its own
+// program word and arguments. The earlier implementation scanned the whole
+// string for substrings, which had both failure modes at once: it blocked
+// `find -exec wc -l` (the correct command for "file sizes") because the
+// pattern list contained "exec ", and grepping a repository for its kill
+// switch because the list contained "kill" — which a model can walk around by
+// writing 'k'+'i'+'l'+'l', as one did.
 func commandAllowed(shellCmd string) error {
-	cmd := strings.TrimSpace(shellCmd)
+	checked := 0
+	for i, segment := range splitSimpleCommands(shellCmd) {
+		tokens := shellTokens(segment)
+		for len(tokens) > 0 && isEnvAssignment(tokens[0]) {
+			tokens = tokens[1:]
+		}
+		if len(tokens) == 0 {
+			continue
+		}
+		checked++
 
-	// Empty command passes nothing to exec but isn't useful — reject cleanly
-	if cmd == "" {
-		return fmt.Errorf("command blocked: empty")
-	}
-
-	// Check blocked patterns first — these are unconditional rejections
-	cmdLower := strings.ToLower(cmd)
-	for _, pattern := range blockedPatterns {
-		if strings.Contains(cmdLower, pattern) {
-			return fmt.Errorf("command blocked: contains %q", pattern)
+		prog := tokens[0]
+		if !allowedCommands[prog] {
+			return fmt.Errorf("command %q is not in the allowlist", prog)
+		}
+		if i > 0 && shellInterpreters[prog] {
+			return fmt.Errorf("command blocked: piping into %q runs arbitrary text", prog)
+		}
+		if err := checkArguments(prog, tokens); err != nil {
+			return err
 		}
 	}
 
-	// Check that the first word is in our allowlist
-	firstWord := strings.Fields(cmd)[0]
-	if !allowedCommands[firstWord] {
-		return fmt.Errorf("command %q is not in the allowlist", firstWord)
+	if checked == 0 {
+		return fmt.Errorf("command blocked: empty")
+	}
+	return nil
+}
+
+// checkArguments applies the per-program rules that a first-word allowlist
+// cannot express, plus the checks that apply to every program.
+func checkArguments(prog string, tokens []string) error {
+	switch prog {
+	case "find":
+		for j := 1; j < len(tokens); j++ {
+			switch tokens[j] {
+			case "-exec", "-execdir", "-ok", "-okdir":
+				if j+1 >= len(tokens) {
+					return fmt.Errorf("command blocked: find %s with no program after it", tokens[j])
+				}
+				target := tokens[j+1]
+				if !findExecSafe[target] {
+					return fmt.Errorf("command blocked: find %s %s", tokens[j], target)
+				}
+			}
+		}
+
+	case "sed":
+		for _, t := range tokens[1:] {
+			if t == "-i" || strings.HasPrefix(t, "-i.") || strings.HasPrefix(t, "--in-place") {
+				return fmt.Errorf("command blocked: sed edits in place (%q)", t)
+			}
+		}
+
+	case "git":
+		if len(tokens) < 2 {
+			return nil // bare `git` prints usage
+		}
+		sub := tokens[1]
+		if !gitReadOnly[sub] {
+			return fmt.Errorf("command blocked: git %q is not a read-only subcommand", sub)
+		}
+		for _, t := range tokens[2:] {
+			if gitWriteFlags[sub][t] {
+				return fmt.Errorf("command blocked: git %s %q writes", sub, t)
+			}
+		}
+		if sub == "remote" && len(tokens) > 2 && !gitRemoteReadOnly[tokens[2]] {
+			return fmt.Errorf("command blocked: git remote %q is not read-only", tokens[2])
+		}
 	}
 
+	for _, t := range tokens[1:] {
+		if err := checkDeviceWrite(t); err != nil {
+			return err
+		}
+		for _, s := range sensitiveTokens {
+			if strings.Contains(t, s) {
+				return fmt.Errorf("command blocked: %q references %q", t, s)
+			}
+		}
+	}
 	return nil
+}
+
+// checkDeviceWrite blocks redirects at block devices while leaving /dev/null
+// alone. The old check banned the substring "> /dev/", which also banned
+// `2>/dev/null` — a thing every shell script does.
+func checkDeviceWrite(token string) error {
+	const prefix = "/dev/"
+	idx := strings.Index(token, prefix)
+	if idx < 0 {
+		return nil
+	}
+	rest := token[idx+len(prefix):]
+	if k := strings.IndexAny(rest, ";|&\"'<>"); k >= 0 {
+		rest = rest[:k]
+	}
+	switch {
+	case rest == "null", rest == "stdout", rest == "stderr", rest == "stdin":
+		return nil
+	case strings.HasPrefix(rest, "fd/"):
+		return nil
+	}
+	return fmt.Errorf("command blocked: writes to device %q", token)
+}
+
+// splitSimpleCommands splits a command line into simple commands on unquoted,
+// unescaped ; && || | & and newlines. Heredoc bodies are skipped entirely: they
+// are data, and treating a line of python as a shell command is how a filter
+// ends up lying about what it checked.
+func splitSimpleCommands(cmd string) []string {
+	var out []string
+	var cur strings.Builder
+	runes := []rune(cmd)
+
+	flush := func() {
+		out = append(out, cur.String())
+		cur.Reset()
+	}
+
+	var quote rune
+	heredocDelim := ""
+	inHeredoc := false
+	heredocPending := false
+
+	i := 0
+	for i < len(runes) {
+		r := runes[i]
+
+		if inHeredoc {
+			j := i
+			for j < len(runes) && runes[j] != '\n' {
+				j++
+			}
+			if strings.TrimSpace(string(runes[i:j])) == heredocDelim {
+				inHeredoc = false
+				heredocDelim = ""
+			}
+			i = j + 1
+			continue
+		}
+
+		if quote != 0 {
+			cur.WriteRune(r)
+			if r == quote {
+				quote = 0
+			}
+			i++
+			continue
+		}
+
+		switch r {
+		case '\'', '"':
+			quote = r
+			cur.WriteRune(r)
+			i++
+		case '\\':
+			cur.WriteRune(r)
+			if i+1 < len(runes) {
+				cur.WriteRune(runes[i+1])
+				i += 2
+			} else {
+				i++
+			}
+		case '\n':
+			flush()
+			if heredocPending {
+				heredocPending = false
+				inHeredoc = heredocDelim != ""
+			}
+			i++
+		case ';', '&', '|':
+			// `2>&1` is an fd duplication, not a background separator.
+			if r == '&' && i+1 < len(runes) && runes[i+1] >= '0' && runes[i+1] <= '9' {
+				cur.WriteRune(r)
+				i++
+				continue
+			}
+			flush()
+			if i+1 < len(runes) && runes[i+1] == r {
+				i++ // && or ||
+			}
+			i++
+		case '<':
+			if i+1 < len(runes) && runes[i+1] == '<' {
+				i += 2
+				if i < len(runes) && runes[i] == '-' {
+					i++
+				}
+				for i < len(runes) && (runes[i] == ' ' || runes[i] == '	') {
+					i++
+				}
+				var delim strings.Builder
+				var dq rune
+				for i < len(runes) {
+					c := runes[i]
+					if dq != 0 {
+						if c == dq {
+							dq = 0
+							i++
+							continue
+						}
+						delim.WriteRune(c)
+						i++
+						continue
+					}
+					if c == '\'' || c == '"' {
+						dq = c
+						i++
+						continue
+					}
+					if c == ' ' || c == '	' || c == '\n' || c == ';' || c == '|' || c == '&' {
+						break
+					}
+					delim.WriteRune(c)
+					i++
+				}
+				heredocDelim = delim.String()
+				heredocPending = true
+				cur.WriteString("<<")
+				continue
+			}
+			cur.WriteRune(r)
+			i++
+		default:
+			cur.WriteRune(r)
+			i++
+		}
+	}
+	flush()
+	return out
+}
+
+// shellTokens splits one simple command into words, honouring single and double
+// quotes and backslash escapes, and stripping the quotes. No expansion is
+// performed — a token is the literal text the shell would receive.
+func shellTokens(s string) []string {
+	var toks []string
+	var cur strings.Builder
+
+	flush := func() {
+		if cur.Len() > 0 {
+			toks = append(toks, cur.String())
+			cur.Reset()
+		}
+	}
+
+	runes := []rune(s)
+	var quote rune
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+				continue
+			}
+			cur.WriteRune(r)
+			continue
+		}
+		switch r {
+		case '\'', '"':
+			quote = r
+		case '\\':
+			if i+1 < len(runes) {
+				i++
+				cur.WriteRune(runes[i])
+			}
+		case ' ', '	', '\n', '\r':
+			flush()
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	flush()
+	return toks
+}
+
+// isEnvAssignment reports whether a token is a leading NAME=value prefix.
+func isEnvAssignment(tok string) bool {
+	eq := strings.Index(tok, "=")
+	if eq <= 0 {
+		return false
+	}
+	for i, r := range tok[:eq] {
+		switch {
+		case r == '_':
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9' && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // Executor runs a single task via the CMD:/DONE:/FAIL: protocol.
@@ -144,6 +465,9 @@ type ExecuteResult struct {
 // Execute runs the CMD:/DONE:/FAIL: protocol against a task from the daemon.
 func (e *Executor) Execute(ctx context.Context, task *client.TaskEntry, repoPath string) *ExecuteResult {
 	t0 := time.Now()
+	// attempt is 1-based: RetryCount is how many times the task has already
+	// been claimed and failed, so the first execution is attempt 1.
+	attempt := int(task.RetryCount) + 1
 
 	// Parse task context for repo_path
 	contextStr := task.Context
@@ -161,7 +485,7 @@ func (e *Executor) Execute(ctx context.Context, task *client.TaskEntry, repoPath
 
 	messages := []ollama.Message{{
 		Role:    "user",
-		Content: buildExecutionPrompt(task.Goal, contextStr, repoPath),
+		Content: buildExecutionPrompt(task.Goal, contextStr, repoPath, e.maxTurns),
 	}}
 
 	findings := make(map[string]any)
@@ -190,11 +514,11 @@ func (e *Executor) Execute(ctx context.Context, task *client.TaskEntry, repoPath
 		switch {
 		case strings.HasPrefix(text, "CMD:"):
 			cmd := strings.TrimSpace(text[4:])
-			slog.Info("worker: running command", "turn", turn, "cmd", truncate(cmd, 80))
+			slog.Info("worker: running command", "id", task.Id, "attempt", attempt, "turn", turn, "cmd", truncate(cmd, 80))
 
 			// Security check — reject dangerous commands before execution
 			if allowErr := commandAllowed(cmd); allowErr != nil {
-				slog.Warn("worker: command blocked", "turn", turn, "cmd", truncate(cmd, 80), "reason", allowErr)
+				slog.Warn("worker: command blocked", "id", task.Id, "attempt", attempt, "turn", turn, "cmd", truncate(cmd, 80), "reason", allowErr)
 				response := fmt.Sprintf("BLOCKED: %s\n\nAvailable tools: find, ls, grep, cat, head, tail, wc, sort, go, golangci-lint, gosec, govulncheck, git (read-only), awk, sed (read-only), python3, node, echo, which, file, diff, du, stat, cd, pwd", allowErr)
 				messages = append(messages, ollama.Message{Role: "user", Content: response})
 				findings[truncate(cmd, 60)] = map[string]any{
@@ -222,7 +546,7 @@ func (e *Executor) Execute(ctx context.Context, task *client.TaskEntry, repoPath
 
 		case strings.HasPrefix(text, "DONE:"):
 			summary := strings.TrimSpace(text[5:])
-			slog.Info("worker: task DONE", "id", task.Id, "summary", truncate(summary, 100), "turns", turn)
+			slog.Info("worker: task DONE", "id", task.Id, "attempt", attempt, "summary", truncate(summary, 100), "turns", turn)
 			return &ExecuteResult{
 				TaskID:      task.Id,
 				AgentType:   task.AgentType,
@@ -237,7 +561,7 @@ func (e *Executor) Execute(ctx context.Context, task *client.TaskEntry, repoPath
 
 		case strings.HasPrefix(text, "FAIL:"):
 			reason := strings.TrimSpace(text[5:])
-			slog.Warn("worker: task FAIL", "id", task.Id, "reason", truncate(reason, 100), "turns", turn)
+			slog.Warn("worker: task FAIL", "id", task.Id, "attempt", attempt, "reason", truncate(reason, 100), "turns", turn)
 			return &ExecuteResult{
 				TaskID:     task.Id,
 				Status:     status.ResultFailed,
@@ -249,6 +573,9 @@ func (e *Executor) Execute(ctx context.Context, task *client.TaskEntry, repoPath
 			}
 
 		default:
+			// Burning a turn on an unparseable response is invisible unless it
+			// is logged: the model said something, nobody recorded what.
+			slog.Warn("worker: unparseable response", "id", task.Id, "attempt", attempt, "turn", turn, "max_turns", e.maxTurns, "text", truncate(text, 80))
 			messages = append(messages, ollama.Message{
 				Role:    "user",
 				Content: "Respond with CMD:, DONE:, or FAIL:",
@@ -256,6 +583,7 @@ func (e *Executor) Execute(ctx context.Context, task *client.TaskEntry, repoPath
 		}
 	}
 
+	slog.Warn("worker: turn budget exhausted", "id", task.Id, "attempt", attempt, "max_turns", e.maxTurns)
 	return &ExecuteResult{
 		TaskID:     task.Id,
 		Status:     status.ResultFailed,
@@ -335,10 +663,28 @@ paths ("." / "./internal/..."), not absolute paths you have invented. If you nee
 to confirm, run pwd. Do not assume a path such as /workspace.`, workdir)
 }
 
+// turnBudget returns the budget to state in the prompt and the turn after
+// which to ask the model to start concluding. A quarter of the budget is
+// reserved for writing up what was gathered, so a 20-turn run is told to wrap
+// at 15 and a 40-turn run at 30. The prompts used to hardcode those numbers,
+// which meant a run configured for 40 turns was told it had 20.
+func turnBudget(maxTurns int) (total, wrapAt int) {
+	if maxTurns <= 0 {
+		maxTurns = 20
+	}
+	wrapAt = maxTurns - (maxTurns+3)/4
+	if wrapAt < 1 {
+		wrapAt = 1
+	}
+	return maxTurns, wrapAt
+}
+
 // buildExecutionPrompt constructs the system+user prompt for task execution.
 // If context.source_path points to a file (not a directory), the prompt
 // directs the worker to read the target file directly in the first turn.
-func buildExecutionPrompt(goal, contextStr, workdir string) string {
+func buildExecutionPrompt(goal, contextStr, workdir string, maxTurns int) string {
+	total, wrapAt := turnBudget(maxTurns)
+
 	// Detect file-specific goals from context
 	var isFileGoal bool
 	if contextStr != "" {
@@ -370,7 +716,7 @@ RULES:
 - Use head/tail to limit large output.
 - Never run destructive commands. Only analysis and inspection tools.
 - Commands timeout after 60 seconds.
-- You have a budget of 10 turns. After turn 7, start wrapping up.
+- You have a budget of %d turns. After turn %d, start wrapping up.
 - When you have enough data to answer, DONE: immediately.
 - Analyze output before issuing the next command.
 - If a command is blocked, try a different approach — don't retry the same one.
@@ -383,7 +729,7 @@ CONTEXT:
 GOAL:
 %s
 
-Start now: read the target file.`, workingDirectoryBlock(workdir), contextStr, goal)
+Start now: read the target file.`, workingDirectoryBlock(workdir), total, wrapAt, contextStr, goal)
 	}
 
 	return fmt.Sprintf(`You are an autonomous worker agent executing a task.
@@ -403,7 +749,7 @@ RULES:
 - Use head/tail to limit large output.
 - Never run destructive commands. Only analysis and inspection tools.
 - Commands timeout after 60 seconds.
-- You have a budget of ~20 turns. After turn 15, start wrapping up.
+- You have a budget of %d turns. After turn %d, start wrapping up.
 - When you have enough data to answer, DONE: immediately.
 - Analyze output before issuing the next command.
 - If a command is blocked, try a different approach — don't retry the same one.
@@ -411,6 +757,7 @@ RULES:
 AVAILABLE TOOLS: find, ls, grep, cat, head, tail, wc, sort, du, file, stat,
 diff, cd, pwd, echo, which, go (build/test/vet/fmt/list), golangci-lint,
 gosec, govulncheck, awk, sed, python3, node, git (status/log/diff/show).
+find with -exec wc -l is allowed and is the fastest way to report file sizes.
 
 CONTEXT:
 %s
@@ -418,7 +765,7 @@ CONTEXT:
 GOAL:
 %s
 
-Start now: output your first CMD: line.`, workingDirectoryBlock(workdir), contextStr, goal)
+Start now: output your first CMD: line.`, workingDirectoryBlock(workdir), total, wrapAt, contextStr, goal)
 }
 
 // fileExtensions is the set of extensions that indicate a file path rather
