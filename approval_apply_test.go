@@ -29,6 +29,10 @@ func openApproval(t *testing.T, cfg *Config) (*Orchestrator, *testDaemon, *Appro
 	_ = o.dag.AddTask(&TaskNode{ID: "t1", Status: status.TaskReady, AgentType: "quality_scan", Goal: "inventory"})
 	_ = o.dag.AddTask(&TaskNode{ID: "leaf", Status: status.TaskBlocked, ParentIDs: []string{"t1"}})
 	o.state = &WaitingState{}
+	// Planning always names the run; the fixture does the same so the tests that
+	// care about a saved state are looking at a run that could be resumed.
+	o.runID = "abc12345"
+	_ = o.SaveRunState(context.Background(), "runstate_inventory_abc12345")
 
 	o.handleTaskEvent(taskEvent{ID: "t1", Status: status.TaskDeadLetter, RetryCount: 2})
 	if err := o.Transition(o.waitVerdict()); err != nil {

@@ -29,6 +29,11 @@ const (
 	// EventSimulate asks the loop to complete the DAG in-process. Used when the
 	// daemon is not connected at all (tests, dry runs).
 	EventSimulate
+	// EventVerdictDue asks the loop for the verdict on a failure it recorded but
+	// could not act on — a branch that died while the run was paused on a
+	// question. Queued rather than dispatched, because the decision belongs on
+	// the loop goroutine like every other verdict.
+	EventVerdictDue
 	// EventApprovalTimeout fires when a pending approval passes its own
 	// deadline. Separate from EventTimeout on purpose: a timer that outlives
 	// the approval it was set for must not be read as the run's clock expiring,
@@ -190,6 +195,13 @@ func (s *WaitingState) Enter(ctx context.Context, o *Orchestrator) error {
 	// Observation runs on its own goroutine and only posts. Everything it finds
 	// is applied by the loop, which is why a poll can no longer race the DAG.
 	o.startWatcher()
+
+	// A branch that failed while the run was paused on a question is still
+	// owed an answer. Nothing else will announce it: the watcher reported it
+	// once, to a phase that could only record it.
+	if len(o.pendingFailures) > 0 {
+		o.post(Event{Type: EventVerdictDue})
+	}
 	return nil
 }
 
@@ -205,6 +217,11 @@ func (s *WaitingState) HandleEvent(ctx context.Context, o *Orchestrator, evt Eve
 	case EventSimulate:
 		o.simulateCompletions()
 		o.autoCompleteSynthesis("sim:synthesis")
+		return o.waitVerdict(), nil
+
+	case EventVerdictDue:
+		// A failure recorded while the run was paused. Deciding it here keeps
+		// every verdict in one place, on the loop goroutine.
 		return o.waitVerdict(), nil
 
 	case EventTimeout:
@@ -237,15 +254,10 @@ func (s *WaitingState) HandleEvent(ctx context.Context, o *Orchestrator, evt Eve
 			}
 		}
 
-		// Terminal: nothing further can happen.
-		if o.dag.AllTasksTerminal() {
-			if failed := o.dag.FailedIDs(); len(failed) > 0 {
-				slog.Warn("tasks failed, transitioning to failed", "failed", failed)
-				return &FailedState{}, nil
-			}
-			slog.Info("all tasks complete, transitioning to synthesizing")
-			return &SynthesizingState{}, nil
-		}
+		// The verdict decides, not this branch: with approval on, a run that
+		// still owes a human an answer has not finished, and deciding here would
+		// end it before the question was asked.
+		return o.waitVerdict(), nil
 
 	case EventTaskFailed:
 		taskID, _ := evt.Payload["task_id"].(string)
@@ -254,13 +266,10 @@ func (s *WaitingState) HandleEvent(ctx context.Context, o *Orchestrator, evt Eve
 		// Digests first: a failure is something the audience-scoped report
 		// should carry, including which dependents it took out.
 		o.emitDigests(ctx)
-		if o.failFast() {
-			slog.Warn("fail_fast: ending run at the first failure", "task_id", taskID)
-			return &FailedState{}, nil
-		}
-		if o.dag.AllTasksTerminal() {
-			return &FailedState{}, nil
-		}
+		// Same rule as a completion: the verdict is the only place that decides
+		// whether a failure ends the run, because it is the only place that knows
+		// a human has been asked.
+		return o.waitVerdict(), nil
 	}
 
 	return nil, nil // Stay waiting
@@ -457,6 +466,7 @@ func (s *ApprovalState) Enter(ctx context.Context, o *Orchestrator) error {
 	// request deadline with no MaxWaitSec behind it.
 	o.startWatcher()
 	o.startApprovalClock(s)
+	o.openQuestion = true
 
 	slog.Info("approving: waiting on a human decision",
 		"task_id", s.Request.TaskID,
@@ -494,11 +504,20 @@ func (s *ApprovalState) HandleEvent(ctx context.Context, o *Orchestrator, evt Ev
 	case EventTaskUpdate:
 		// The daemon keeps talking while the run is paused. Only this task's own
 		// answer is an answer; another branch finishing is not.
-		if evt.Task == nil || evt.Task.ID != s.ApprovalTaskID {
+		if evt.Task == nil {
+			return nil, nil
+		}
+		if evt.Task.ID != s.ApprovalTaskID {
+			// Another branch's news. The run is paused for dispatch, not for
+			// observation: the DAG has to be right when the loop resumes, and the
+			// watcher reports a terminal state exactly once, so an event dropped
+			// here is an event lost. Only the dispatch waits.
+			o.handleTaskEvent(*evt.Task)
 			return nil, nil
 		}
 		switch evt.Task.Status {
 		case status.TaskDone:
+			o.openQuestion = false
 			decision, err := o.loadApprovalDecision(evt.Task.ResultKey)
 			if err != nil {
 				slog.Error("approval: could not read the decision", "task_id", s.Request.TaskID, "error", err)
@@ -508,6 +527,7 @@ func (s *ApprovalState) HandleEvent(ctx context.Context, o *Orchestrator, evt Ev
 		case status.TaskDeadLetter, status.TaskFailed:
 			// max_retries is 0, so a dead-lettered approval is an unanswered
 			// question, not an attempt to retry.
+			o.openQuestion = false
 			slog.Error("approval: the request task died without an answer", "task_id", s.Request.TaskID)
 			return &FailedState{}, nil
 		}
@@ -517,6 +537,7 @@ func (s *ApprovalState) HandleEvent(ctx context.Context, o *Orchestrator, evt Ev
 		// whose deadline is longer than MaxWaitSec parks the loop in this phase
 		// with nothing left to observe — a blocked run wearing a question's
 		// clothes.
+		o.openQuestion = false
 		o.withdrawApprovalRequest(s)
 		slog.Error("approval: the run timed out while waiting for a decision",
 			"task_id", s.Request.TaskID, "max_wait_sec", o.cfg.MaxWaitSec)
@@ -528,6 +549,7 @@ func (s *ApprovalState) HandleEvent(ctx context.Context, o *Orchestrator, evt Ev
 		if id, _ := evt.Payload["approval_task"].(string); id != s.ApprovalTaskID {
 			return nil, nil
 		}
+		o.openQuestion = false
 		o.withdrawApprovalRequest(s)
 		slog.Error("approval: no decision within the deadline, failing the run",
 			"task_id", s.Request.TaskID, "deadline", s.Deadline.Format(time.RFC3339))

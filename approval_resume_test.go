@@ -97,6 +97,87 @@ func TestResumeReEntersApproving(t *testing.T) {
 	}
 }
 
+// TestLoadRunStateFindsTheRunByItsKey: the daemon addresses memories by ID, but
+// the only thing a person has after a crash is the key printed in the log. A
+// resume that looks the key up as an ID reports "memory not found" for a run
+// that is sitting right there.
+func TestLoadRunStateFindsTheRunByItsKey(t *testing.T) {
+	td := &testDaemon{tasks: map[string]*pb.TaskEntry{}, memories: map[string]*pb.MemoryEntry{}}
+	daemon, cleanup := serveTestDaemon(t, td)
+	defer cleanup()
+
+	o := NewOrchestrator(context.Background(), &Config{RepoPath: t.TempDir()}, daemon, nil)
+	o.goal = "inventory"
+	o.runID = "abc12345"
+	o.dag = NewDAG()
+	_ = o.dag.AddTask(&TaskNode{ID: "abc12345_scan", Status: status.TaskReady, AgentType: "quality_scan", Goal: "inventory"})
+	if err := o.SaveRunState(context.Background(), "runstate_inventory_abc12345"); err != nil {
+		t.Fatal(err)
+	}
+
+	rs, err := LoadRunState(context.Background(), daemon, "runstate_inventory_abc12345")
+	if err != nil {
+		t.Fatalf("LoadRunState: %v", err)
+	}
+	if rs.RunID != "abc12345" || len(rs.Tasks) != 1 {
+		t.Errorf("loaded run = %+v, want the saved one", rs)
+	}
+	if rs.Tasks[0].TaskID != "abc12345_scan" {
+		t.Errorf("task id = %q", rs.Tasks[0].TaskID)
+	}
+}
+
+// TestTheSavedStateFollowsTheRun: the state is written at planning and must be
+// written again whenever the run changes shape. Otherwise a crash during an
+// approval resumes into the shape the run had before it opened — no pending
+// request, so the restart cannot find the question it is supposed to answer.
+func TestTheSavedStateFollowsTheRun(t *testing.T) {
+	o, td, s := openApproval(t, approvalConfig(10*time.Minute))
+	key := o.RunKey()
+	if key == "" {
+		t.Fatal("the run has no saved key, so a crash could not be resumed at all")
+	}
+
+	var saved RunState
+	if err := json.Unmarshal([]byte(td.memoryContent(key)), &saved); err != nil {
+		t.Fatalf("saved state is not a RunState: %v", err)
+	}
+	if saved.Pending == nil {
+		t.Fatal("saved state has no pending approval while the run is waiting on one")
+	}
+	if saved.Pending.ApprovalTaskID != s.ApprovalTaskID {
+		t.Errorf("saved approval task = %q, want %q", saved.Pending.ApprovalTaskID, s.ApprovalTaskID)
+	}
+	if !saved.Pending.Deadline.Equal(s.Deadline) {
+		t.Errorf("saved deadline = %v, want %v", saved.Pending.Deadline, s.Deadline)
+	}
+}
+
+// TestTheSavedStateDropsAnAnsweredApproval: the same rule the other way. A run
+// that forgot to clear the request resumes into a question already answered and
+// waits for a second answer that is never coming.
+func TestTheSavedStateDropsAnAnsweredApproval(t *testing.T) {
+	o, td, s := openApproval(t, approvalConfig(10*time.Minute))
+	// Through Transition, as the driver does it: applying a decision is one step
+	// of the loop, and the save belongs to the step, not to the handler.
+	next := answerApproval(t, o, s, ApprovalDecision{
+		Action:    ApprovalCancel,
+		Reason:    "not worth the tokens",
+		DecidedBy: "aj",
+	})
+	if err := o.Transition(next); err != nil {
+		t.Fatalf("leaving the approval: %v", err)
+	}
+
+	var saved RunState
+	if err := json.Unmarshal([]byte(td.memoryContent(o.RunKey())), &saved); err != nil {
+		t.Fatalf("saved state is not a RunState: %v", err)
+	}
+	if saved.Pending != nil {
+		t.Errorf("saved state still holds a pending approval: %+v", saved.Pending)
+	}
+}
+
 // TestResumeReusesTheRequestAlreadyInTheDaemon: the restart adopts the question
 // that is still waiting. Adding a second task under the same id would either
 // fail the run on a duplicate id or split the answer in two.

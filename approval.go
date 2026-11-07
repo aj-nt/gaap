@@ -150,11 +150,10 @@ func (o *Orchestrator) applyApproval(ctx context.Context, s *ApprovalState, d Ap
 
 	if d.Action == ApprovalCancel {
 		// Accepting the failure means exactly that: the branch stays lost. Any
-		// work still in flight elsewhere decides the run's outcome as usual.
-		if !o.dag.AllTasksTerminal() {
-			return &WaitingState{}
-		}
-		return &FailedState{}
+		// work still in flight elsewhere decides the run's outcome as usual —
+		// through the verdict, because another branch may be owed a question of
+		// its own and deciding here would end the run before asking it.
+		return o.afterDecision()
 	}
 
 	replacement := &TaskNode{
@@ -190,7 +189,7 @@ func (o *Orchestrator) applyApproval(ctx context.Context, s *ApprovalState, d Ap
 			log.Warn("approval: the replacement could not be dispatched", "error", err)
 		}
 	}
-	return &WaitingState{}
+	return o.afterDecision()
 }
 
 // withdrawApprovalRequest removes a request the run has given up on. Left in

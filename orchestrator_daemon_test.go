@@ -256,6 +256,22 @@ func (td *testDaemon) AddMemory(_ context.Context, req *pb.AddMemoryRequest) (*p
 	return &pb.AddMemoryResponse{Entry: entry}, nil
 }
 
+func (td *testDaemon) ListMemories(_ context.Context, req *pb.ListMemoriesRequest) (*pb.MemoryList, error) {
+	td.mu.Lock()
+	defer td.mu.Unlock()
+	out := make([]*pb.MemoryEntry, 0, len(td.memories))
+	for _, e := range td.memories {
+		if req.Target != "" && req.Target != "memory" {
+			continue
+		}
+		if req.Category != nil && e.Category != *req.Category {
+			continue
+		}
+		out = append(out, &pb.MemoryEntry{Id: e.Id, Key: e.Key, Category: e.Category, Content: e.Content, Priority: e.Priority})
+	}
+	return &pb.MemoryList{Entries: out}, nil
+}
+
 func (td *testDaemon) DeleteTask(_ context.Context, req *pb.DeleteTaskRequest) (*pb.DeleteTaskResponse, error) {
 	td.mu.Lock()
 	defer td.mu.Unlock()

@@ -144,6 +144,18 @@ type Orchestrator struct {
 	stopCh       chan struct{}
 	stopOnce     sync.Once
 	workerStop   chan struct{}
+	// openQuestion is true while a human decision is pending. No verdict may end
+	// the run while it is set: the events that arrive during a pause are stale
+	// news about branches that failed before the question was asked, and acting
+	// on them would kill a run that is waiting for an answer it still wants.
+	openQuestion bool
+
+	// pendingFailures are the dead letters the loop has not yet answered, oldest
+	// first. A queue rather than a slot because branches fail while the run is
+	// paused on a question: a slot would keep the last one and lose the rest,
+	// and the watcher reports a terminal state exactly once.
+	pendingFailures []failureRecord
+
 	// pendingFailure is the dead letter the loop has not yet answered. Set by
 	// failTask on the loop goroutine and consumed by waitVerdict, which is the
 	// only place that decides whether a failure ends the run or asks a human.
@@ -550,6 +562,11 @@ func (o *Orchestrator) watchPoll() {
 	}
 }
 
+// RunStateCategory is the blackboard category a run is saved under. Named
+// because two places need it to agree: the writer, and the lookup a resume does
+// when all it has is the key.
+const RunStateCategory = "orchestration_run"
+
 // SaveRunState persists the orchestrator's current DAG as a RunState to the
 // daemon. This allows crash recovery via Resume(). The returned key is the
 // daemon memory key that can be passed to gaap resume.
@@ -585,7 +602,7 @@ func (o *Orchestrator) SaveRunState(ctx context.Context, runKey string) error {
 		return fmt.Errorf("marshal run state: %w", err)
 	}
 
-	_, err = o.daemon.AddMemory(ctx, "memory", "orchestration_run", runKey,
+	_, err = o.daemon.AddMemory(ctx, "memory", RunStateCategory, runKey,
 		string(payload), 5, "gaap-orchestrator")
 	if err != nil {
 		return fmt.Errorf("save run state to daemon: %w", err)
@@ -594,6 +611,22 @@ func (o *Orchestrator) SaveRunState(ctx context.Context, runKey string) error {
 	o.runKey = runKey
 	slog.Info("run state saved to daemon", "key", runKey, "task_count", len(rs.Tasks))
 	return nil
+}
+
+// saveRunState re-persists the run under the key it was saved with. Planning
+// names the run; every later phase edits it. A run that changed shape without
+// saving is a run that resumes into the shape it had at planning — no pending
+// approval, so the restart cannot find the question it is supposed to answer.
+//
+// Failure is logged, not fatal: losing the ability to resume a live run is a
+// worse outcome than finishing it un-resumably.
+func (o *Orchestrator) saveRunState(ctx context.Context) {
+	if o.runKey == "" {
+		return
+	}
+	if err := o.SaveRunState(ctx, o.runKey); err != nil {
+		slog.Warn("state: could not re-save the run", "key", o.runKey, "error", err)
+	}
 }
 
 // PhaseHistory returns the phases this run entered, in order.
@@ -606,11 +639,33 @@ func (o *Orchestrator) RunKey() string {
 	return o.runKey
 }
 
+// findRunStateByKey lists the saved runs and matches the memory key.
+func findRunStateByKey(ctx context.Context, daemon MnemoClient, runKey string) (*pb.MemoryEntry, error) {
+	category := RunStateCategory
+	entries, err := daemon.ListMemories(ctx, "memory", &category, nil)
+	if err != nil {
+		return nil, fmt.Errorf("look up run state %q: %w", runKey, err)
+	}
+	for _, e := range entries {
+		if e.Key == runKey {
+			return e, nil
+		}
+	}
+	return nil, fmt.Errorf("no run state saved under key %q", runKey)
+}
+
 // LoadRunState fetches a RunState from the daemon by key.
 func LoadRunState(ctx context.Context, daemon MnemoClient, runKey string) (*RunState, error) {
 	entry, err := daemon.GetMemory(ctx, runKey)
-	if err != nil {
-		return nil, fmt.Errorf("get run state from daemon: %w", err)
+	if err != nil || entry == nil {
+		// The daemon addresses memories by ID, and the run key is the memory's
+		// key: a resume that only has the key printed in the log has to look it
+		// up in the category it was written to. Reporting "not found" for a run
+		// that is sitting right there is the worst possible answer.
+		entry, err = findRunStateByKey(ctx, daemon, runKey)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if entry == nil {
 		return nil, fmt.Errorf("run state not found: %s", runKey)
@@ -720,6 +775,11 @@ func (o *Orchestrator) waitVerdict() OrchestratorState {
 	// A failure with a human on the other end is not the end of the run. This
 	// is checked before fail_fast: fail_fast stops dispatching to other
 	// branches, it does not skip the question the operator opted into.
+	if o.openQuestion {
+		// A question is open. Its answer decides that failure; the ones already
+		// queued are answered afterwards, one at a time.
+		return nil
+	}
 	if st := o.approvalVerdict(); st != nil {
 		return st
 	}
@@ -738,20 +798,41 @@ func (o *Orchestrator) waitVerdict() OrchestratorState {
 	return &SynthesizingState{}
 }
 
+// afterDecision is where a run goes once a question is answered: back to
+// waiting, unless the verdict says the run is over. It must not open the next
+// question itself — approving -> approving is not an edge, and pretending it is
+// would hide a handler that meant to move. The waiting phase announces a queued
+// failure as its own question, which is the one place allowed to ask.
+func (o *Orchestrator) afterDecision() OrchestratorState {
+	// A queued failure is not decided here: the waiting phase announces it, and
+	// that is the only phase allowed to open a question (approving -> approving
+	// is not an edge). Deciding it here would consume the question and drop it.
+	if len(o.pendingFailures) > 0 {
+		return &WaitingState{}
+	}
+	if st := o.waitVerdict(); st != nil {
+		return st
+	}
+	return &WaitingState{}
+}
+
 // approvalVerdict answers the pending dead letter with a question, when the run
 // opted into asking humans. nil means the failure stands as the run's answer.
 //
 // It consumes the failure: the request owns it now, so a second call cannot
 // open a second approval for the same dead letter.
 func (o *Orchestrator) approvalVerdict() OrchestratorState {
-	f := o.pendingFailure
-	if f == nil || !o.cfg.Approval.Enabled {
+	if len(o.pendingFailures) == 0 || !o.cfg.Approval.Enabled {
 		return nil
 	}
+	f := &o.pendingFailures[0]
 	node, ok := o.dag.nodes[f.TaskID]
-	if !ok {
-		return nil
+	if !ok || node.SupersededBy != "" {
+		// Already answered or replaced: drop it and look at the next one.
+		o.pendingFailures = o.pendingFailures[1:]
+		return o.approvalVerdict()
 	}
+	o.pendingFailures = o.pendingFailures[1:]
 	o.pendingFailure = nil
 
 	req := NewApprovalRequest(node.ID, node.AgentType, f.Attempts, node.Summary, time.Now(), o.cfg.Approval.Timeout)
@@ -816,7 +897,11 @@ func (o *Orchestrator) failTask(node *TaskNode, attempts int32, logPrefix string
 	// The verdict reads this to decide whether the failure ends the run or
 	// becomes a question for a human. Recorded here because this is the one
 	// place that sees a dead letter from either transport.
-	o.pendingFailure = &failureRecord{TaskID: node.ID, Attempts: attempts}
+	// Queued, not overwritten: another branch can dead-letter while the run is
+	// paused on a question, and an event that is reported once cannot be looked
+	// up again later.
+	o.pendingFailures = append(o.pendingFailures, failureRecord{TaskID: node.ID, Attempts: attempts})
+	o.pendingFailure = &o.pendingFailures[len(o.pendingFailures)-1]
 	o.fireTaskFailed(node.ID, logPrefix, skipped)
 }
 
@@ -965,5 +1050,15 @@ func (o *Orchestrator) Transition(next OrchestratorState) error {
 		"to", to)
 	o.phaseLog = append(o.phaseLog, to)
 	o.state = next
-	return next.Enter(o.ctx, o)
+
+	// Save after entering, not before: a RunState is the run's shape, and the
+	// shape is only final once the new phase has created whatever it owns (the
+	// approval task exists, so the pending request is genuinely pending). A crash
+	// between two saves resumes one phase behind, never into a phase whose work
+	// was never done.
+	if err := next.Enter(o.ctx, o); err != nil {
+		return err
+	}
+	o.saveRunState(o.ctx)
+	return nil
 }
