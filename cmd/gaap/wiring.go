@@ -32,31 +32,25 @@ type llmSettings struct {
 	AgentTypes  []string
 }
 
-func (c *runConfig) settings() llmSettings {
-	return llmSettings{
-		DaemonAddr:  c.DaemonAddr,
-		APIKey:      c.APIKey,
-		TLSCert:     c.TLSCert,
-		OllamaURL:   c.OllamaURL,
-		Model:       c.Model,
-		MaxTokens:   c.MaxTokens,
-		Temperature: c.Temperature,
-		AgentTypes:  c.AgentTypes,
-	}
+// connFields are the flags every daemon-touching subcommand carries. run and
+// resume embed them, so the projection onto llmSettings exists once: a field
+// added to one command's flags and not the other is a resume that talks to the
+// wrong daemon and reports it as an empty task list.
+type connFields struct {
+	DaemonAddr  string
+	APIKey      string
+	TLSCert     string
+	OllamaURL   string
+	Model       string
+	MaxTokens   int
+	Temperature float64
+	AgentTypes  []string
 }
 
-func (c *resumeConfig) settings() llmSettings {
-	return llmSettings{
-		DaemonAddr:  c.DaemonAddr,
-		APIKey:      c.APIKey,
-		TLSCert:     c.TLSCert,
-		OllamaURL:   c.OllamaURL,
-		Model:       c.Model,
-		MaxTokens:   c.MaxTokens,
-		Temperature: c.Temperature,
-		AgentTypes:  c.AgentTypes,
-	}
-}
+// settings is a conversion, not a field-by-field copy: the two structs must keep
+// the same fields in the same order, so a flag added to the CLI and not carried
+// to the wiring stops compiling instead of silently arriving empty.
+func (c connFields) settings() llmSettings { return llmSettings(c) }
 
 // signalContext returns a context cancelled by SIGINT/SIGTERM.
 func signalContext() (context.Context, context.CancelFunc) {
@@ -90,16 +84,24 @@ func dialDaemon(ctx context.Context, s llmSettings) (client.MnemoClient, error) 
 	return c, nil
 }
 
-// chatFunc builds the LLM client and the (ctx, prompt) → string bridge both
-// the decomposer and the synthesis engine consume.
-func chatFunc(s llmSettings) func(context.Context, string) (string, error) {
-	c := ollama.NewClient(ollama.Config{
+// ollamaConfig projects the CLI settings onto the client's config. Two callers
+// build a client from the same flags — the chat bridge and the worker pool — and
+// a field added to one of them and not the other is a run whose decomposer and
+// workers disagree about the model.
+func ollamaConfig(s llmSettings) ollama.Config {
+	return ollama.Config{
 		BaseURL:     s.OllamaURL,
 		Model:       s.Model,
 		MaxTokens:   s.MaxTokens,
 		Temperature: s.Temperature,
 		TimeoutSec:  120,
-	})
+	}
+}
+
+// chatFunc builds the LLM client and the (ctx, prompt) → string bridge both
+// the decomposer and the synthesis engine consume.
+func chatFunc(s llmSettings) func(context.Context, string) (string, error) {
+	c := ollama.NewClient(ollamaConfig(s))
 	return func(_ context.Context, prompt string) (string, error) {
 		return c.Chat([]ollama.Message{{Role: "user", Content: prompt}})
 	}
@@ -134,13 +136,7 @@ func startWorkers(ctx context.Context, s llmSettings, repoPath string, daemon cl
 		PollSec:     2,
 		MaxTurns:    20,
 		RepoPath:    repoPath,
-		Ollama: ollama.Config{
-			BaseURL:     s.OllamaURL,
-			Model:       s.Model,
-			MaxTokens:   s.MaxTokens,
-			Temperature: s.Temperature,
-			TimeoutSec:  120,
-		},
+		Ollama:      ollamaConfig(s),
 	}
 	pool, err := worker.NewPool(ctx, wpCfg, daemon)
 	if err != nil {

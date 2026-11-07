@@ -4,6 +4,12 @@
 *.test
 *.out
 
+# Governor state. A governed run (`gaap run --policy ...`) writes its ledger, key
+# ring, refs, content store and kill switch into the state directory, which
+# defaults to `.gaap` in the working directory. That is a record of a session, not
+# a source file: an empty ledger.jsonl reached the tree once already.
+.gaap/
+
 # IDE
 .hermes/
 .idea/

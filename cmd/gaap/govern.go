@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
@@ -92,9 +93,9 @@ func (s *governState) Close() error { return s.ledger.Close() }
 // buildGovernor opens the durable state and assembles the governor over it, so a
 // decision made during a run lands in the same record as one made from the CLI.
 // The caller owns the returned state and must close it.
-func buildGovernor(policyPath, stateDir string, trustFloor float64) (*platform.Governor, *governState, error) {
+func buildGovernor(policyPath, stateDir string, trustFloor float64, readTools string) (*platform.Governor, *governState, error) {
 	if stateDir == "" {
-		stateDir = ".gaap"
+		stateDir = defaultStateDir
 	}
 	if policyPath == "" {
 		return nil, nil, fmt.Errorf("a governor needs --policy")
@@ -122,7 +123,42 @@ func buildGovernor(policyPath, stateDir string, trustFloor float64) (*platform.G
 	// the trip is durable, so a run cannot forget it.
 	g.Kill = state.kill
 	g.TrustFloor = trustFloor
+	if readTools != "" {
+		// The workload knows its own read-only tools; the kernel never guesses.
+		pure := make(map[string]struct{})
+		for _, name := range strings.Split(readTools, ",") {
+			if trimmed := strings.TrimSpace(name); trimmed != "" {
+				pure[trimmed] = struct{}{}
+			}
+		}
+		g.Classify = func(tool string) platform.Reversibility {
+			if _, ok := pure[tool]; ok {
+				return platform.Pure
+			}
+			return platform.Irreversible
+		}
+	}
 	return g, state, nil
+}
+
+// defaultStateDir is where a governed run or CLI decision keeps its record. One
+// constant because five flags default to it and a run that writes to `.gaap`
+// while `ledger verify` reads somewhere else is a record nobody can check.
+const defaultStateDir = ".gaap"
+
+// openRunGovernor attaches a governor to a run. Empty policy means ungoverned —
+// the common case — and the returned cleanup is never nil, so a caller can
+// defer it without asking whether anything was opened.
+func openRunGovernor(policy, stateDir string, trustFloor float64) (*platform.Governor, func(), error) {
+	if policy == "" {
+		return nil, func() {}, nil
+	}
+	g, state, err := buildGovernor(policy, stateDir, trustFloor, "")
+	if err != nil {
+		return nil, nil, fmt.Errorf("governed run: %w", err)
+	}
+	slog.Info("govern: the run is governed", "policy", policy, "state", state.dir)
+	return g, func() { _ = state.Close() }, nil
 }
 
 // governDecide asks the governor for one decision about one tool call, records
@@ -131,7 +167,7 @@ func buildGovernor(policyPath, stateDir string, trustFloor float64) (*platform.G
 func governDecide(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("govern decide", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	stateDir := fs.String("state", ".gaap", "state directory (ledger, keys, refs, content)")
+	stateDir := fs.String("state", defaultStateDir, "state directory (ledger, keys, refs, content)")
 	policyPath := fs.String("policy", "", "policy file (required)")
 	subject := fs.String("subject", "", "who the call is about: an agent id, or a person")
 	tool := fs.String("tool", "", "tool name the policy matches against")
@@ -155,45 +191,11 @@ func governDecide(args []string, out io.Writer) error {
 		return fmt.Errorf("--args is not a JSON object: %w", err)
 	}
 
-	policy, err := platform.LoadPolicyFile(*policyPath)
-	if err != nil {
-		return err
-	}
-	state, err := openGovernState(*stateDir)
+	g, state, err := buildGovernor(*policyPath, *stateDir, *trustFloor, *readTools)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = state.Close() }()
-
-	committer, err := platform.NewCommitter(state.ring)
-	if err != nil {
-		return err
-	}
-	g := platform.NewGovernor()
-	g.Policy = policy
-	g.Ledger = state.ledger
-	g.Committer = committer
-	g.Refs = state.refs
-	g.Content = state.content
-	// The read side only: an operator trips the switch with `govern kill`, and
-	// the trip is durable, so this invocation cannot forget it.
-	g.Kill = state.kill
-	g.TrustFloor = *trustFloor
-	if *readTools != "" {
-		pure := make(map[string]struct{})
-		for _, name := range strings.Split(*readTools, ",") {
-			if trimmed := strings.TrimSpace(name); trimmed != "" {
-				pure[trimmed] = struct{}{}
-			}
-		}
-		// The workload knows its own read-only tools; the kernel never guesses.
-		g.Classify = func(tool string) platform.Reversibility {
-			if _, ok := pure[tool]; ok {
-				return platform.Pure
-			}
-			return platform.Irreversible
-		}
-	}
 
 	before := len(state.ledger.Entries())
 	decision := g.Decide(*subject, *tool, callArgs)
@@ -226,7 +228,7 @@ func governDecide(args []string, out io.Writer) error {
 func governErase(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("govern erase", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	stateDir := fs.String("state", ".gaap", "state directory (ledger, keys, refs, content)")
+	stateDir := fs.String("state", defaultStateDir, "state directory (ledger, keys, refs, content)")
 	subject := fs.String("subject", "", "subject to erase (required)")
 	reason := fs.String("reason", "erasure-request", "reason code recorded on the erase entry")
 	if err := fs.Parse(args); err != nil {
@@ -272,7 +274,7 @@ func governErase(args []string, out io.Writer) error {
 func governKill(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("govern kill", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	stateDir := fs.String("state", ".gaap", "state directory (ledger, keys, refs, content, kill switch)")
+	stateDir := fs.String("state", defaultStateDir, "state directory (ledger, keys, refs, content, kill switch)")
 	scope := fs.String("scope", "", "scope to stop: an agent id, a tool, or \"global\" (required)")
 	reason := fs.String("reason", "operator-stop", "reason recorded on the kill entry")
 	if err := fs.Parse(args); err != nil {
@@ -319,7 +321,7 @@ func governKill(args []string, out io.Writer) error {
 func governStatus(args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("govern status", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	stateDir := fs.String("state", ".gaap", "state directory (ledger, keys, refs, content, kill switch)")
+	stateDir := fs.String("state", defaultStateDir, "state directory (ledger, keys, refs, content, kill switch)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
