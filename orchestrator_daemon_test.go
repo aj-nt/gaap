@@ -43,12 +43,24 @@ type testDaemon struct {
 	memories map[string]*pb.MemoryEntry
 }
 
-// cloneTask copies an entry. Handlers must return a copy, never the stored
-// pointer: gRPC marshals the response after the handler releases the lock, so a
-// live pointer races the next write to the stored entry.
+// cloneTask copies an entry field by field. Handlers must return a copy, never
+// the stored pointer: gRPC marshals the response after the handler releases the
+// lock, so a live pointer races the next write to the stored entry. A struct
+// copy is not available — proto messages embed a mutex — hence the rebuild.
 func cloneTask(e *pb.TaskEntry) *pb.TaskEntry {
-	c := *e
-	return &c
+	return &pb.TaskEntry{
+		Id:            e.Id,
+		Goal:          e.Goal,
+		AgentType:     e.AgentType,
+		Context:       e.Context,
+		Status:        e.Status,
+		Priority:      e.Priority,
+		MaxRetries:    e.MaxRetries,
+		RetryCount:    e.RetryCount,
+		ResultKey:     e.ResultKey,
+		AssignedAgent: e.AssignedAgent,
+		CreatedAt:     e.CreatedAt,
+	}
 }
 
 func (td *testDaemon) AddTask(_ context.Context, req *pb.AddTaskRequest) (*pb.TaskEntry, error) {
@@ -258,8 +270,7 @@ func (td *testDaemon) GetMemory(_ context.Context, req *pb.GetMemoryRequest) (*p
 	td.mu.Lock()
 	defer td.mu.Unlock()
 	if e, ok := td.memories[req.Id]; ok {
-		c := *e
-		return &c, nil
+		return &pb.MemoryEntry{Id: e.Id, Key: e.Key, Category: e.Category, Content: e.Content, Priority: e.Priority}, nil
 	}
 	return nil, status.Error(codes.NotFound, "memory not found: "+req.Id)
 }
