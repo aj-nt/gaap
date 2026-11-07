@@ -511,9 +511,23 @@ func (e *Executor) Execute(ctx context.Context, task *client.TaskEntry, repoPath
 		text = strings.TrimSpace(text)
 		messages = append(messages, ollama.Message{Role: "assistant", Content: text})
 
+		kind, body, parsed := parseReply(text)
+		if replyHadMarkup(text) {
+			slog.Info("worker: stripped tool markup from reply", "id", task.Id, "attempt", attempt, "turn", turn)
+		}
+
 		switch {
-		case strings.HasPrefix(text, "CMD:"):
-			cmd := strings.TrimSpace(text[4:])
+		case !parsed:
+			// Burning a turn on an unparseable response is invisible unless it
+			// is logged: the model said something, nobody recorded what.
+			slog.Warn("worker: unparseable response", "id", task.Id, "attempt", attempt, "turn", turn, "max_turns", e.maxTurns, "text", truncate(text, 80))
+			messages = append(messages, ollama.Message{
+				Role:    "user",
+				Content: "Respond with CMD:, DONE:, or FAIL:",
+			})
+
+		case kind == actionCmd:
+			cmd := body
 			slog.Info("worker: running command", "id", task.Id, "attempt", attempt, "turn", turn, "cmd", truncate(cmd, 80))
 
 			// Security check — reject dangerous commands before execution
@@ -544,8 +558,8 @@ func (e *Executor) Execute(ctx context.Context, task *client.TaskEntry, repoPath
 			}
 			messages = append(messages, ollama.Message{Role: "user", Content: response})
 
-		case strings.HasPrefix(text, "DONE:"):
-			summary := strings.TrimSpace(text[5:])
+		case kind == actionDone:
+			summary := body
 			slog.Info("worker: task DONE", "id", task.Id, "attempt", attempt, "summary", truncate(summary, 100), "turns", turn)
 			return &ExecuteResult{
 				TaskID:      task.Id,
@@ -559,8 +573,8 @@ func (e *Executor) Execute(ctx context.Context, task *client.TaskEntry, repoPath
 				CompletedAt: time.Now().Unix(),
 			}
 
-		case strings.HasPrefix(text, "FAIL:"):
-			reason := strings.TrimSpace(text[5:])
+		case kind == actionFail:
+			reason := body
 			slog.Warn("worker: task FAIL", "id", task.Id, "attempt", attempt, "reason", truncate(reason, 100), "turns", turn)
 			return &ExecuteResult{
 				TaskID:     task.Id,
@@ -571,15 +585,6 @@ func (e *Executor) Execute(ctx context.Context, task *client.TaskEntry, repoPath
 				LLMTurns:   turn,
 				DurationMs: time.Since(t0).Milliseconds(),
 			}
-
-		default:
-			// Burning a turn on an unparseable response is invisible unless it
-			// is logged: the model said something, nobody recorded what.
-			slog.Warn("worker: unparseable response", "id", task.Id, "attempt", attempt, "turn", turn, "max_turns", e.maxTurns, "text", truncate(text, 80))
-			messages = append(messages, ollama.Message{
-				Role:    "user",
-				Content: "Respond with CMD:, DONE:, or FAIL:",
-			})
 		}
 	}
 
