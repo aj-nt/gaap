@@ -29,6 +29,11 @@ const (
 	// EventSimulate asks the loop to complete the DAG in-process. Used when the
 	// daemon is not connected at all (tests, dry runs).
 	EventSimulate
+	// EventApprovalTimeout fires when a pending approval passes its own
+	// deadline. Separate from EventTimeout on purpose: a timer that outlives
+	// the approval it was set for must not be read as the run's clock expiring,
+	// or an answered approval would kill a healthy run from the grave.
+	EventApprovalTimeout
 )
 
 // sepLine is the width of separator lines in state output reports.
@@ -411,11 +416,37 @@ func (s *ApprovalState) Enter(ctx context.Context, o *Orchestrator) error {
 		}
 	}
 
+	o.startApprovalClock(s)
+
 	slog.Info("approving: waiting on a human decision",
 		"task_id", s.Request.TaskID,
 		"approval_task", s.ApprovalTaskID,
 		"deadline", s.Deadline.Format(time.RFC3339))
 	return nil
+}
+
+// startApprovalClock posts an EventApprovalTimeout when this request's deadline
+// passes. The approval has its own clock because it usually has its own, shorter
+// deadline: waiting out MaxWaitSec would mean a run that asked for five minutes
+// of a human's attention actually held the graph for thirty.
+func (o *Orchestrator) startApprovalClock(s *ApprovalState) {
+	go func() {
+		wait := time.Until(s.Deadline)
+		if wait < 0 {
+			wait = 0
+		}
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		select {
+		case <-o.ctx.Done():
+			return
+		case <-timer.C:
+			o.post(Event{
+				Type:    EventApprovalTimeout,
+				Payload: map[string]any{"approval_task": s.ApprovalTaskID},
+			})
+		}
+	}()
 }
 
 func (s *ApprovalState) HandleEvent(ctx context.Context, o *Orchestrator, evt Event) (OrchestratorState, error) {
@@ -440,6 +471,17 @@ func (s *ApprovalState) HandleEvent(ctx context.Context, o *Orchestrator, evt Ev
 			slog.Error("approval: the request task died without an answer", "task_id", s.Request.TaskID)
 			return &FailedState{}, nil
 		}
+
+	case EventApprovalTimeout:
+		// Only this request's clock moves this run. A timer left over from an
+		// earlier approval names a different task and is ignored.
+		if id, _ := evt.Payload["approval_task"].(string); id != s.ApprovalTaskID {
+			return nil, nil
+		}
+		o.withdrawApprovalRequest(s)
+		slog.Error("approval: no decision within the deadline, failing the run",
+			"task_id", s.Request.TaskID, "deadline", s.Deadline.Format(time.RFC3339))
+		return &FailedState{}, nil
 	}
 	// An event this phase does not understand is not a reason to move.
 	return nil, nil

@@ -151,6 +151,53 @@ func TestSupersedeOnRunningParentsLeavesReplacementBlocked(t *testing.T) {
 	}
 }
 
+// TestSupersededFailureIsNotTheRunsVerdict: once a human replaced a failure, the
+// run's outcome is the replacement's. Counting the originals would fail a run
+// that had already recovered.
+func TestSupersededFailureIsNotTheRunsVerdict(t *testing.T) {
+	t.Parallel()
+
+	d := supersedeFixture()
+	if !d.HasFailures() {
+		t.Fatal("setup: the failed node should count before it is replaced")
+	}
+	if _, err := d.Supersede("mid", &TaskNode{ID: "mid_retry"}); err != nil {
+		t.Fatal(err)
+	}
+	if d.HasFailures() {
+		t.Error("a superseded failure should not count as a failure")
+	}
+	if got := d.FailedIDs(); len(got) != 0 {
+		t.Errorf("FailedIDs = %v, want none", got)
+	}
+
+	// The record is still there for the report.
+	failed, _ := d.GetTask("mid")
+	if failed.Status != status.TaskFailed || failed.SupersededBy != "mid_retry" {
+		t.Errorf("history was rewritten: %+v", failed)
+	}
+}
+
+// TestSupersededReplacementCanFailAgain: if the replacement fails too, that is
+// the run's answer — no chain of excuses.
+func TestSupersededReplacementCanFailAgain(t *testing.T) {
+	t.Parallel()
+
+	d := supersedeFixture()
+	if _, err := d.Supersede("mid", &TaskNode{ID: "mid_retry"}); err != nil {
+		t.Fatal(err)
+	}
+	replacement, _ := d.GetTask("mid_retry")
+	replacement.Status = status.TaskFailed
+
+	if !d.HasFailures() {
+		t.Error("a failed replacement is a real failure")
+	}
+	if got := d.FailedIDs(); len(got) != 1 || got[0] != "mid_retry" {
+		t.Errorf("FailedIDs = %v, want [mid_retry]", got)
+	}
+}
+
 func ids(nodes []*TaskNode) []string {
 	out := make([]string, 0, len(nodes))
 	for _, n := range nodes {

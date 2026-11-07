@@ -154,7 +154,9 @@ func (d *DAG) AllTasksTerminal() bool {
 // HasFailures reports whether any task failed.
 func (d *DAG) HasFailures() bool {
 	for _, node := range d.nodes {
-		if node.Status == status.TaskFailed {
+		// A failure a human replaced is history, not the run's answer. Counting
+		// it would fail a run that has already recovered from it.
+		if node.Status == status.TaskFailed && node.SupersededBy == "" {
 			return true
 		}
 	}
@@ -165,7 +167,9 @@ func (d *DAG) HasFailures() bool {
 func (d *DAG) FailedIDs() []string {
 	var out []string
 	for id, node := range d.nodes {
-		if node.Status == status.TaskFailed {
+		// Superseded failures are kept for the record and excluded from the
+		// verdict: the replacement is what the run answers for.
+		if node.Status == status.TaskFailed && node.SupersededBy == "" {
 			out = append(out, id)
 		}
 	}

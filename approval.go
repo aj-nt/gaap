@@ -193,6 +193,20 @@ func (o *Orchestrator) applyApproval(ctx context.Context, s *ApprovalState, d Ap
 	return &WaitingState{}
 }
 
+// withdrawApprovalRequest removes a request the run has given up on. Left in
+// place, it would keep inviting an answer to a question nobody is listening for,
+// and the person who answered it would believe they had changed something.
+func (o *Orchestrator) withdrawApprovalRequest(s *ApprovalState) {
+	if s.ApprovalTaskID == "" || o.daemon == nil {
+		return
+	}
+	if _, err := o.daemon.DeleteTask(o.ctx, s.ApprovalTaskID); err != nil {
+		slog.Warn("approval: could not withdraw the request", "approval_task", s.ApprovalTaskID, "error", err)
+		return
+	}
+	slog.Info("approval: withdrew the unanswered request", "approval_task", s.ApprovalTaskID)
+}
+
 // nextReplacementID returns an unused id for the task that replaces failedID:
 // "<id>_retry", then "_retry2", and so on. Deterministic, because the id shows
 // up in logs and in the daemon and a UUID would make the history unreadable.

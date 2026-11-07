@@ -67,15 +67,17 @@ func (td *testDaemon) GetTask(_ context.Context, req *pb.GetTaskRequest) (*pb.Ta
 	if !ok {
 		return nil, status.Error(codes.NotFound, "task not found")
 	}
-	if td.autoComplete && e.Status == "ready" {
-		e.Status = "done"
-	}
+	// The dead-letter list wins over autoComplete: a test that asks for a
+	// failure wants the failure, not a simulated success that arrives first.
 	if e.Status == "ready" {
 		for name := range td.deadLetter {
 			if strings.HasSuffix(e.Id, name) {
 				e.Status = "dead_letter"
 			}
 		}
+	}
+	if td.autoComplete && e.Status == "ready" {
+		e.Status = "done"
 	}
 	return e, nil
 }
@@ -219,6 +221,16 @@ func (td *testDaemon) AddMemory(_ context.Context, req *pb.AddMemoryRequest) (*p
 	}
 	td.memories[entry.Id] = entry
 	return &pb.AddMemoryResponse{Entry: entry}, nil
+}
+
+func (td *testDaemon) DeleteTask(_ context.Context, req *pb.DeleteTaskRequest) (*pb.DeleteTaskResponse, error) {
+	td.mu.Lock()
+	defer td.mu.Unlock()
+	if _, ok := td.tasks[req.Id]; !ok {
+		return &pb.DeleteTaskResponse{Deleted: false}, nil
+	}
+	delete(td.tasks, req.Id)
+	return &pb.DeleteTaskResponse{Deleted: true}, nil
 }
 
 func (td *testDaemon) GetMemory(_ context.Context, req *pb.GetMemoryRequest) (*pb.MemoryEntry, error) {
