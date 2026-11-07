@@ -81,6 +81,43 @@ func TestGrepForDestructiveWordsIsAllowed(t *testing.T) {
 	}
 }
 
+// TestReadOnlyAnalysisToolsAreAllowed covers the tools a real run reached for
+// and was refused: uniq (to count files per directory) and gofmt -l (to list
+// unformatted files). Both are as read-only as sort and wc.
+func TestReadOnlyAnalysisToolsAreAllowed(t *testing.T) {
+	t.Parallel()
+
+	allowed := []string{
+		`find . -name '*.go' | sed 's|/[^/]*$||' | sort | uniq -c | head`,
+		`gofmt -l .`,
+		`gofmt -d internal/worker/executor.go`,
+		`cut -d/ -f1 files.txt | sort -u`,
+		`tr ',' '\n' < list.csv | wc -l`,
+		`nl -ba internal/worker/executor.go | head -20`,
+		`basename /a/b/c.go`,
+		`printf '%s\n' a b c | sort`,
+	}
+	for _, cmd := range allowed {
+		if err := commandAllowed(cmd); err != nil {
+			t.Errorf("%q should be allowed: %v", cmd, err)
+		}
+	}
+}
+
+// TestGofmtWriteIsBlocked verifies the one form of gofmt that writes.
+func TestGofmtWriteIsBlocked(t *testing.T) {
+	t.Parallel()
+
+	for _, cmd := range []string{
+		`gofmt -w internal/worker/executor.go`,
+		`gofmt -w -l .`,
+	} {
+		if err := commandAllowed(cmd); err == nil {
+			t.Errorf("%q should be blocked (rewrites files)", cmd)
+		}
+	}
+}
+
 // TestDestructiveProgramsAreBlocked verifies the allowlist still gates the
 // programs themselves, including when given by absolute path.
 func TestDestructiveProgramsAreBlocked(t *testing.T) {
