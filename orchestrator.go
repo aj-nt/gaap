@@ -90,10 +90,14 @@ type RunState struct {
 	RepoPath string `json:"repo_path"`
 	// RunID is the task-id namespace, so a resumed run keeps polling for the
 	// tasks it left behind instead of re-namespacing a new set.
-	RunID       string           `json:"run_id,omitempty"`
-	Tasks       []TaskSpec       `json:"tasks"`
-	FailureMode FailureMode      `json:"failure_mode,omitempty"`
-	Pending     *PendingApproval `json:"pending_approval,omitempty"`
+	RunID       string      `json:"run_id,omitempty"`
+	Tasks       []TaskSpec  `json:"tasks"`
+	FailureMode FailureMode `json:"failure_mode,omitempty"`
+	// ApprovalPolicy is the loop the run started with. Persisted for the same
+	// reason as FailureMode: a run that asked humans on Monday must not stop
+	// asking because it was resumed on Tuesday without the flag.
+	ApprovalPolicy ApprovalPolicy   `json:"approval_policy,omitempty"`
+	Pending        *PendingApproval `json:"pending_approval,omitempty"`
 }
 
 // PendingApproval is the question a run was waiting on when it died. Persisted
@@ -391,6 +395,11 @@ func (o *Orchestrator) Resume(rs *RunState) error {
 	if rs.RunID != "" {
 		o.runID = rs.RunID
 	}
+	// A resumed run keeps the approval loop it started with. The policy is not a
+	// per-invocation flag any more than the failure mode is.
+	if rs.ApprovalPolicy.Enabled {
+		o.cfg.Approval = rs.ApprovalPolicy
+	}
 
 	if err := o.resumeFromState(rs); err != nil {
 		return err
@@ -546,11 +555,12 @@ func (o *Orchestrator) watchPoll() {
 // daemon memory key that can be passed to gaap resume.
 func (o *Orchestrator) SaveRunState(ctx context.Context, runKey string) error {
 	rs := &RunState{
-		Goal:        o.goal,
-		RepoPath:    o.cfg.RepoPath,
-		RunID:       o.runID,
-		FailureMode: o.cfg.Mode(),
-		Tasks:       make([]TaskSpec, 0, len(o.dag.nodes)),
+		Goal:           o.goal,
+		RepoPath:       o.cfg.RepoPath,
+		RunID:          o.runID,
+		FailureMode:    o.cfg.Mode(),
+		ApprovalPolicy: o.cfg.Approval,
+		Tasks:          make([]TaskSpec, 0, len(o.dag.nodes)),
 	}
 	if approval, ok := o.state.(*ApprovalState); ok {
 		rs.Pending = &PendingApproval{

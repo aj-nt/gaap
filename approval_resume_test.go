@@ -3,6 +3,7 @@ package gaap
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -93,6 +94,37 @@ func TestResumeReEntersApproving(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("phase history = %v, want an approving phase", phases)
+	}
+}
+
+// TestResumeKeepsTheApprovalLoop: a run that asked humans before the crash must
+// keep asking after the resume. The policy is part of the run, not of the
+// invocation that resumed it.
+func TestResumeKeepsTheApprovalLoop(t *testing.T) {
+	td := &testDaemon{tasks: map[string]*pb.TaskEntry{}, memories: map[string]*pb.MemoryEntry{}}
+	daemon, cleanup := serveTestDaemon(t, td)
+	defer cleanup()
+
+	cfg := &Config{PollIntervalSec: 1, MaxWaitSec: 2} // approval off in this process
+	o := NewOrchestrator(context.Background(), cfg, daemon, nil)
+	rs := &RunState{
+		Goal:     "inventory",
+		RepoPath: t.TempDir(),
+		RunID:    "abc12345",
+		Tasks: []TaskSpec{
+			{TaskID: "abc12345_scan", Status: status.TaskReady, AgentType: "quality_scan", Goal: "inventory"},
+		},
+		ApprovalPolicy: ApprovalPolicy{Enabled: true, Timeout: 10 * time.Minute, Agents: []string{"aj"}},
+	}
+	if err := o.Resume(rs); err != nil && !strings.Contains(err.Error(), "did not complete") {
+		t.Fatalf("Resume: %v", err)
+	}
+
+	if !o.cfg.Approval.Enabled {
+		t.Error("the resumed run forgot it was asking humans")
+	}
+	if o.cfg.Approval.Timeout != 10*time.Minute || len(o.cfg.Approval.Agents) != 1 {
+		t.Errorf("policy = %+v, want the saved one", o.cfg.Approval)
 	}
 }
 
