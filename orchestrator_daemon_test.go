@@ -41,6 +41,18 @@ type testDaemon struct {
 	// test can hand that ID to CompleteTask as a result key, exactly as a worker
 	// does with the UUID the real daemon assigns.
 	memories map[string]*pb.MemoryEntry
+
+	// added records every task ID the orchestrator handed to the daemon, in
+	// order. "Did the restart ask twice?" is a question about calls, not about
+	// the store, because a withdrawn question has left the store already.
+	added []string
+}
+
+// addedIDs is a copy safe to read after the run has stopped.
+func (td *testDaemon) addedIDs() []string {
+	td.mu.Lock()
+	defer td.mu.Unlock()
+	return append([]string(nil), td.added...)
 }
 
 // cloneTask copies an entry field by field. Handlers must return a copy, never
@@ -65,6 +77,7 @@ func cloneTask(e *pb.TaskEntry) *pb.TaskEntry {
 
 func (td *testDaemon) AddTask(_ context.Context, req *pb.AddTaskRequest) (*pb.TaskEntry, error) {
 	td.mu.Lock()
+	td.added = append(td.added, req.Id)
 	defer td.mu.Unlock()
 	e := &pb.TaskEntry{
 		Id:         req.Id,
@@ -241,6 +254,22 @@ func (td *testDaemon) AddMemory(_ context.Context, req *pb.AddMemoryRequest) (*p
 	}
 	td.memories[entry.Id] = entry
 	return &pb.AddMemoryResponse{Entry: entry}, nil
+}
+
+func (td *testDaemon) ListMemories(_ context.Context, req *pb.ListMemoriesRequest) (*pb.MemoryList, error) {
+	td.mu.Lock()
+	defer td.mu.Unlock()
+	out := make([]*pb.MemoryEntry, 0, len(td.memories))
+	for _, e := range td.memories {
+		if req.Target != "" && req.Target != "memory" {
+			continue
+		}
+		if req.Category != nil && e.Category != *req.Category {
+			continue
+		}
+		out = append(out, &pb.MemoryEntry{Id: e.Id, Key: e.Key, Category: e.Category, Content: e.Content, Priority: e.Priority})
+	}
+	return &pb.MemoryList{Entries: out}, nil
 }
 
 func (td *testDaemon) DeleteTask(_ context.Context, req *pb.DeleteTaskRequest) (*pb.DeleteTaskResponse, error) {

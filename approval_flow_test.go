@@ -136,6 +136,67 @@ func TestApprovalTaskIsWatched(t *testing.T) {
 	}
 }
 
+// TestAPausedRunStillRecordsOtherBranches: a run paused on a question is paused
+// for dispatch, not for observation. The watcher reports a terminal state
+// exactly once, so an update dropped by the paused phase is an update lost — and
+// the run resumes believing a branch is still running that died twenty minutes
+// ago.
+func TestAPausedRunStillRecordsOtherBranches(t *testing.T) {
+	o, _, s := openApproval(t, approvalConfig(10*time.Minute))
+	_ = o.dag.AddTask(&TaskNode{ID: "other", Status: status.TaskReady, AgentType: "quality_scan", Goal: "other branch"})
+
+	evt := taskEvent{ID: "other", Status: status.TaskDeadLetter, RetryCount: 2}
+	next, err := s.HandleEvent(context.Background(), o, Event{Type: EventTaskUpdate, Task: &evt})
+	if err != nil {
+		t.Fatalf("handling another branch's update: %v", err)
+	}
+	if next != nil {
+		t.Errorf("state = %T, want the run to stay paused on the open question", next)
+	}
+	if node, _ := o.dag.GetTask("other"); node.Status != status.TaskFailed {
+		t.Errorf("other branch status = %q, want failed: the update was dropped", node.Status)
+	}
+}
+
+// TestAFailureRecordedWhilePausedIsAskedAfterTheVerdict: the question was still
+// owed an answer after the run moved on. A single-slot record of pending
+// failures loses it, and nothing reports it a second time.
+func TestAFailureRecordedWhilePausedIsAskedAfterTheVerdict(t *testing.T) {
+	o, _, s := openApproval(t, approvalConfig(10*time.Minute))
+	_ = o.dag.AddTask(&TaskNode{ID: "other", Status: status.TaskReady, AgentType: "quality_scan", Goal: "other branch"})
+	evt := taskEvent{ID: "other", Status: status.TaskDeadLetter, RetryCount: 2}
+	if _, err := s.HandleEvent(context.Background(), o, Event{Type: EventTaskUpdate, Task: &evt}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Answer the first question.
+	next := answerApproval(t, o, s, ApprovalDecision{
+		Action: ApprovalCancel,
+		Reason: "the first one; the second is a different decision",
+	})
+	if err := o.Transition(next); err != nil {
+		t.Fatalf("leaving the approval: %v", err)
+	}
+
+	// The waiting phase announces the failure it inherited, and the loop decides
+	// it the same way it decides any other.
+	select {
+	case got := <-o.events:
+		if err := o.step(got); err != nil {
+			t.Fatalf("stepping the queued verdict: %v", err)
+		}
+	default:
+		t.Fatal("the failure recorded while paused was never announced")
+	}
+	second, ok := o.state.(*ApprovalState)
+	if !ok {
+		t.Fatalf("state = %T, want a second question for the other branch", o.state)
+	}
+	if second.Request.TaskID != "other" {
+		t.Errorf("second question is about %q, want the other branch", second.Request.TaskID)
+	}
+}
+
 // TestApprovalOffKeepsTheOldBehaviour: without --approval a dead letter still
 // ends the run. The loop is off unless asked for.
 func TestApprovalOffKeepsTheOldBehaviour(t *testing.T) {

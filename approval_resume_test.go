@@ -97,6 +97,194 @@ func TestResumeReEntersApproving(t *testing.T) {
 	}
 }
 
+// TestLoadRunStateFindsTheRunByItsKey: the daemon addresses memories by ID, but
+// the only thing a person has after a crash is the key printed in the log. A
+// resume that looks the key up as an ID reports "memory not found" for a run
+// that is sitting right there.
+func TestLoadRunStateFindsTheRunByItsKey(t *testing.T) {
+	td := &testDaemon{tasks: map[string]*pb.TaskEntry{}, memories: map[string]*pb.MemoryEntry{}}
+	daemon, cleanup := serveTestDaemon(t, td)
+	defer cleanup()
+
+	o := NewOrchestrator(context.Background(), &Config{RepoPath: t.TempDir()}, daemon, nil)
+	o.goal = "inventory"
+	o.runID = "abc12345"
+	o.dag = NewDAG()
+	_ = o.dag.AddTask(&TaskNode{ID: "abc12345_scan", Status: status.TaskReady, AgentType: "quality_scan", Goal: "inventory"})
+	if err := o.SaveRunState(context.Background(), "runstate_inventory_abc12345"); err != nil {
+		t.Fatal(err)
+	}
+
+	rs, err := LoadRunState(context.Background(), daemon, "runstate_inventory_abc12345")
+	if err != nil {
+		t.Fatalf("LoadRunState: %v", err)
+	}
+	if rs.RunID != "abc12345" || len(rs.Tasks) != 1 {
+		t.Errorf("loaded run = %+v, want the saved one", rs)
+	}
+	if rs.Tasks[0].TaskID != "abc12345_scan" {
+		t.Errorf("task id = %q", rs.Tasks[0].TaskID)
+	}
+}
+
+// TestTheSavedStateFollowsTheRun: the state is written at planning and must be
+// written again whenever the run changes shape. Otherwise a crash during an
+// approval resumes into the shape the run had before it opened — no pending
+// request, so the restart cannot find the question it is supposed to answer.
+func TestTheSavedStateFollowsTheRun(t *testing.T) {
+	o, td, s := openApproval(t, approvalConfig(10*time.Minute))
+	key := o.RunKey()
+	if key == "" {
+		t.Fatal("the run has no saved key, so a crash could not be resumed at all")
+	}
+
+	var saved RunState
+	if err := json.Unmarshal([]byte(td.memoryContent(key)), &saved); err != nil {
+		t.Fatalf("saved state is not a RunState: %v", err)
+	}
+	if saved.Pending == nil {
+		t.Fatal("saved state has no pending approval while the run is waiting on one")
+	}
+	if saved.Pending.ApprovalTaskID != s.ApprovalTaskID {
+		t.Errorf("saved approval task = %q, want %q", saved.Pending.ApprovalTaskID, s.ApprovalTaskID)
+	}
+	if !saved.Pending.Deadline.Equal(s.Deadline) {
+		t.Errorf("saved deadline = %v, want %v", saved.Pending.Deadline, s.Deadline)
+	}
+}
+
+// TestTheSavedStateDropsAnAnsweredApproval: the same rule the other way. A run
+// that forgot to clear the request resumes into a question already answered and
+// waits for a second answer that is never coming.
+func TestTheSavedStateDropsAnAnsweredApproval(t *testing.T) {
+	o, td, s := openApproval(t, approvalConfig(10*time.Minute))
+	// Through Transition, as the driver does it: applying a decision is one step
+	// of the loop, and the save belongs to the step, not to the handler.
+	next := answerApproval(t, o, s, ApprovalDecision{
+		Action:    ApprovalCancel,
+		Reason:    "not worth the tokens",
+		DecidedBy: "aj",
+	})
+	if err := o.Transition(next); err != nil {
+		t.Fatalf("leaving the approval: %v", err)
+	}
+
+	var saved RunState
+	if err := json.Unmarshal([]byte(td.memoryContent(o.RunKey())), &saved); err != nil {
+		t.Fatalf("saved state is not a RunState: %v", err)
+	}
+	if saved.Pending != nil {
+		t.Errorf("saved state still holds a pending approval: %+v", saved.Pending)
+	}
+}
+
+// TestResumeReusesTheRequestAlreadyInTheDaemon: the restart adopts the question
+// that is still waiting. Adding a second task under the same id would either
+// fail the run on a duplicate id or split the answer in two.
+func TestResumeReusesTheRequestAlreadyInTheDaemon(t *testing.T) {
+	td := &testDaemon{tasks: map[string]*pb.TaskEntry{}, memories: map[string]*pb.MemoryEntry{}}
+	daemon, cleanup := serveTestDaemon(t, td)
+	defer cleanup()
+
+	req := liveApprovalRequest()
+	_, _ = daemon.AddTask(context.Background(), "abc12345_scan_approval", ApprovalAgentType, "approve", "{}", 3, 600, 0)
+	before := len(td.addedIDs())
+
+	o := NewOrchestrator(context.Background(), &Config{PollIntervalSec: 1, MaxWaitSec: 2}, daemon, nil)
+	_ = o.Resume(&RunState{
+		Goal:     "inventory",
+		RepoPath: t.TempDir(),
+		RunID:    "abc12345",
+		Tasks:    []TaskSpec{{TaskID: "abc12345_scan", Status: status.TaskFailed, AgentType: "quality_scan", Goal: "inventory"}},
+		Pending:  &PendingApproval{Request: req, ApprovalTaskID: "abc12345_scan_approval", Deadline: req.Deadline},
+	})
+
+	for _, id := range td.addedIDs()[before:] {
+		if id == "abc12345_scan_approval" {
+			t.Error("resume asked the same question twice")
+		}
+	}
+}
+
+// TestResumeReCreatesAMissingRequest: the daemon can lose the question — expired
+// by its TTL, deleted, or restarted on a fresh database. A resumed run that
+// assumes the question is still there waits for an answer nobody can give until
+// its own deadline kills it. It should ask again, with the same id and deadline.
+func TestResumeReCreatesAMissingRequest(t *testing.T) {
+	td := &testDaemon{tasks: map[string]*pb.TaskEntry{}, memories: map[string]*pb.MemoryEntry{}}
+	daemon, cleanup := serveTestDaemon(t, td)
+	defer cleanup()
+
+	req := liveApprovalRequest()
+	o := NewOrchestrator(context.Background(), &Config{PollIntervalSec: 1, MaxWaitSec: 2}, daemon, nil)
+	_ = o.Resume(&RunState{
+		Goal:     "inventory",
+		RepoPath: t.TempDir(),
+		RunID:    "abc12345",
+		Tasks:    []TaskSpec{{TaskID: "abc12345_scan", Status: status.TaskFailed, AgentType: "quality_scan", Goal: "inventory"}},
+		Pending:  &PendingApproval{Request: req, ApprovalTaskID: "abc12345_scan_approval", Deadline: req.Deadline},
+	})
+
+	found := false
+	for _, id := range td.addedIDs() {
+		if id == "abc12345_scan_approval" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("resume did not re-create the missing request; added=%v", td.addedIDs())
+	}
+}
+
+// TestResumeReCreatesAFinishedRequest: a task already answered is not one that
+// will be answered again. The watcher sees an update once; waiting on a task
+// that is already done waits forever, so the run asks again instead.
+func TestResumeReCreatesAFinishedRequest(t *testing.T) {
+	td := &testDaemon{tasks: map[string]*pb.TaskEntry{}, memories: map[string]*pb.MemoryEntry{}}
+	daemon, cleanup := serveTestDaemon(t, td)
+	defer cleanup()
+
+	req := liveApprovalRequest()
+	_, _ = daemon.AddTask(context.Background(), "abc12345_scan_approval", ApprovalAgentType, "approve", "{}", 3, 600, 0)
+	// Simulate a request that was answered while the orchestrator was down.
+	td.mu.Lock()
+	td.tasks["abc12345_scan_approval"].Status = "done"
+	td.tasks["abc12345_scan_approval"].ResultKey = "mem-1"
+	td.mu.Unlock()
+	before := len(td.addedIDs())
+
+	o := NewOrchestrator(context.Background(), &Config{PollIntervalSec: 1, MaxWaitSec: 2}, daemon, nil)
+	_ = o.Resume(&RunState{
+		Goal:     "inventory",
+		RepoPath: t.TempDir(),
+		RunID:    "abc12345",
+		Tasks:    []TaskSpec{{TaskID: "abc12345_scan", Status: status.TaskFailed, AgentType: "quality_scan", Goal: "inventory"}},
+		Pending:  &PendingApproval{Request: req, ApprovalTaskID: "abc12345_scan_approval", Deadline: req.Deadline},
+	})
+
+	found := false
+	for _, id := range td.addedIDs()[before:] {
+		if id == "abc12345_scan_approval" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("a finished request was reused; added=%v", td.addedIDs()[before:])
+	}
+}
+
+// liveApprovalRequest is a request whose deadline has not passed.
+func liveApprovalRequest() ApprovalRequest {
+	return ApprovalRequest{
+		TaskID:    "abc12345_scan",
+		AgentType: "quality_scan",
+		Attempts:  2,
+		Reason:    "dead-lettered",
+		OpenedAt:  time.Now(),
+		Deadline:  time.Now().Add(60 * time.Second),
+	}
+}
+
 // TestResumeKeepsTheApprovalLoop: a run that asked humans before the crash must
 // keep asking after the resume. The policy is part of the run, not of the
 // invocation that resumed it.
