@@ -161,7 +161,7 @@ func (e *Executor) Execute(ctx context.Context, task *client.TaskEntry, repoPath
 
 	messages := []ollama.Message{{
 		Role:    "user",
-		Content: buildExecutionPrompt(task.Goal, contextStr),
+		Content: buildExecutionPrompt(task.Goal, contextStr, repoPath),
 	}}
 
 	findings := make(map[string]any)
@@ -316,10 +316,29 @@ func runCommand(shellCmd, repoPath string) cmdOutput {
 	return cmdOutput{Stdout: out, Stderr: errOut, ExitCode: exitCode}
 }
 
+// workingDirectoryBlock tells the model where its commands run.
+//
+// Without it a model assumes a path of its own invention — one run answered
+// "/workspace is empty, with no Go files or go.mod" while the executor was
+// running commands inside the repository. An empty finding set and a clean
+// project look identical downstream, so the assumption has to be removed at the
+// source rather than detected afterwards.
+func workingDirectoryBlock(workdir string) string {
+	if workdir == "" {
+		return `WORKING DIRECTORY: unknown to the harness — your commands run in the worker's
+current directory. Run pwd as your first command and work from what it prints.
+Do not assume a path such as /workspace.`
+	}
+	return fmt.Sprintf(`WORKING DIRECTORY: %s
+Every command runs with that directory as its working directory. Use relative
+paths ("." / "./internal/..."), not absolute paths you have invented. If you need
+to confirm, run pwd. Do not assume a path such as /workspace.`, workdir)
+}
+
 // buildExecutionPrompt constructs the system+user prompt for task execution.
 // If context.source_path points to a file (not a directory), the prompt
 // directs the worker to read the target file directly in the first turn.
-func buildExecutionPrompt(goal, contextStr string) string {
+func buildExecutionPrompt(goal, contextStr, workdir string) string {
 	// Detect file-specific goals from context
 	var isFileGoal bool
 	if contextStr != "" {
@@ -337,6 +356,8 @@ func buildExecutionPrompt(goal, contextStr string) string {
 Your job: read and process the target file. The file path is in the CONTEXT below.
 Your first command MUST read or inspect the file directly — do NOT search the
 filesystem, discover the project, or run find. Start with cat, head, or file.
+
+%s
 
 PROTOCOL — respond with exactly one of these on each turn:
 CMD: <shell command>
@@ -362,13 +383,15 @@ CONTEXT:
 GOAL:
 %s
 
-Start now: read the target file.`, contextStr, goal)
+Start now: read the target file.`, workingDirectoryBlock(workdir), contextStr, goal)
 	}
 
 	return fmt.Sprintf(`You are an autonomous worker agent executing a task.
 
 Your job: accomplish the goal using shell commands. You have terminal access
 to read-only analysis tools within the repository directory.
+
+%s
 
 PROTOCOL — respond with exactly one of these on each turn:
 CMD: <shell command>
@@ -395,7 +418,7 @@ CONTEXT:
 GOAL:
 %s
 
-Start now: output your first CMD: line.`, contextStr, goal)
+Start now: output your first CMD: line.`, workingDirectoryBlock(workdir), contextStr, goal)
 }
 
 // fileExtensions is the set of extensions that indicate a file path rather
