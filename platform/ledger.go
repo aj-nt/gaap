@@ -371,8 +371,19 @@ func NewLedgerAt(path string) (*Ledger, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Attach the sink directly. The loaded entries are already in the file, so
-	// backfilling them (as SetSink would) would duplicate the whole log.
+	// A brand-new record: let SetSink attach it, so the empty-ledger invariant is
+	// enforced by the API rather than assumed by this constructor.
+	if len(entries) == 0 {
+		l := &Ledger{entries: entries}
+		if err := l.SetSink(s); err != nil {
+			_ = s.Close()
+			return nil, err
+		}
+		return l, nil
+	}
+	// Reopening an existing record: attach the sink directly. The loaded entries
+	// are already in the file, so backfilling them (as SetSink would) would
+	// duplicate the whole log.
 	return &Ledger{entries: entries, sink: s}, nil
 }
 

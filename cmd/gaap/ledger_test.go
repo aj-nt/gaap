@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,7 +31,7 @@ func seedLedger(t *testing.T) string {
 
 func TestLedgerVerifyAcceptsCleanFile(t *testing.T) {
 	path := seedLedger(t)
-	if err := ledgerVerify([]string{path}); err != nil {
+	if err := ledgerVerify([]string{path}, io.Discard); err != nil {
 		t.Fatalf("verify on a clean ledger: %v", err)
 	}
 }
@@ -49,7 +50,7 @@ func TestLedgerVerifyRejectsTamperedFile(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	err = ledgerVerify([]string{path})
+	err = ledgerVerify([]string{path}, io.Discard)
 	if err == nil {
 		t.Fatal("verify accepted a tampered ledger")
 	}
@@ -59,19 +60,19 @@ func TestLedgerVerifyRejectsTamperedFile(t *testing.T) {
 }
 
 func TestLedgerVerifyRequiresPath(t *testing.T) {
-	if err := ledgerVerify(nil); err == nil {
+	if err := ledgerVerify(nil, io.Discard); err == nil {
 		t.Fatal("verify accepted a missing path")
 	}
 }
 
 func TestLedgerTailRejectsUnknownSubcommand(t *testing.T) {
-	if err := ledgerCommand([]string{"nonsense"}); err == nil {
+	if err := ledgerCommand([]string{"nonsense"}, io.Discard); err == nil {
 		t.Fatal("unknown ledger subcommand was accepted")
 	}
 }
 
 func TestLedgerCommandRequiresSubcommand(t *testing.T) {
-	if err := ledgerCommand(nil); err == nil {
+	if err := ledgerCommand(nil, io.Discard); err == nil {
 		t.Fatal("missing ledger subcommand was accepted")
 	}
 }

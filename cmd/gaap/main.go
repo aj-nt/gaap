@@ -69,7 +69,7 @@ func main() {
 			os.Exit(1)
 		}
 	case "ledger":
-		if err := ledgerCommand(os.Args[2:]); err != nil {
+		if err := ledgerCommand(os.Args[2:], os.Stdout); err != nil {
 			slog.Error(err.Error())
 			os.Exit(1)
 		}
