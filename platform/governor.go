@@ -7,14 +7,27 @@ import (
 	"fmt"
 )
 
+// KillReader is the read side of a kill switch. Trip is deliberately absent:
+// only an operator trips a switch, and only through a durable one, so the
+// governor cannot be handed the ability to stop itself.
+type KillReader interface {
+	Tripped(scope string) bool
+	TrippedScope(scope string) string
+}
+
 // Governor wires the primitives into a single decision authority — the "judge"
 // from the design doc. It decides deterministically and records everything.
 type Governor struct {
-	Policy   *PolicyEngine
-	Kill     *KillSwitch
-	Trust    *TrustManager
-	Ledger   *Ledger
+	Policy *PolicyEngine
+	Kill   KillReader
+	Trust  *TrustManager
+	Ledger *Ledger
+	// Enforcer applies the decision to the world. nil = noop.
 	Enforcer Enforcer
+	// TrustFloor escalates an allow to review while the trust score sits below
+	// it. Zero disables the check: a governor that starts reviewing everything
+	// on the day it is installed is a governor nobody runs.
+	TrustFloor float64
 	// Classify maps a tool name to its reversibility class. Defaults to the
 	// kernel's conservative classifier (everything irreversible). A governed
 	// workload injects a classifier that knows its own read-only tools, so the
@@ -46,10 +59,11 @@ type Governor struct {
 	Hash func(value string) string
 }
 
-// NewGovernor returns a governor with defaults: deny-by-default policy, an
-// open kill switch, trust starting at 500, a memory-only ledger, and a noop
-// enforcer. Attach a durable ledger (NewLedgerAt) to make the record survive
-// the process.
+// NewGovernor returns a governor with defaults: deny-by-default policy, an open
+// kill switch, trust starting at 500, a memory-only ledger and content store,
+// and a noop enforcer. Attach a durable ledger (NewLedgerAt) and the matching
+// file-backed switch, refs and content store to make the record survive the
+// process.
 func NewGovernor() *Governor {
 	return &Governor{
 		Policy:   NewPolicyEngine(),
@@ -57,11 +71,17 @@ func NewGovernor() *Governor {
 		Trust:    NewTrustManager(500),
 		Ledger:   NewLedger(),
 		Enforcer: &NoopEnforcer{},
+		// Content is not decoration: without it a decision is recorded with a
+		// commitment that points at nothing, and an erasure is a no-op that
+		// still reports success. The default governor stores what it decided on.
+		Content: NewMemoryContentStore(),
 	}
 }
 
 // Decide evaluates a tool call for an agent. Kill switch first (non-negotiable),
-// then policy. A non-allow decision penalizes trust. Every decision is recorded.
+// then policy. The decision moves trust in both directions — an allow is
+// evidence too — and the trust floor can escalate an allow to review. Every
+// decision is recorded.
 //
 // If the decision cannot be recorded, Decide refuses the call. A governor that
 // cannot record cannot govern: what is not on the record cannot be proven, so
@@ -69,12 +89,24 @@ func NewGovernor() *Governor {
 // allowed blind.
 func (g *Governor) Decide(agentID, tool string, args map[string]any) Decision {
 	var d Decision
-	if g.Kill.Tripped(agentID) {
-		d = Deny("kill switch tripped")
+	if scope := g.Kill.TrippedScope(agentID); scope != "" {
+		// Name the scope. "kill switch tripped" reads the same whether one
+		// agent was stopped or the whole fleet was.
+		d = Deny("kill switch tripped: scope " + scope)
 	} else {
 		d = g.Policy.Evaluate(tool, args)
 	}
-	if d.Action != ActionAllow {
+	if d.Action == ActionAllow {
+		g.Trust.Reward(1)
+		if g.TrustFloor > 0 {
+			if score := g.Trust.Score(); score < g.TrustFloor {
+				d = Decision{
+					Action: ActionReview,
+					Reason: fmt.Sprintf("trust %.0f below floor %.0f", score, g.TrustFloor),
+				}
+			}
+		}
+	} else {
 		g.Trust.Penalize(1)
 	}
 	if err := g.record(agentID, tool, args, d); err != nil {
