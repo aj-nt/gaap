@@ -23,7 +23,9 @@ import (
 type approvalClient interface {
 	FindReadyTasks(ctx context.Context, agentType string, limit int32) ([]*client.TaskEntry, error)
 	AddMemory(ctx context.Context, target, category, key, content string, priority int32, sourceAgent string) (*pb.MemoryEntry, error)
+	ClaimTask(ctx context.Context, taskID, agentID string) (*client.TaskEntry, error)
 	CompleteTask(ctx context.Context, taskID, resultKey string) (*client.TaskEntry, error)
+	GetTask(ctx context.Context, id string) (*client.TaskEntry, error)
 }
 
 // pendingApproval is one question the daemon is holding for a human.
@@ -212,6 +214,42 @@ func parseApproveFlags(args []string) (*approveConfig, error) {
 	return cfg, nil
 }
 
+// claimApproval takes the question before anything is written. A lost claim is
+// resolved rather than swallowed: already answered, held by someone else, ours
+// from an earlier attempt, or gone. The daemon reports a loss as a sentinel entry
+// (status "claimed", owner "other") instead of an error, so the state has to be
+// read back to say which case it was.
+func claimApproval(ctx context.Context, c approvalClient, taskID, agent string) error {
+	claimed, err := c.ClaimTask(ctx, taskID, agent)
+	if err != nil {
+		return fmt.Errorf("claiming the approval task %s: %w", taskID, err)
+	}
+	if claimed != nil && claimed.AssignedAgent == agent {
+		return nil
+	}
+
+	entry, err := c.GetTask(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("reading approval task %s after losing the claim: %w", taskID, err)
+	}
+	if entry == nil {
+		return fmt.Errorf("approval task %s is gone: it was withdrawn or expired before it could be answered", taskID)
+	}
+
+	switch {
+	case entry.Status == "done":
+		return fmt.Errorf("approval task %s was already answered; nothing was written", taskID)
+	case entry.AssignedAgent == agent:
+		// We claimed it on an earlier attempt and the completion failed. The retry
+		// writes the same decision, so it is safe to proceed.
+		return nil
+	case entry.AssignedAgent != "":
+		return fmt.Errorf("approval task %s is held by %s; nothing was written", taskID, entry.AssignedAgent)
+	default:
+		return fmt.Errorf("approval task %s is not claimable (status %s)", taskID, entry.Status)
+	}
+}
+
 // approveRun enacts one decision. Every refusal happens before anything is
 // written: a half-answered question is worse than an unanswered one.
 func approveRun(ctx context.Context, c approvalClient, cfg *approveConfig, stdout io.Writer) error {
@@ -243,6 +281,14 @@ func approveRun(ctx context.Context, c approvalClient, cfg *approveConfig, stdou
 		DecidedAt: time.Now().UTC(),
 	}
 	if err := decision.Validate(); err != nil {
+		return err
+	}
+
+	// Take the question before writing anything. The daemon's claim is a
+	// compare-and-set on "ready", so two operators answering at the same moment
+	// resolve to one: without this the loser also records a decision and overwrites
+	// the winner's result key.
+	if err := claimApproval(ctx, c, chosen.ApprovalTaskID, cfg.Agent); err != nil {
 		return err
 	}
 

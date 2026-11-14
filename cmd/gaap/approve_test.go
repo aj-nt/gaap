@@ -20,6 +20,13 @@ type fakeApprovalClient struct {
 	completed   map[string]string // task id → result key
 	lastWritten string
 	failFind    bool
+
+	// claims is the daemon's claimed-by map; events is the ordered record of what
+	// the client did, so a test can assert the claim happens before any write.
+	claims    map[string]string
+	tasks     map[string]*client.TaskEntry // what GetTask returns
+	claimLost bool                         // another approver won the race
+	events    []string
 }
 
 func (f *fakeApprovalClient) FindReadyTasks(_ context.Context, agentType string, _ int32) ([]*client.TaskEntry, error) {
@@ -46,8 +53,28 @@ func (f *fakeApprovalClient) CompleteTask(_ context.Context, taskID, resultKey s
 	if f.completed == nil {
 		f.completed = map[string]string{}
 	}
+	f.events = append(f.events, "complete:"+taskID)
 	f.completed[taskID] = resultKey
 	return &client.TaskEntry{Id: taskID, Status: "done"}, nil
+}
+
+// ClaimTask mirrors the daemon: the CAS only succeeds while the task is ready, and
+// a loss comes back as the daemon's sentinel entry (status claimed, owned by
+// "other") rather than an error.
+func (f *fakeApprovalClient) ClaimTask(_ context.Context, taskID, agentID string) (*client.TaskEntry, error) {
+	f.events = append(f.events, "claim:"+taskID+":"+agentID)
+	if f.claimLost || f.claims[taskID] != "" {
+		return &client.TaskEntry{Id: taskID, Status: "claimed", AssignedAgent: "other"}, nil
+	}
+	if f.claims == nil {
+		f.claims = map[string]string{}
+	}
+	f.claims[taskID] = agentID
+	return &client.TaskEntry{Id: taskID, Status: "claimed", AssignedAgent: agentID}, nil
+}
+
+func (f *fakeApprovalClient) GetTask(_ context.Context, id string) (*client.TaskEntry, error) {
+	return f.tasks[id], nil
 }
 
 // pendingTask builds an approval task as the orchestrator would leave it.
@@ -249,5 +276,82 @@ func TestApproveRejectsAgentTypeWithoutReassign(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "reassign") {
 		t.Errorf("the error should point at the reassign action: %v", err)
+	}
+}
+
+// The claim is the serialization point: if two operators answer the same question
+// at the same time, the daemon's CAS lets exactly one of them through. Without it
+// both write a decision record and both complete the task, and the second result
+// key silently overwrites the first.
+func TestApproveClaimsTheRequestBeforeRecordingAnything(t *testing.T) {
+	c := &fakeApprovalClient{ready: []*client.TaskEntry{
+		pendingTask("abc12345_a_approval", "abc12345_a", "quality_scan", 2),
+	}}
+
+	var out strings.Builder
+	cfg := &approveConfig{RunID: "abc12345", Action: "retry", Reason: "rate limited", Agent: "aj"}
+	if err := approveRun(context.Background(), c, cfg, &out); err != nil {
+		t.Fatalf("approveRun: %v", err)
+	}
+
+	if len(c.events) == 0 || !strings.HasPrefix(c.events[0], "claim:abc12345_a_approval:aj") {
+		t.Fatalf("the claim must be the first thing the approver does, got %v", c.events)
+	}
+	if got := c.claims["abc12345_a_approval"]; got != "aj" {
+		t.Errorf("the claim should be held by the approver, got %q", got)
+	}
+	if _, ok := c.completed["abc12345_a_approval"]; !ok {
+		t.Errorf("the winning approver should still complete the task: %v", c.completed)
+	}
+}
+
+func TestApproveRefusesWhenAnotherApproverAnsweredFirst(t *testing.T) {
+	c := &fakeApprovalClient{
+		ready: []*client.TaskEntry{
+			pendingTask("abc12345_a_approval", "abc12345_a", "quality_scan", 2),
+		},
+		claimLost: true,
+		tasks: map[string]*client.TaskEntry{
+			"abc12345_a_approval": {Id: "abc12345_a_approval", Status: "done", AssignedAgent: "sam"},
+		},
+	}
+
+	var out strings.Builder
+	cfg := &approveConfig{RunID: "abc12345", Action: "retry", Reason: "r", Agent: "aj"}
+	err := approveRun(context.Background(), c, cfg, &out)
+	if err == nil {
+		t.Fatal("a question another operator already answered must not be answered again")
+	}
+	if !strings.Contains(err.Error(), "already") {
+		t.Errorf("the error should say the question was already answered: %v", err)
+	}
+	if len(c.memories) != 0 {
+		t.Errorf("a losing approver must not write a decision to the blackboard: %d written", len(c.memories))
+	}
+	if len(c.completed) != 0 {
+		t.Errorf("a losing approver must not complete the task: %v", c.completed)
+	}
+}
+
+// A failed completion after a successful claim leaves the task claimed by us. The
+// retry has to go through, or a transient daemon error locks the question forever.
+func TestApproveProceedsWhenWeAlreadyHoldTheClaim(t *testing.T) {
+	c := &fakeApprovalClient{
+		ready: []*client.TaskEntry{
+			pendingTask("abc12345_a_approval", "abc12345_a", "quality_scan", 2),
+		},
+		claimLost: true, // the CAS refuses: the task is no longer ready
+		tasks: map[string]*client.TaskEntry{
+			"abc12345_a_approval": {Id: "abc12345_a_approval", Status: "claimed", AssignedAgent: "aj"},
+		},
+	}
+
+	var out strings.Builder
+	cfg := &approveConfig{RunID: "abc12345", Action: "retry", Reason: "rate limited", Agent: "aj"}
+	if err := approveRun(context.Background(), c, cfg, &out); err != nil {
+		t.Fatalf("retrying our own claim should succeed: %v", err)
+	}
+	if _, ok := c.completed["abc12345_a_approval"]; !ok {
+		t.Errorf("the retry should complete the task: %v", c.completed)
 	}
 }
