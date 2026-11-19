@@ -35,6 +35,12 @@ func (f *fakeApprovalClient) FindReadyTasks(_ context.Context, agentType string,
 	}
 	var out []*client.TaskEntry
 	for _, t := range f.ready {
+		// The daemon's query is WHERE status = 'ready', so a claimed question is not
+		// listed at all. Modelling it as "return everything" let a test prove the
+		// retry branch while the CLI could never reach it.
+		if t.Status != "ready" {
+			continue
+		}
 		if t.AgentType == agentType {
 			out = append(out, t)
 		}
@@ -336,22 +342,50 @@ func TestApproveRefusesWhenAnotherApproverAnsweredFirst(t *testing.T) {
 // A failed completion after a successful claim leaves the task claimed by us. The
 // retry has to go through, or a transient daemon error locks the question forever.
 func TestApproveProceedsWhenWeAlreadyHoldTheClaim(t *testing.T) {
+	// Claimed by us, completion never landed: the question is not ready, so it is
+	// absent from FindReadyTasks (the daemon filters status = 'ready'). Naming it is
+	// the only way back to it, and the claim we hold is what lets the retry through
+	// instead of reporting the task as held by another operator.
+	claimed := pendingTask("abc12345_a_approval", "abc12345_a", "quality_scan", 2)
+	claimed.Status = "claimed"
+	claimed.AssignedAgent = "aj"
 	c := &fakeApprovalClient{
-		ready: []*client.TaskEntry{
-			pendingTask("abc12345_a_approval", "abc12345_a", "quality_scan", 2),
-		},
-		claimLost: true, // the CAS refuses: the task is no longer ready
-		tasks: map[string]*client.TaskEntry{
-			"abc12345_a_approval": {Id: "abc12345_a_approval", Status: "claimed", AssignedAgent: "aj"},
-		},
+		claims: map[string]string{"abc12345_a_approval": "aj"},
+		tasks:  map[string]*client.TaskEntry{"abc12345_a_approval": claimed},
 	}
 
 	var out strings.Builder
-	cfg := &approveConfig{RunID: "abc12345", Action: "retry", Reason: "rate limited", Agent: "aj"}
+	cfg := &approveConfig{RunID: "abc12345", Task: "abc12345_a_approval", Action: "retry", Reason: "rate limited", Agent: "aj"}
 	if err := approveRun(context.Background(), c, cfg, &out); err != nil {
 		t.Fatalf("retrying our own claim should succeed: %v", err)
 	}
 	if _, ok := c.completed["abc12345_a_approval"]; !ok {
 		t.Errorf("the retry should complete the task: %v", c.completed)
+	}
+	if _, ok := c.claims["abc12345_a_approval"]; !ok {
+		t.Errorf("the retry should still hold the claim: %v", c.claims)
+	}
+}
+
+// A named task that belongs to a different run is refused: the run-id prefix is the
+// only thing tying a question to the run that asked it, and the direct read reaches
+// tasks the ready list would never have offered.
+func TestApproveRejectsAnApprovalFromAnotherRun(t *testing.T) {
+	other := pendingTask("def67890_a_approval", "def67890_a", "quality_scan", 2)
+	c := &fakeApprovalClient{
+		tasks: map[string]*client.TaskEntry{"def67890_a_approval": other},
+	}
+
+	var out strings.Builder
+	cfg := &approveConfig{RunID: "abc12345", Task: "def67890_a_approval", Action: "retry", Reason: "r", Agent: "aj"}
+	err := approveRun(context.Background(), c, cfg, &out)
+	if err == nil {
+		t.Fatal("a question belonging to another run must not be answered")
+	}
+	if !strings.Contains(err.Error(), "does not belong to run") {
+		t.Errorf("the error should name the mismatch: %v", err)
+	}
+	if len(c.memories) != 0 || len(c.completed) != 0 {
+		t.Errorf("nothing should be written: memories=%v completed=%v", c.memories, c.completed)
 	}
 }
