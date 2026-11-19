@@ -169,11 +169,6 @@ type Orchestrator struct {
 	// and the watcher reports a terminal state exactly once.
 	pendingFailures []failureRecord
 
-	// pendingFailure is the dead letter the loop has not yet answered. Set by
-	// failTask on the loop goroutine and consumed by waitVerdict, which is the
-	// only place that decides whether a failure ends the run or asks a human.
-	pendingFailure *failureRecord
-
 	// phaseLog records every phase entered, in order. Cheap, and it is how a
 	// test can assert the run followed the graph instead of merely ending.
 	phaseLog []Phase
@@ -891,7 +886,6 @@ func (o *Orchestrator) approvalVerdict() OrchestratorState {
 		return o.approvalVerdict()
 	}
 	o.pendingFailures = o.pendingFailures[1:]
-	o.pendingFailure = nil
 
 	req := NewApprovalRequest(node.ID, node.AgentType, f.Attempts, node.Summary, time.Now(), o.cfg.Approval.Timeout)
 	slog.Info("approval: asking a human",
@@ -959,7 +953,6 @@ func (o *Orchestrator) failTask(node *TaskNode, attempts int32, logPrefix string
 	// paused on a question, and an event that is reported once cannot be looked
 	// up again later.
 	o.pendingFailures = append(o.pendingFailures, failureRecord{TaskID: node.ID, Attempts: attempts})
-	o.pendingFailure = &o.pendingFailures[len(o.pendingFailures)-1]
 	o.fireTaskFailed(node.ID, logPrefix, skipped)
 }
 
