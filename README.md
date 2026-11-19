@@ -5,6 +5,8 @@
 Model-agnostic multi-agent orchestrator on the blackboard pattern. Coordinates heterogeneous agents
 through shared memory (Vassago).
 
+**Here for the governance layer?** Start at [Governance](#governance).
+
 ## Governance
 
 Gaap also hosts a governance layer for autonomous agents: the missing legal layer that sits
@@ -43,9 +45,11 @@ and destroying it is what an erasure actually does:
 Read it from a terminal:
 
 ```bash
-gaap ledger verify ~/.vagent/ledger/agent.jsonl   # recompute the chain, print genesis + head
-gaap ledger tail ~/.vagent/ledger/agent.jsonl     # last 20 decisions, with rule attribution
+gaap ledger verify .gaap/ledger.jsonl   # recompute the chain, print genesis + head
+gaap ledger tail .gaap/ledger.jsonl     # last 20 decisions, with rule attribution
 ```
+
+The state tree defaults to `.gaap` in the working directory; `--state DIR` points it elsewhere.
 
 Chain verification catches a tampered entry or entries removed from the middle. Removing
 entries from the *end* leaves a shorter, internally consistent chain — detecting that needs
@@ -59,8 +63,8 @@ and read what it recorded:
 ```bash
 gaap govern decide --policy rules.json --subject agent-1 \
   --tool Execute --args '{"command":"rm -rf /tmp/x"}' --read-tools ReadFile
-gaap ledger tail ~/.gaap/ledger.jsonl
-gaap ledger verify ~/.gaap/ledger.jsonl
+gaap ledger tail .gaap/ledger.jsonl
+gaap ledger verify --state .gaap .gaap/ledger.jsonl
 ```
 
 `rules.json` is the sovereign's standing orders: deny-by-default, with named rules and
@@ -151,7 +155,7 @@ gaap run --dry-run "audit the codebase for security issues"
 gaap run --subscribe "review the daemon/internal/grpc package for code quality"
 
 # Run with a different model
-gaap run --model claude-sonnet-4-6 --ollama-url http://192.168.86.27:11434/v1 "audit the codebase"
+gaap run --model claude-sonnet-4-6 --ollama-url http://localhost:11434/v1 "audit the codebase"
 
 # Resuming after orchestrator crash (run key printed in planning logs)
 gaap resume runstate_audit-the-codebase_3f7a1b2c
