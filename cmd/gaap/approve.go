@@ -186,7 +186,7 @@ func parseApproveFlags(args []string) (*approveConfig, error) {
 	fs := flag.NewFlagSet("approve", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	fs.StringVar(&cfg.Task, "task", "", "Task to answer, when the run has more than one pending (default: the only one)")
+	fs.StringVar(&cfg.Task, "task", "", "Task to answer (the failed task's id or the approval task's id); also reaches a question this operator already claimed")
 	fs.StringVar(&cfg.Action, "action", "retry", "What to do: retry, reassign, edit or cancel (default: retry)")
 	fs.StringVar(&cfg.AgentType, "agent-type", "", "Agent type for --action reassign")
 	fs.StringVar(&cfg.Context, "context", "", "JSON object of amended context for --action edit")
@@ -263,13 +263,15 @@ func approveRun(ctx context.Context, c approvalClient, cfg *approveConfig, stdou
 		return fmt.Errorf("--agent-type is only valid with --action reassign")
 	}
 
-	pending, err := pendingApprovals(ctx, c, cfg.RunID)
+	chosen, err := requestToAnswer(ctx, c, cfg.RunID, cfg.Task)
 	if err != nil {
 		return err
 	}
-	chosen, err := selectApproval(pending, cfg.Task)
-	if err != nil {
-		return err
+	if chosen.RequestJSONErr != "" {
+		// The decision record is keyed by the failed task's id, which is inside the
+		// request. Writing one from an unreadable request would file it under an
+		// empty key and leave the run with a decision it cannot attribute.
+		return fmt.Errorf("approval task %s: %s", chosen.ApprovalTaskID, chosen.RequestJSONErr)
 	}
 
 	decision := gaap.ApprovalDecision{
@@ -344,6 +346,52 @@ func pendingApprovals(ctx context.Context, c approvalClient, runID string) ([]pe
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+// requestToAnswer resolves which question this invocation answers. A task named
+// with --task is matched against the ready questions first, because --task accepts
+// the failed task's id as well as the approval task's. Only when nothing ready
+// matches is the task read directly: a question this operator already claimed is no
+// longer ready, and a retry after a failed completion has to be able to reach it.
+// The claim that follows resolves every state either way, so naming an unready task
+// is not a way around the claim — it is the only way back to one.
+func requestToAnswer(ctx context.Context, c approvalClient, runID, task string) (pendingApproval, error) {
+	pending, err := pendingApprovals(ctx, c, runID)
+	if err != nil {
+		return pendingApproval{}, err
+	}
+	if task == "" {
+		return selectApproval(pending, "")
+	}
+	if chosen, err := selectApproval(pending, task); err == nil {
+		return chosen, nil
+	}
+	return namedApproval(ctx, c, runID, task)
+}
+
+// namedApproval reads an approval task by id without requiring it to be ready. The
+// run-id prefix is the only thing tying a question to the run that asked it, so a
+// task from another run is refused rather than answered.
+func namedApproval(ctx context.Context, c approvalClient, runID, task string) (pendingApproval, error) {
+	entry, err := c.GetTask(ctx, task)
+	if err != nil {
+		return pendingApproval{}, fmt.Errorf("reading approval task %s: %w", task, err)
+	}
+	if entry == nil {
+		return pendingApproval{}, fmt.Errorf("no approval task %s", task)
+	}
+	if entry.AgentType != gaap.ApprovalAgentType {
+		return pendingApproval{}, fmt.Errorf("task %s is not an approval request (agent type %q)", task, entry.AgentType)
+	}
+	if runID != "" && !strings.HasPrefix(entry.Id, runID+"_") {
+		return pendingApproval{}, fmt.Errorf("approval task %s does not belong to run %s", task, runID)
+	}
+
+	p := pendingApproval{ApprovalTaskID: entry.Id}
+	if err := json.Unmarshal([]byte(entry.Context), &p.Request); err != nil {
+		p.RequestJSONErr = fmt.Sprintf("unreadable request: %v", err)
+	}
+	return p, nil
 }
 
 // selectApproval resolves which question was meant. Guessing between two is how
