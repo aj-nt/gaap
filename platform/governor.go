@@ -33,6 +33,16 @@ type Governor struct {
 	// workload injects a classifier that knows its own read-only tools, so the
 	// ledger can admit which effects are provably pure. nil = conservative.
 	Classify func(tool string) Reversibility
+	// ClassOf maps a tool name to its action class when no rule declares one.
+	// nil = rule declarations only.
+	//
+	// A governed workload injects this because it knows what its own tools do;
+	// the kernel must not guess semantics it cannot see — the same reason
+	// Classify is injectable. Without it, a deny-by-default refusal (no rule
+	// names the tool, which is the common case) carries no class, so every
+	// unlisted tool lands in one bucket and three unrelated refusals read as a
+	// single sustained attempt.
+	ClassOf func(tool string) ActionClass
 	// Committer makes the subject and input commitments keyed and erasable.
 	// nil = plain sha256 (the pre-erasure format): commitments are then
 	// brute-forceable by anyone holding the ledger. Prefer a Committer with a
@@ -124,7 +134,7 @@ func (g *Governor) Decide(agentID, tool string, args map[string]any) Decision {
 	if d.Action != ActionAllow {
 		dc := DenialClass{
 			Rule:          d.RuleID,
-			ActionClass:   g.Policy.ActionClassOf(tool),
+			ActionClass:   g.actionClassFor(tool),
 			Forbidden:     tool,
 			Permitted:     g.Policy.PermittedFor(tool),
 			CorrelationID: NewCorrelationID(),
@@ -198,6 +208,19 @@ func (g *Governor) record(agentID, tool string, args map[string]any, d Decision)
 		}
 	}
 	return nil
+}
+
+// actionClassFor resolves the class of a refused call: what the rule declared,
+// else what the injected classifier says. Rule wins because a policy author
+// naming a tool is more specific than a tool's default class.
+func (g *Governor) actionClassFor(tool string) ActionClass {
+	if c := g.Policy.ActionClassOf(tool); c != "" {
+		return c
+	}
+	if g.ClassOf != nil {
+		return g.ClassOf(tool)
+	}
+	return ""
 }
 
 // denialClassOf and correlationOf read the structured refusal, if there is one.
