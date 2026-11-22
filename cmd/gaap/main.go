@@ -103,6 +103,7 @@ Usage:
   gaap approve <run-id> [--task <task-id>] [--action retry|reassign|edit|cancel]
                [--agent-type <type>] [--context <json>] --reason <why> --agent <who>
   gaap govern decide --policy <file> --subject <id> --tool <name> [--args <json>]
+  gaap govern lint --policy <file> [--strict]
   gaap govern erase --subject <id> [--reason <code>]
   gaap govern kill --scope <agent-id|global> [--reason <code>]
   gaap govern status

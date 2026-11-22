@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // KillReader is the read side of a kill switch. Trip is deliberately absent:
@@ -43,6 +44,14 @@ type Governor struct {
 	// unlisted tool lands in one bucket and three unrelated refusals read as a
 	// single sustained attempt.
 	ClassOf func(tool string) ActionClass
+	// PreState captures a commitment to the state a destructive call replaces,
+	// before the call is recorded. nil means no capturer: a rule declaring an
+	// artifact of type delete then denies, because a deletion nobody can describe
+	// is not recoverable and must not be recorded as though it were.
+	//
+	// Capturing pre-state needs no inverse. Preserving what was there is a
+	// different capability from being able to put it back.
+	PreState func(tool string, args map[string]any) (commitment string, err error)
 	// Committer makes the subject and input commitments keyed and erasable.
 	// nil = plain sha256 (the pre-erasure format): commitments are then
 	// brute-forceable by anyone holding the ledger. Prefer a Committer with a
@@ -96,6 +105,30 @@ func NewGovernor() *Governor {
 	}
 }
 
+// DecideOpts carries context a decision needs but the governor cannot derive:
+// which run it belongs to, and which tasks it descends from.
+//
+// Both are absent on the CLI path, and empty is the honest answer there — no
+// run, no parent — rather than a guess. It is an options struct because a second
+// Decide signature would leave two ways to pass context to one decision, and the
+// call site that forgot one is the one that records a blank.
+type DecideOpts struct {
+	RunID       string
+	ParentTasks string
+}
+
+// DecideOpt adjusts the context of one decision.
+type DecideOpt func(*DecideOpts)
+
+// WithRun attributes the decision to a run.
+func WithRun(id string) DecideOpt { return func(o *DecideOpts) { o.RunID = id } }
+
+// WithParents attributes the decision to the tasks it descends from. The lineage
+// that exists is a list of task ids; an agent type has no parent.
+func WithParents(ids ...string) DecideOpt {
+	return func(o *DecideOpts) { o.ParentTasks = strings.Join(ids, ",") }
+}
+
 // Decide evaluates a tool call for an agent. Kill switch first (non-negotiable),
 // then policy. The decision moves trust in both directions — an allow is
 // evidence too — and the trust floor can escalate an allow to review. Every
@@ -105,7 +138,11 @@ func NewGovernor() *Governor {
 // cannot record cannot govern: what is not on the record cannot be proven, so
 // the action is denied with the recording failure as its reason rather than
 // allowed blind.
-func (g *Governor) Decide(agentID, tool string, args map[string]any) Decision {
+func (g *Governor) Decide(agentID, tool string, args map[string]any, opts ...DecideOpt) Decision {
+	var do DecideOpts
+	for _, opt := range opts {
+		opt(&do)
+	}
 	var d Decision
 	if scope := g.Kill.TrippedScope(agentID); scope != "" {
 		// Name the scope. "kill switch tripped" reads the same whether one
@@ -114,18 +151,45 @@ func (g *Governor) Decide(agentID, tool string, args map[string]any) Decision {
 	} else {
 		d = g.Policy.Evaluate(tool, args)
 	}
+	// Pre-state capture for a destructive write, before anything else is decided:
+	// a deletion that cannot be described cannot be authorised, and recording the
+	// decision after the effect would be a decision about the past.
+	if d.Action != ActionDeny && needsPreState(d) {
+		// Preserve the rule's attribution across the refusal: a denial that loses
+		// its RuleID is a refusal nobody can trace to a standing order.
+		ruleID, art, rev := d.RuleID, d.Artifact, d.Reversibility
+		if g.PreState == nil {
+			d = Deny(fmt.Sprintf("artifact type %q destroys something and requires a pre-state capture, but no capturer is configured", art.Type))
+		} else if commitment, err := g.PreState(tool, args); err != nil {
+			d = Deny("pre-state capture failed: " + err.Error())
+		} else if commitment == "" {
+			d = Deny("pre-state capture returned nothing, so the prior state is unknown")
+		} else {
+			d.PreState = commitment
+		}
+		d.RuleID, d.Artifact, d.Reversibility = ruleID, art, rev
+	}
 	if d.Action == ActionAllow {
 		g.Trust.Reward(1)
 		if g.TrustFloor > 0 {
 			if score := g.Trust.Score(); score < g.TrustFloor {
-				d = Decision{
-					Action: ActionReview,
-					Reason: fmt.Sprintf("trust %.0f below floor %.0f", score, g.TrustFloor),
-				}
+				// Mutate rather than replace. Replacing the struct silently dropped
+				// RuleID and the rule's declaration, which is what makes an
+				// escalation attributable and its consequence recordable.
+				d.Action = ActionReview
+				d.Reason = fmt.Sprintf("trust %.0f below floor %.0f", score, g.TrustFloor)
 			}
 		}
 	} else {
 		g.Trust.Penalize(1)
+	}
+	// Over-ceiling promotion, separate from the trust floor because it keys on the
+	// declared consequence rather than on who is calling: the standing order
+	// permits the call, but not for as long as it asked for.
+	if d.Action == ActionAllow && ArtifactClassOf(d.Artifact) == ArtifactOverCeiling {
+		d.Action = ActionReview
+		d.Reason = fmt.Sprintf("declared artifact lifetime %s exceeds the %s ceiling",
+			d.Artifact.Lifetime, d.Artifact.Ceiling)
 	}
 	// A refusal is rendered from structure, not from the reason text. The
 	// correlation id is minted here so the text the agent sees and the row the
@@ -151,7 +215,7 @@ func (g *Governor) Decide(agentID, tool string, args map[string]any) Decision {
 			d.Burst = count
 		}
 	}
-	if err := g.record(agentID, tool, args, d); err != nil {
+	if err := g.record(agentID, tool, args, d, do); err != nil {
 		return Deny("governor could not record the decision: " + err.Error())
 	}
 	return d
@@ -160,7 +224,7 @@ func (g *Governor) Decide(agentID, tool string, args map[string]any) Decision {
 // record appends the structural skeleton of a decision: what tool, which rule,
 // what outcome, on which input (hashed), why — and a hash of who, never the
 // identity itself.
-func (g *Governor) record(agentID, tool string, args map[string]any, d Decision) error {
+func (g *Governor) record(agentID, tool string, args map[string]any, d Decision, o DecideOpts) error {
 	subjectHash, inputHash, ref, algo, err := g.commitments(agentID, args)
 	if err != nil {
 		return err
@@ -180,9 +244,20 @@ func (g *Governor) record(agentID, tool string, args map[string]any, d Decision)
 		Outcome:       d.Action,
 		InputHash:     inputHash,
 		Reason:        d.Reason,
-		Reversibility: g.classifyTool(tool),
+		Reversibility: g.reversibilityFor(d, tool),
 		DenialClass:   denialClassOf(d),
 		CorrelationID: correlationOf(d),
+
+		ArtifactType:      artifactTypeOf(d),
+		ArtifactClass:     g.artifactClassFor(d),
+		ArtifactTTL:       artifactTTLOf(d),
+		ArtifactCeiling:   artifactCeilingOf(d),
+		ArtifactScope:     artifactScopeOf(d),
+		ArtifactLocatable: d.Artifact != nil && d.Artifact.Locatable,
+		ArtifactPreState:  d.PreState,
+		PolicyRev:         g.Policy.Revision(),
+		RunID:             o.RunID,
+		ParentTasks:       o.ParentTasks,
 	}); err != nil {
 		return err
 	}
@@ -208,6 +283,72 @@ func (g *Governor) record(agentID, tool string, args map[string]any, d Decision)
 		}
 	}
 	return nil
+}
+
+// needsPreState reports whether the decision destroys something whose prior
+// state must be preserved first.
+//
+// Delete only. Disable is not included: it is reversible in principle, and
+// demanding a snapshot for it would train operators to capture pre-state for
+// everything, which is how a control becomes a formality.
+func needsPreState(d Decision) bool {
+	return d.Artifact != nil && d.Artifact.Type == ArtifactDelete
+}
+
+// reversibilityFor resolves what the ledger records: the rule's declaration when
+// there is one, the workload's classifier otherwise. Self-extension is always
+// irreversible regardless of either, because loading a hook is not something an
+// expiry clock reaches.
+func (g *Governor) reversibilityFor(d Decision, tool string) Reversibility {
+	if d.Artifact != nil && d.Artifact.Type.IsSelfExtension() {
+		return Irreversible
+	}
+	if d.Reversibility != "" {
+		return d.Reversibility
+	}
+	return g.classifyTool(tool)
+}
+
+// artifactClassFor characterises the consequence. A deny is not "unrecorded" —
+// nothing happened, so there is no consequence and the field stays empty.
+// Everything that may run records a class, including "unrecorded", because
+// nobody-characterised-this is the state an operator needs to be able to query.
+func (g *Governor) artifactClassFor(d Decision) string {
+	if d.Action == ActionDeny || d.Action == ActionRateLimit {
+		return ""
+	}
+	return string(ArtifactClassOf(d.Artifact))
+}
+
+func artifactTypeOf(d Decision) string {
+	if d.Artifact == nil {
+		return ""
+	}
+	return string(d.Artifact.Type)
+}
+
+// artifactTTLOf renders the declared lifetime in the form a person reads in
+// `ledger tail`. Zero is omitted rather than written as "0s": no declared
+// lifetime is the absence of a bound, and "0s" would read as an expiry.
+func artifactTTLOf(d Decision) string {
+	if d.Artifact == nil || d.Artifact.Lifetime <= 0 {
+		return ""
+	}
+	return d.Artifact.Lifetime.String()
+}
+
+func artifactCeilingOf(d Decision) string {
+	if d.Artifact == nil || d.Artifact.Ceiling <= 0 {
+		return ""
+	}
+	return d.Artifact.Ceiling.String()
+}
+
+func artifactScopeOf(d Decision) string {
+	if d.Artifact == nil {
+		return ""
+	}
+	return d.Artifact.Scope
 }
 
 // actionClassFor resolves the class of a refused call: what the rule declared,

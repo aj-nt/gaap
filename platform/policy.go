@@ -19,6 +19,16 @@ type Rule struct {
 	// A refusal counter keyed on the tool name is defeated by renaming the tool;
 	// keyed on the class, a reframe increments the same counter.
 	ActionClass ActionClass
+	// Reversibility is the rule's own declaration of whether the effect can be
+	// undone. Empty means none declared, and the governor falls back to the
+	// workload's classifier. A declaration lives on the rule so the instrument
+	// that authorised the call is versioned with it, and one channel serves both
+	// the CLI and the orchestrator.
+	Reversibility Reversibility
+	// Artifact declares what durable thing this rule may create. nil means the
+	// rule declares none, which is a real answer: the consequence is unrecorded,
+	// not absent.
+	Artifact *Artifact
 }
 
 func (r Rule) matches(tool string, args map[string]any) bool {
@@ -36,6 +46,27 @@ func (r Rule) matches(tool string, args map[string]any) bool {
 type PolicyEngine struct {
 	mu    sync.RWMutex
 	rules []Rule
+	// revision identifies the exact instrument in force: a sha256 over the bytes
+	// of the file it was loaded from. Empty for an engine assembled by hand, which
+	// is the honest answer — no file, no revision, and the record says so rather
+	// than inventing one.
+	revision string
+}
+
+// Revision returns the content revision of the policy in force, or "" when the
+// engine was built in code.
+func (e *PolicyEngine) Revision() string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.revision
+}
+
+// setRevision records the content revision. Called by the loader, never by a
+// caller building rules by hand.
+func (e *PolicyEngine) setRevision(rev string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.revision = rev
 }
 
 // NewPolicyEngine returns an engine that denies everything by default.
@@ -60,6 +91,10 @@ func (e *PolicyEngine) Evaluate(tool string, args map[string]any) Decision {
 		if r.matches(tool, args) {
 			d := r.Decision
 			d.RuleID = r.ID
+			// The declaration travels with the decision, so the recorder has one
+			// source for what this call may cost and needs no lookup of its own.
+			d.Reversibility = r.Reversibility
+			d.Artifact = r.Artifact
 			return d
 		}
 	}

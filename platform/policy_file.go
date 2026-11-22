@@ -2,11 +2,14 @@ package platform
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"time"
 )
 
 // Policy file shape. Rules are JSON rather than YAML so the kernel keeps zero
@@ -40,6 +43,22 @@ type policyRule struct {
 	// it, because a refusal counter keyed on a tool name is defeated by renaming
 	// the tool.
 	Class string `json:"class,omitempty"`
+	// Reversibility is what the standing order says this effect costs. Only
+	// pure and irreversible are accepted; the reserved classes are refused
+	// rather than recorded on trust.
+	Reversibility string `json:"reversibility,omitempty"`
+	// Artifact declares the durable thing this rule may create, so the record can
+	// say what outlives the run.
+	Artifact *artifactSpec `json:"artifact,omitempty"`
+}
+
+// artifactSpec is the file form of an artifact declaration. Lifetime is in
+// seconds because a policy file is read by people and by machines, and a
+// duration string invites "90d" from one and "2160h" from the other.
+type artifactSpec struct {
+	Type               string `json:"type"`
+	MaxLifetimeSeconds int64  `json:"max_lifetime_seconds,omitempty"`
+	Scope              string `json:"scope,omitempty"`
 }
 
 // ParsePolicy reads a rule file and returns the rules in evaluation order.
@@ -90,12 +109,29 @@ func ParsePolicy(r io.Reader) ([]Rule, error) {
 		if pr.Class != "" && !class.Known() {
 			return nil, fmt.Errorf("rule %q: unknown class %q (want shell, file_write, network, memory, or self_extension)", pr.ID, pr.Class)
 		}
+		rev := Reversibility(strings.TrimSpace(pr.Reversibility))
+		switch rev {
+		case "", Pure, Irreversible:
+		case Reversible, Compensable:
+			// The kernel's own rule (reversibility.go): never record a class that
+			// claims an inverse the runtime does not hold. A policy file naming one
+			// would put that claim on the ledger with no mechanism behind it.
+			return nil, fmt.Errorf("rule %q: reversibility %q is not assignable: it is reserved until a snapshot/compensation mechanism exists to back the claim (declare pure or irreversible)", pr.ID, rev)
+		default:
+			return nil, fmt.Errorf("rule %q: unknown reversibility %q (want pure or irreversible)", pr.ID, rev)
+		}
+		art, err := parseArtifactSpec(pr.ID, pr.Artifact, rev)
+		if err != nil {
+			return nil, err
+		}
 		rules = append(rules, Rule{
-			ID:          pr.ID,
-			Tool:        pr.Tool,
-			Match:       argsContainMatcher(pr.ArgsContain),
-			Decision:    Decision{Action: action, Reason: pr.Reason},
-			ActionClass: class,
+			ID:            pr.ID,
+			Tool:          pr.Tool,
+			Match:         argsContainMatcher(pr.ArgsContain),
+			Decision:      Decision{Action: action, Reason: pr.Reason},
+			ActionClass:   class,
+			Reversibility: rev,
+			Artifact:      art,
 		})
 	}
 	return rules, nil
@@ -105,13 +141,12 @@ func ParsePolicy(r io.Reader) ([]Rule, error) {
 // is an error: a governor that silently falls back to no rules is a governor
 // that denies everything, which the operator will read as "it is broken."
 func LoadPolicyFile(path string) (*PolicyEngine, error) {
-	f, err := os.Open(path)
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("open policy %s: %w", path, err)
 	}
-	defer func() { _ = f.Close() }()
 
-	rules, err := ParsePolicy(f)
+	rules, err := ParsePolicy(bytes.NewReader(raw))
 	if err != nil {
 		return nil, fmt.Errorf("policy %s: %w", path, err)
 	}
@@ -119,7 +154,44 @@ func LoadPolicyFile(path string) (*PolicyEngine, error) {
 	for _, rule := range rules {
 		e.AddRule(rule)
 	}
+	// The revision is a content hash, not the file's `version` field: that field
+	// is the format version and is the same "1" for every policy ever written.
+	// Hashing the bytes means reformatting the file changes the revision, which
+	// is intended — the exact instrument in force is what the record should name.
+	sum := sha256.Sum256(raw)
+	e.setRevision(hex.EncodeToString(sum[:]))
 	return e, nil
+}
+
+// parseArtifactSpec validates a rule's artifact block and converts it to the
+// runtime shape, applying the ceiling in force.
+//
+// The two refusals here are the ones that would otherwise be recorded as claims:
+// an unknown type (a typo creates a bucket nothing else shares), and a pure call
+// that creates a durable artifact (pure means no side effect at all, so the pair
+// is a lie the ledger would carry).
+func parseArtifactSpec(ruleID string, spec *artifactSpec, rev Reversibility) (*Artifact, error) {
+	if spec == nil {
+		return nil, nil
+	}
+	typ := ArtifactType(strings.TrimSpace(spec.Type))
+	if !typ.Known() {
+		return nil, fmt.Errorf("rule %q: unknown artifact type %q", ruleID, spec.Type)
+	}
+	if rev == Pure {
+		return nil, fmt.Errorf("rule %q: declares reversibility pure and artifact type %q; pure means no side effect at all, so the pair cannot both be true", ruleID, typ)
+	}
+	if spec.MaxLifetimeSeconds < 0 {
+		return nil, fmt.Errorf("rule %q: artifact max_lifetime_seconds is negative", ruleID)
+	}
+	return &Artifact{
+		Type:     typ,
+		Lifetime: time.Duration(spec.MaxLifetimeSeconds) * time.Second,
+		// The ceiling in force is always the kernel's: a per-rule ceiling that
+		// defaulted to zero would be a ceiling nothing is ever over.
+		Ceiling: ArtifactCeiling,
+		Scope:   strings.TrimSpace(spec.Scope),
+	}, nil
 }
 
 // parseAction validates an action name against the typed set.
