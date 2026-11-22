@@ -81,8 +81,44 @@ CREATE TABLE IF NOT EXISTS gov_entry (
 	-- this column, and the column's own CHECK forbade the value that grant implied.
 	expires_at   INTEGER NOT NULL CHECK (expires_at > 0),
 	superseded_by TEXT,
-	evicted_at   INTEGER
+	evicted_at   INTEGER,
+	-- producer names what wrote the row. Promotion requires a promoter that is not
+	-- the producer: content vouching for itself is how a laundered claim becomes a
+	-- fact.
+	producer TEXT NOT NULL DEFAULT ''
 );
+
+-- A gate ticket is single-use, and single use is a uniqueness constraint rather than
+-- a flag: a consumed flag can be reset, a primary key cannot.
+CREATE TABLE IF NOT EXISTS gov_ticket (
+	id          TEXT PRIMARY KEY,
+	consumed_at INTEGER NOT NULL
+);
+
+-- Promotion is DERIVED from these rows, not from a taint value rewritten in place:
+-- taint_own is immutable by trigger, so a promotion that edited it would have to
+-- bypass the very guard that makes the store append-only.
+CREATE TABLE IF NOT EXISTS gov_promotion (
+	entry_id      TEXT NOT NULL REFERENCES gov_entry(id),
+	promoted_by   TEXT NOT NULL,
+	promoted_at   INTEGER NOT NULL,
+	distinct_roots INTEGER NOT NULL CHECK (distinct_roots >= 2),
+	PRIMARY KEY (entry_id)
+);
+
+CREATE TRIGGER IF NOT EXISTS gov_promotion_append_only
+BEFORE UPDATE ON gov_promotion
+FOR EACH ROW
+BEGIN
+	SELECT RAISE(ABORT, 'gov_promotion is append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS gov_promotion_no_delete
+BEFORE DELETE ON gov_promotion
+FOR EACH ROW
+BEGIN
+	SELECT RAISE(ABORT, 'gov_promotion refuses DELETE');
+END;
 
 CREATE INDEX IF NOT EXISTS gov_entry_root ON gov_entry(root_id);
 
@@ -93,6 +129,33 @@ CREATE TABLE IF NOT EXISTS gov_edge (
 );
 
 CREATE INDEX IF NOT EXISTS gov_edge_parent ON gov_edge(parent_id);
+
+-- gov_root is the ORIGIN closure: entry_id -> every distinct root its lineage reaches.
+-- Written only by the append path in taint.go, because it is the number promotion is
+-- decided on, and a caller who can write it can manufacture agreement.
+--
+-- Without this table a derived row's root_id defaults to its own id, so five
+-- paraphrases of one source count as five roots — the exact launder the promotion rule
+-- is supposed to catch.
+CREATE TABLE IF NOT EXISTS gov_root (
+	entry_id TEXT NOT NULL REFERENCES gov_entry(id),
+	root_id  TEXT NOT NULL,
+	PRIMARY KEY (entry_id, root_id)
+);
+
+CREATE TRIGGER IF NOT EXISTS gov_root_append_only
+BEFORE UPDATE ON gov_root
+FOR EACH ROW
+BEGIN
+	SELECT RAISE(ABORT, 'gov_root is append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS gov_root_no_delete
+BEFORE DELETE ON gov_root
+FOR EACH ROW
+BEGIN
+	SELECT RAISE(ABORT, 'gov_root refuses DELETE');
+END;
 
 CREATE TABLE IF NOT EXISTS gov_resolution (
 	entry_id    TEXT NOT NULL REFERENCES gov_entry(id),

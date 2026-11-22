@@ -37,6 +37,12 @@ type Decision struct {
 	// the workload's classifier and records the consequence as unrecorded.
 	Reversibility Reversibility
 	Artifact      *Artifact
+	// MinTaint is the provenance a rule requires before its allow stands; Floor is
+	// the worst provenance actually present, supplied by the caller. Both are carried
+	// so a downgrade can be explained after the fact — an escalation with no stated
+	// cause reads as noise, and noise is what operators stop reading.
+	MinTaint TaintClass
+	Floor    TaintClass
 	// PreState is the commitment to the state a destructive call replaces,
 	// captured before the decision is recorded. Never a value: the ledger holds
 	// the commitment, the content store holds what it points at.
