@@ -454,14 +454,22 @@ func isEnvAssignment(tok string) bool {
 type Executor struct {
 	llm      ChatClient
 	maxTurns int
+	runner   CommandRunner
 }
 
 // NewExecutor creates a task executor with the given LLM config.
-func NewExecutor(llm ChatClient, maxTurns int) *Executor {
+//
+// runner may be nil, and nil means REFUSE. The zero value of this seam decides
+// whether the product contains anything, so it has to be the closed one: a default
+// of host execution is the configuration that made W3b necessary.
+func NewExecutor(llm ChatClient, maxTurns int, runner CommandRunner) *Executor {
 	if maxTurns <= 0 {
 		maxTurns = 20
 	}
-	return &Executor{llm: llm, maxTurns: maxTurns}
+	if runner == nil {
+		runner = RefuseRunner{Why: "worker was constructed without a command runner"}
+	}
+	return &Executor{llm: llm, maxTurns: maxTurns, runner: runner}
 }
 
 // ExecuteResult is the result of executing a task.
@@ -559,7 +567,7 @@ func (e *Executor) Execute(ctx context.Context, task *client.TaskEntry, repoPath
 				continue
 			}
 
-			output := runCommand(cmd, repoPath)
+			output := e.runner.Run(ctx, cmd, repoPath)
 			findings[truncate(cmd, 60)] = map[string]any{
 				"exit_code":     output.ExitCode,
 				"output_length": output.Len(),

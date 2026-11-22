@@ -166,6 +166,9 @@ type runConfig struct {
 	// RateLimit turns a `rate_limit` rule into a deny carrying a cooldown. Off
 	// means the rule still denies, without promising a retry window.
 	RateLimit bool
+	// AllowHostExec accepts uncoerced execution on the host. Off by default, and
+	// named after what it permits rather than what it disables.
+	AllowHostExec bool
 	// Approval asks a human about dead-lettered tasks. Off unless asked for.
 	Approval           bool
 	ApprovalTimeoutSec int
@@ -216,6 +219,7 @@ func parseRunFlags(name string, args []string) (*runConfig, error) {
 	stateDir := fs.String("state", defaultStateDir, "State directory for the ledger, keys and kill switch")
 	trustFloor := fs.Float64("trust-floor", 0, "Escalate allows to review while trust is below this (0 disables)")
 	rateLimit := fs.Bool("rate-limit", false, "Make a rate_limit rule deny with a cooldown and a count")
+	allowHostExec := fs.Bool("allow-host-exec", false, "Run worker commands on the host, uncoerced (default: refuse unless containment is available)")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -248,6 +252,7 @@ func parseRunFlags(name string, args []string) (*runConfig, error) {
 		StateDir:           envOr("GAAP_STATE", *stateDir, defaultStateDir),
 		TrustFloor:         *trustFloor,
 		RateLimit:          *rateLimit,
+		AllowHostExec:      *allowHostExec,
 		APIKey:             envOr("GAAP_API_KEY", *apiKey, ""),
 		TLSCert:            envOr("GAAP_TLS_CERT", *tlsCert, ""),
 	}
@@ -352,7 +357,7 @@ func run(args []string) error {
 
 	// Auto-workers: spawn worker pool to execute tasks in-process.
 	if !rc.DryRun {
-		startWorkers(ctx, rc.settings(), rc.RepoPath, daemonClient, orchestrator)
+		startWorkers(ctx, rc.settings(), rc.RepoPath, daemonClient, orchestrator, rc.AllowHostExec)
 	}
 	if rc.DryRun {
 		tasks, err := decomposer.Decompose(ctx, rc.Goal, rc.RepoPath)
@@ -389,10 +394,11 @@ type resumeConfig struct {
 	BreakerCooldownSec int
 	// Governance is not part of the persisted run state either: a resumed run that
 	// is not told about the policy would dispatch around it.
-	Policy     string
-	StateDir   string
-	TrustFloor float64
-	RateLimit  bool
+	Policy        string
+	StateDir      string
+	TrustFloor    float64
+	RateLimit     bool
+	AllowHostExec bool
 	connFields
 }
 
@@ -416,6 +422,7 @@ func parseResumeFlags(name string, args []string) (*resumeConfig, error) {
 	stateDir := fs.String("state", defaultStateDir, "State directory for the ledger, keys and kill switch")
 	trustFloor := fs.Float64("trust-floor", 0, "Escalate allows to review while trust is below this (0 disables)")
 	rateLimit := fs.Bool("rate-limit", false, "Make a rate_limit rule deny with a cooldown and a count")
+	allowHostExec := fs.Bool("allow-host-exec", false, "Run worker commands on the host, uncoerced (default: refuse unless containment is available)")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -442,6 +449,7 @@ func parseResumeFlags(name string, args []string) (*resumeConfig, error) {
 		StateDir:           envOr("GAAP_STATE", *stateDir, defaultStateDir),
 		TrustFloor:         *trustFloor,
 		RateLimit:          *rateLimit,
+		AllowHostExec:      *allowHostExec,
 	}
 	if *agentTypes != "" {
 		cfg.AgentTypes = strings.Split(*agentTypes, ",")
@@ -540,7 +548,7 @@ func resume(args []string) error {
 	orchestrator.SetSynthesisChatFn(chatFn)
 
 	// Spawn auto-workers to execute dispatched tasks
-	startWorkers(ctx, rc.settings(), rs.RepoPath, daemonClient, orchestrator)
+	startWorkers(ctx, rc.settings(), rs.RepoPath, daemonClient, orchestrator, rc.AllowHostExec)
 	if err := orchestrator.Resume(rs); err != nil {
 		return fmt.Errorf("resume: %w", err)
 	}

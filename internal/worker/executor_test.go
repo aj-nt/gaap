@@ -52,7 +52,7 @@ func TestExecuteDone(t *testing.T) {
 		modelName: "test-model",
 	}
 
-	executor := NewExecutor(mock, 5)
+	executor := NewExecutor(mock, 5, HostRunner{})
 	task := makeTask("task-1", "test goal", "test")
 
 	result := executor.Execute(context.Background(), task, "/tmp")
@@ -85,7 +85,7 @@ func TestExecuteFail(t *testing.T) {
 		responses: []string{"FAIL: could not complete — insufficient permissions"},
 	}
 
-	executor := NewExecutor(mock, 5)
+	executor := NewExecutor(mock, 5, HostRunner{})
 	task := makeTask("task-2", "test goal", "test")
 
 	result := executor.Execute(context.Background(), task, "/tmp")
@@ -113,7 +113,7 @@ func TestExecuteNonProtocolResponse(t *testing.T) {
 		},
 	}
 
-	executor := NewExecutor(mock, 5)
+	executor := NewExecutor(mock, 5, HostRunner{})
 	task := makeTask("task-3", "test goal", "test")
 
 	result := executor.Execute(context.Background(), task, "/tmp")
@@ -139,7 +139,7 @@ func TestExecuteCmdBlockedThenRecovers(t *testing.T) {
 		},
 	}
 
-	executor := NewExecutor(mock, 5)
+	executor := NewExecutor(mock, 5, HostRunner{})
 	task := makeTask("task-blocked", "test goal", "test")
 
 	result := executor.Execute(context.Background(), task, "/tmp")
@@ -168,7 +168,7 @@ func TestExecuteMaxTurnsExceeded(t *testing.T) {
 	}
 
 	mock := &mockChatClient{responses: responses}
-	executor := NewExecutor(mock, 3) // max 3 turns
+	executor := NewExecutor(mock, 3, HostRunner{}) // max 3 turns
 
 	task := makeTask("task-max", "test goal", "test")
 
@@ -194,7 +194,7 @@ func TestExecuteContextCancellation(t *testing.T) {
 		responses: []string{"DONE: should never see this"},
 	}
 
-	executor := NewExecutor(mock, 5)
+	executor := NewExecutor(mock, 5, HostRunner{})
 	task := makeTask("task-cancel", "test goal", "test")
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -222,7 +222,7 @@ func TestExecuteLLMError(t *testing.T) {
 		errors: []string{"connection refused"},
 	}
 
-	executor := NewExecutor(mockErr, 5)
+	executor := NewExecutor(mockErr, 5, HostRunner{})
 	task := makeTask("task-err", "test goal", "test")
 
 	result := executor.Execute(context.Background(), task, "/tmp")
@@ -284,17 +284,17 @@ func TestNewExecutorDefaultMaxTurns(t *testing.T) {
 
 	mock := &mockChatClient{}
 
-	exec := NewExecutor(mock, 0)
+	exec := NewExecutor(mock, 0, HostRunner{})
 	if exec.maxTurns != 20 {
 		t.Errorf("expected maxTurns=20 for zero input, got %d", exec.maxTurns)
 	}
 
-	execNeg := NewExecutor(mock, -5)
+	execNeg := NewExecutor(mock, -5, HostRunner{})
 	if execNeg.maxTurns != 20 {
 		t.Errorf("expected maxTurns=20 for negative input, got %d", execNeg.maxTurns)
 	}
 
-	execExplicit := NewExecutor(mock, 30)
+	execExplicit := NewExecutor(mock, 30, HostRunner{})
 	if execExplicit.maxTurns != 30 {
 		t.Errorf("expected maxTurns=30 for explicit input, got %d", execExplicit.maxTurns)
 	}

@@ -38,6 +38,9 @@ type PoolConfig struct {
 	MaxTurns    int
 	RepoPath    string
 	Ollama      ollama.Config
+	// Runner is the execution seam. nil means refuse: the pool does not run
+	// commands on the host because nobody said which containment to use.
+	Runner CommandRunner
 }
 
 // NewPool creates a worker pool and connects to the daemon.
@@ -54,7 +57,7 @@ func NewPool(ctx context.Context, cfg PoolConfig, mnemo client.MnemoClient) (*Po
 	}
 
 	ollamaClient := ollama.NewClient(cfg.Ollama)
-	exec := NewExecutor(ollamaClient, cfg.MaxTurns)
+	exec := NewExecutor(ollamaClient, cfg.MaxTurns, cfg.Runner)
 
 	// Register agent
 	agentID, _, err := mnemo.RegisterAgent(ctx, cfg.AgentID, cfg.AgentName, "worker")

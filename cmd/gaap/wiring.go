@@ -9,12 +9,14 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 
 	"github.com/aj-nt/gaap"
 	"github.com/aj-nt/gaap/internal/ollama"
 	"github.com/aj-nt/gaap/internal/worker"
+	"github.com/aj-nt/gaap/platform"
 	"github.com/aj-nt/vassago-sdk/client"
 )
 
@@ -123,10 +125,65 @@ func workerAgentTypes(types []string) []string {
 	return out
 }
 
+// commandRunner picks the execution path for worker tasks, and the order of these
+// branches is the security decision.
+//
+// Fail-closed is the whole point of W3b: this worker called `sh -c` unconditionally
+// for the life of the product, so the default has to be "refuse", and running on the
+// host has to be something an operator asked for by name. vagent's equivalent fails
+// open — it logs and leaves the in-process runner installed under a config comment
+// claiming deny-by-default — and copying that shape here would have produced a seam
+// that governs nothing while making the code look governed.
+func commandRunner(ctx context.Context, allowHostExec bool, repoPath string) worker.CommandRunner {
+	if allowHostExec {
+		slog.Warn("worker: executing on the HOST, uncoerced (allow_host_exec is set)", "workspace", repoPath)
+		return worker.HostRunner{}
+	}
+	return containedRunner(ctx, repoPath, &platform.DockerEnforcer{})
+}
+
+// containedRunner is commandRunner with the enforcer supplied, so the fail-closed
+// branch is testable without a docker daemon.
+func containedRunner(ctx context.Context, repoPath string, enf platform.Enforcer) worker.CommandRunner {
+	uid := execUID()
+	image := os.Getenv("GAAP_EXEC_IMAGE")
+	if image == "" {
+		image = "alpine:latest"
+	}
+	workspace := os.Getenv("GAAP_EXEC_WORKSPACE")
+	if workspace == "" {
+		workspace = repoPath
+	}
+	if err := enf.Ensure(ctx); err != nil {
+		// Not a warning that we then work around: coercion is unavailable, so the
+		// commands do not run. The reason travels into the task's failure text so the
+		// operator sees why a run produced no output.
+		slog.Error("worker: containment unavailable — Execute is refused for this run",
+			"err", err, "hint", "install docker on a Linux host, or pass --allow-host-exec to accept uncoerced execution")
+		return worker.RefuseRunner{Why: "containment unavailable: " + err.Error()}
+	}
+	runner := worker.NewContainerRunner(enf, uid, workspace, image)
+	slog.Info("worker: command execution containerized", "runner", runner.Describe())
+	return runner
+}
+
+// execUID is the per-agent uid, from the environment so a deploy can pin it. A
+// shared uid means two agents share a filesystem view, which is a blast radius
+// rather than a boundary.
+func execUID() int {
+	if v := os.Getenv("GAAP_EXEC_UID"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+		slog.Warn("worker: GAAP_EXEC_UID is not a positive integer; using the default", "value", v)
+	}
+	return 10001
+}
+
 // startWorkers spawns the in-process worker pool and attaches it to the
 // orchestrator. A pool that cannot start is a warning, not a failure: the run
 // continues without auto-workers and tasks stay queued.
-func startWorkers(ctx context.Context, s llmSettings, repoPath string, daemon client.MnemoClient, o *gaap.Orchestrator) {
+func startWorkers(ctx context.Context, s llmSettings, repoPath string, daemon client.MnemoClient, o *gaap.Orchestrator, allowHostExec bool) {
 	wpCfg := worker.PoolConfig{
 		DaemonAddr:  s.DaemonAddr,
 		AgentID:     "gaap-worker",
@@ -137,6 +194,7 @@ func startWorkers(ctx context.Context, s llmSettings, repoPath string, daemon cl
 		MaxTurns:    20,
 		RepoPath:    repoPath,
 		Ollama:      ollamaConfig(s),
+		Runner:      commandRunner(ctx, allowHostExec, repoPath),
 	}
 	pool, err := worker.NewPool(ctx, wpCfg, daemon)
 	if err != nil {
