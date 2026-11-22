@@ -6,15 +6,20 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/aj-nt/gaap/platform"
 )
 
-// Taint classes, ordered by how far the content can be trusted. The store records
-// taint_own only; the effective class of a read is computed from the lineage and
-// belongs to the broker, not the writer.
+// Taint classes come from the kernel, not from this package. The store records
+// taint_own only; the effective class of a read is computed from the lineage.
+//
+// Aliased rather than redeclared: three modules spelling their own provenance strings
+// is how "external" in the store stops meaning "external" in the governor, and the
+// drift is silent because both are valid-looking strings.
 const (
-	TaintExternal = "external" // came from outside the boundary: a tool result, a page
-	TaintInternal = "internal" // came from a ticketed call about the agent's own resources
-	TaintFact     = "fact"     // promoted: two or more distinct roots agree
+	TaintExternal = string(platform.TaintExternal)
+	TaintInternal = string(platform.TaintInternal)
+	TaintFact     = string(platform.TaintFact)
 )
 
 // Entry is one memory record.
@@ -25,8 +30,10 @@ type Entry struct {
 	Body       string
 	SourceKind string
 	SourceRef  string
-	TaintOwn   string
-	ExpiresAt  time.Time
+	// Producer names what wrote the row, so a promoter can be checked against it.
+	Producer  string
+	TaintOwn  string
+	ExpiresAt time.Time
 	// Parents are the entries this one was derived from. They are what makes
 	// launderable content visible: a rephrasing that cites nothing is external by
 	// definition, whatever it claims about itself.
@@ -69,11 +76,15 @@ func (s *Store) Append(e Entry) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	producer := e.Producer
+	if producer == "" {
+		producer = e.SourceRef
+	}
 	_, err = tx.Exec(`INSERT INTO gov_entry
-		(id, root_id, kind, body, source_kind, source_ref, taint_own, status, created_at, expires_at)
-		VALUES (?,?,?,?,?,?,?, 'active', ?, ?)`,
+		(id, root_id, kind, body, source_kind, source_ref, taint_own, status, created_at, expires_at, producer)
+		VALUES (?,?,?,?,?,?,?, 'active', ?, ?, ?)`,
 		e.ID, e.RootID, e.Kind, e.Body, e.SourceKind, nullable(e.SourceRef), taint,
-		s.now().Unix(), e.ExpiresAt.Unix())
+		s.now().Unix(), e.ExpiresAt.Unix(), producer)
 	if err != nil {
 		return fmt.Errorf("memstore: append %s: %w", e.ID, err)
 	}
@@ -81,6 +92,29 @@ func (s *Store) Append(e Entry) error {
 		if err := addEdge(tx, e.ID, p); err != nil {
 			return err
 		}
+	}
+	// The origin closure is inherited from the parents, so a row never becomes its own
+	// root merely by citing someone. A parent with no root row is a lineage hole and is
+	// treated as its own origin rather than silently dropped.
+	if len(e.Parents) == 0 {
+		if _, err := tx.Exec(`INSERT INTO gov_root(entry_id, root_id) VALUES (?,?)`, e.ID, e.ID); err != nil {
+			return fmt.Errorf("memstore: root %s: %w", e.ID, err)
+		}
+	} else {
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(e.Parents)), ",")
+		args := make([]any, 0, len(e.Parents)+1)
+		args = append(args, e.ID)
+		for _, p := range e.Parents {
+			args = append(args, p)
+		}
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO gov_root(entry_id, root_id)
+			SELECT ?, root_id FROM gov_root WHERE entry_id IN (`+placeholders+`)`, args...); err != nil {
+			return fmt.Errorf("memstore: inherit roots of %s: %w", e.ID, err)
+		}
+		// No fallback to the parent's own id here. Treating a lineage hole as an origin
+		// is exactly the launder this table exists to stop: a parent with no roots
+		// contributes none, and an entry that ends up with too few roots simply cannot be
+		// promoted.
 	}
 	return tx.Commit()
 }

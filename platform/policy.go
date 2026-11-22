@@ -33,6 +33,10 @@ type Rule struct {
 	// match. A rule should use Predicates or Match, not both: Match is the escape
 	// hatch for rules built in code, and predicates are what a linter can inspect.
 	Predicates []Predicate
+	// MinTaint is the weakest provenance this rule will accept for an allow. A call
+	// justified by weaker evidence is reviewed rather than allowed: the standing
+	// order permits the effect, not for this reason.
+	MinTaint TaintClass
 }
 
 func (r Rule) matches(tool string, args map[string]any) bool {
@@ -107,6 +111,7 @@ func (e *PolicyEngine) Evaluate(tool string, args map[string]any) Decision {
 			// source for what this call may cost and needs no lookup of its own.
 			d.Reversibility = r.Reversibility
 			d.Artifact = r.Artifact
+			d.MinTaint = r.MinTaint
 			return d
 		}
 	}

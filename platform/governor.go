@@ -115,6 +115,11 @@ func NewGovernor() *Governor {
 type DecideOpts struct {
 	RunID       string
 	ParentTasks string
+	// Floor is the worst provenance class present in the justification chain,
+	// computed by the caller — including anything the caller read out of memory.
+	// The governor does not derive it: provenance lives where the evidence is, and a
+	// governor that guessed would be certifying its own guess.
+	Floor TaintClass
 }
 
 // DecideOpt adjusts the context of one decision.
@@ -122,6 +127,11 @@ type DecideOpt func(*DecideOpts)
 
 // WithRun attributes the decision to a run.
 func WithRun(id string) DecideOpt { return func(o *DecideOpts) { o.RunID = id } }
+
+// WithFloor supplies the justification's provenance floor. It travels in the option
+// set introduced in M5.4 rather than as another positional parameter: two ways to pass
+// context to one decision is how a call site ends up silently recording a blank.
+func WithFloor(floor TaintClass) DecideOpt { return func(o *DecideOpts) { o.Floor = floor } }
 
 // WithParents attributes the decision to the tasks it descends from. The lineage
 // that exists is a list of task ids; an agent type has no parent.
@@ -190,6 +200,23 @@ func (g *Governor) Decide(agentID, tool string, args map[string]any, opts ...Dec
 		d.Action = ActionReview
 		d.Reason = fmt.Sprintf("declared artifact lifetime %s exceeds the %s ceiling",
 			d.Artifact.Lifetime, d.Artifact.Ceiling)
+	}
+	// Taint reaches the verdict, not just the row. A rule that requires internal
+	// provenance for an allow is saying the effect is permitted but the reason is not:
+	// an allow justified by something an agent read off a web page is the exact case
+	// memory poisoning aims at, and it is indistinguishable from a well-founded allow
+	// once it is in the ledger if this check does not exist.
+	//
+	// A review, not a deny: a human can see the evidence and decide, and a deny would
+	// train the workload to stop citing its sources.
+	d.Floor = do.Floor
+	if d.Action == ActionAllow && TaintBelow(do.Floor, d.MinTaint) {
+		floor := do.Floor
+		if floor == "" {
+			floor = "unreported"
+		}
+		d.Action = ActionReview
+		d.Reason = fmt.Sprintf("rule %s requires %s provenance, justification floor is %s", d.RuleID, d.MinTaint, floor)
 	}
 	// A refusal is rendered from structure, not from the reason text. The
 	// correlation id is minted here so the text the agent sees and the row the

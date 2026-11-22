@@ -54,6 +54,8 @@ type policyRule struct {
 	// rests only on cosmetic predicates is refused at load (M8.5): such a rule is
 	// matched by anyone who reads it.
 	Predicates []predicateSpec `json:"predicates,omitempty"`
+	// MinTaint is the weakest provenance that justifies an allow here.
+	MinTaint string `json:"min_taint,omitempty"`
 }
 
 // predicateSpec is the file form of a predicate. The class is NOT a field here:
@@ -173,6 +175,10 @@ func ParsePolicy(r io.Reader) ([]Rule, error) {
 		if err != nil {
 			return nil, err
 		}
+		minTaint := TaintClass(strings.TrimSpace(pr.MinTaint))
+		if minTaint != "" && !minTaint.Known() {
+			return nil, fmt.Errorf("rule %q: unknown min_taint %q (want external, internal or fact)", pr.ID, pr.MinTaint)
+		}
 		rules = append(rules, Rule{
 			ID:            pr.ID,
 			Tool:          pr.Tool,
@@ -182,6 +188,7 @@ func ParsePolicy(r io.Reader) ([]Rule, error) {
 			Reversibility: rev,
 			Artifact:      art,
 			Predicates:    preds,
+			MinTaint:      minTaint,
 		})
 	}
 	return rules, nil
