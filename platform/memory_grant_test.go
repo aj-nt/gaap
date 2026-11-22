@@ -158,3 +158,61 @@ func TestRevisionIsContentHash(t *testing.T) {
 		t.Fatalf("revision %q is not a sha256 hex digest", rev1)
 	}
 }
+
+// Every declared capability must carry its own deny rule and its own wire name.
+//
+// Both are derived from allCapabilities, and this is what makes that safe: adding a
+// capability to the slice without a deny rule used to be possible, and the consequence
+// was a tool the engine refuses by fallthrough with an empty RuleID — a refusal nobody
+// can attribute, which is the M6.1 defect the static ids were introduced to close.
+func TestEveryDeclaredCapabilityIsClosed(t *testing.T) {
+	rules, _, err := LoadMemoryGrants(writeGrantFile(t, grantsJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	denied := make(map[string]string, len(allCapabilities))
+	for _, r := range rules {
+		if r.Decision.Action == ActionDeny {
+			denied[r.Tool] = r.ID
+		}
+	}
+	for _, c := range allCapabilities {
+		tool := MemoryTool(c)
+		id, ok := denied[tool]
+		if !ok {
+			t.Errorf("capability %q (%s) has no deny rule; a caller that is not granted it "+
+				"falls through with an unattributed refusal", c, tool)
+			continue
+		}
+		if id == "" {
+			t.Errorf("deny rule for %s has no id", tool)
+		}
+	}
+}
+
+// The wire names are spelled by grant files, policy files and the broker. Pinned so a
+// rename cannot leave a grant that matches nothing while every test still passes.
+func TestCapabilityWireNames(t *testing.T) {
+	want := map[MemoryCapability]string{
+		MemRead:       "mem.read",
+		MemWrite:      "mem.write",
+		MemResolve:    "mem.resolve",
+		MemTombstone:  "mem.tombstone",
+		MemInjectable: "mem.injectable",
+	}
+	if len(allCapabilities) != len(want) {
+		t.Fatalf("allCapabilities has %d entries, the pinned vocabulary has %d: a capability "+
+			"was added or removed without updating the wire contract", len(allCapabilities), len(want))
+	}
+	for c, wire := range want {
+		if got := MemoryTool(c); got != wire {
+			t.Errorf("MemoryTool(%q) = %q, want %q", c, got, wire)
+		}
+		if !c.known() {
+			t.Errorf("capability %q is declared but not known()", c)
+		}
+	}
+	if MemoryCapability("inject").known() {
+		t.Error("an undeclared capability reports itself known")
+	}
+}

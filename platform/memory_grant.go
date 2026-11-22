@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 )
@@ -29,13 +30,19 @@ const (
 	MemInjectable MemoryCapability = "injectable"
 )
 
-func (c MemoryCapability) known() bool {
-	switch c {
-	case MemRead, MemWrite, MemResolve, MemTombstone, MemInjectable:
-		return true
-	}
-	return false
-}
+// allCapabilities is the whole capability vocabulary, and the single source for both
+// `known()` and the deny list. Stated once because the two lists have to agree: a
+// capability declared in the const block and missing from the deny list is a tool the
+// engine still refuses by fallthrough, but with an empty RuleID, and a refusal that
+// cannot name the rule that produced it is the M6.1 defect. Deriving both from this
+// slice is what makes the next capability closed by default.
+var allCapabilities = []MemoryCapability{MemRead, MemWrite, MemResolve, MemTombstone, MemInjectable}
+
+func (c MemoryCapability) known() bool { return slices.Contains(allCapabilities, c) }
+
+// MemoryTool is the wire name of a capability. Exported because the broker spells it too,
+// and a broker op that is not a declared capability is a tool nothing has a rule for.
+func MemoryTool(c MemoryCapability) string { return "mem." + string(c) }
 
 // MemoryGrant is one line of a grant file.
 type MemoryGrant struct {
@@ -100,22 +107,13 @@ func LoadMemoryGrantsFull(path string) ([]Rule, map[int]string, string, error) {
 // The revision is the sha256 of the file's bytes, not its `version` field: a format
 // version is "1" for every grant file ever written, so recording it would put the
 // same string on every row and prove nothing.
+//
+// A view of LoadMemoryGrantsFull with the principal map dropped. It used to be a second
+// copy of the parse, the digest and the compile — three things that only stay identical
+// by luck, where a divergence means the tests verify a file the broker never loaded.
 func LoadMemoryGrants(path string) ([]Rule, string, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, "", err
-	}
-	var file memoryGrantFile
-	if err := json.Unmarshal(raw, &file); err != nil {
-		return nil, "", fmt.Errorf("memory grants %s: %w", path, err)
-	}
-	sum := sha256.Sum256(raw)
-	rev := hex.EncodeToString(sum[:])
-	rules, err := CompileMemoryGrants(file.Grants, rev)
-	if err != nil {
-		return nil, rev, err
-	}
-	return rules, rev, nil
+	rules, _, rev, err := LoadMemoryGrantsFull(path)
+	return rules, rev, err
 }
 
 // CompileMemoryGrants turns grants into rules: the allows a grant file permits, then
@@ -127,7 +125,7 @@ func LoadMemoryGrants(path string) ([]Rule, string, error) {
 // engine is first-match-wins, so a deny emitted first would shadow every grant and
 // the file would be a very elaborate way of writing "no".
 func CompileMemoryGrants(grants []MemoryGrant, revision string) ([]Rule, error) {
-	rules := make([]Rule, 0, len(grants)+len(memoryTools))
+	rules := make([]Rule, 0, len(grants)+len(allCapabilities))
 	for _, g := range grants {
 		if !g.Capability.known() {
 			return nil, fmt.Errorf("memory grant %q: unknown capability %q (want read, write, resolve, tombstone or injectable)", g.ID, g.Capability)
@@ -152,7 +150,7 @@ func CompileMemoryGrants(grants []MemoryGrant, revision string) ([]Rule, error) 
 		}
 		r := Rule{
 			ID:       id,
-			Tool:     "mem." + string(g.Capability),
+			Tool:     MemoryTool(g.Capability),
 			Decision: Decision{Action: ActionAllow, Reason: "memory grant " + id},
 			// Identity is a stable predicate: the caller cannot rename its way past it.
 			Predicates: []Predicate{{Kind: PredIdentity, Value: g.Scope}},
@@ -168,7 +166,8 @@ func CompileMemoryGrants(grants []MemoryGrant, revision string) ([]Rule, error) 
 		}
 		rules = append(rules, r)
 	}
-	for _, tool := range memoryTools {
+	for _, c := range allCapabilities {
+		tool := MemoryTool(c)
 		rules = append(rules, Rule{
 			ID:       "mem-deny-" + strings.TrimPrefix(tool, "mem."),
 			Tool:     tool,
@@ -176,12 +175,6 @@ func CompileMemoryGrants(grants []MemoryGrant, revision string) ([]Rule, error) 
 		})
 	}
 	return rules, nil
-}
-
-// memoryTools is the store's whole capability surface. Adding a capability here
-// closes it by default, which is the point of writing the denies from this list.
-var memoryTools = []string{
-	"mem.read", "mem.write", "mem.resolve", "mem.tombstone", "mem.injectable",
 }
 
 func slugScope(s string) string {
