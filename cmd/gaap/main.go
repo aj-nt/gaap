@@ -163,6 +163,9 @@ type runConfig struct {
 	Policy     string
 	StateDir   string
 	TrustFloor float64
+	// RateLimit turns a `rate_limit` rule into a deny carrying a cooldown. Off
+	// means the rule still denies, without promising a retry window.
+	RateLimit bool
 	// Approval asks a human about dead-lettered tasks. Off unless asked for.
 	Approval           bool
 	ApprovalTimeoutSec int
@@ -212,6 +215,7 @@ func parseRunFlags(name string, args []string) (*runConfig, error) {
 	policy := fs.String("policy", "", "Policy file: govern every dispatch against it")
 	stateDir := fs.String("state", defaultStateDir, "State directory for the ledger, keys and kill switch")
 	trustFloor := fs.Float64("trust-floor", 0, "Escalate allows to review while trust is below this (0 disables)")
+	rateLimit := fs.Bool("rate-limit", false, "Make a rate_limit rule deny with a cooldown and a count")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -243,6 +247,7 @@ func parseRunFlags(name string, args []string) (*runConfig, error) {
 		Policy:             envOr("GAAP_POLICY", *policy, ""),
 		StateDir:           envOr("GAAP_STATE", *stateDir, defaultStateDir),
 		TrustFloor:         *trustFloor,
+		RateLimit:          *rateLimit,
 		APIKey:             envOr("GAAP_API_KEY", *apiKey, ""),
 		TLSCert:            envOr("GAAP_TLS_CERT", *tlsCert, ""),
 	}
@@ -309,7 +314,7 @@ func run(args []string) error {
 
 	decomposer := gaap.NewDecomposer(gaap.NewLLMDecomposition(chatFn, catalog))
 
-	governor, closeGovernor, err := openRunGovernor(rc.Policy, rc.StateDir, rc.TrustFloor)
+	governor, tempo, closeGovernor, err := openRunGovernor(rc.Policy, rc.StateDir, rc.TrustFloor)
 	if err != nil {
 		return err
 	}
@@ -317,6 +322,8 @@ func run(args []string) error {
 
 	orchestratorCfg := &gaap.Config{
 		Governor:           governor,
+		Tempo:              tempo,
+		RateLimit:          rc.RateLimit,
 		DaemonAddr:         rc.DaemonAddr,
 		RepoPath:           rc.RepoPath,
 		MaxWaitSec:         rc.MaxWaitSec,
@@ -385,6 +392,7 @@ type resumeConfig struct {
 	Policy     string
 	StateDir   string
 	TrustFloor float64
+	RateLimit  bool
 	connFields
 }
 
@@ -407,6 +415,7 @@ func parseResumeFlags(name string, args []string) (*resumeConfig, error) {
 	policy := fs.String("policy", "", "Policy file: govern every dispatch against it")
 	stateDir := fs.String("state", defaultStateDir, "State directory for the ledger, keys and kill switch")
 	trustFloor := fs.Float64("trust-floor", 0, "Escalate allows to review while trust is below this (0 disables)")
+	rateLimit := fs.Bool("rate-limit", false, "Make a rate_limit rule deny with a cooldown and a count")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -432,6 +441,7 @@ func parseResumeFlags(name string, args []string) (*resumeConfig, error) {
 		Policy:             envOr("GAAP_POLICY", *policy, ""),
 		StateDir:           envOr("GAAP_STATE", *stateDir, defaultStateDir),
 		TrustFloor:         *trustFloor,
+		RateLimit:          *rateLimit,
 	}
 	if *agentTypes != "" {
 		cfg.AgentTypes = strings.Split(*agentTypes, ",")
@@ -506,7 +516,7 @@ func resume(args []string) error {
 		return fmt.Errorf("load run state: %w", err)
 	}
 
-	governor, closeGovernor, err := openRunGovernor(rc.Policy, rc.StateDir, rc.TrustFloor)
+	governor, tempo, closeGovernor, err := openRunGovernor(rc.Policy, rc.StateDir, rc.TrustFloor)
 	if err != nil {
 		return fmt.Errorf("governed resume: %w", err)
 	}
@@ -514,6 +524,8 @@ func resume(args []string) error {
 
 	orchestratorCfg := &gaap.Config{
 		Governor:           governor,
+		Tempo:              tempo,
+		RateLimit:          rc.RateLimit,
 		DaemonAddr:         rc.DaemonAddr,
 		RepoPath:           rs.RepoPath,
 		MaxWaitSec:         rc.MaxWaitSec,

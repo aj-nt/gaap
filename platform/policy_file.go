@@ -50,6 +50,51 @@ type policyRule struct {
 	// Artifact declares the durable thing this rule may create, so the record can
 	// say what outlives the run.
 	Artifact *artifactSpec `json:"artifact,omitempty"`
+	// Predicates narrow the rule to calls satisfying all of them. A deny that
+	// rests only on cosmetic predicates is refused at load (M8.5): such a rule is
+	// matched by anyone who reads it.
+	Predicates []predicateSpec `json:"predicates,omitempty"`
+}
+
+// predicateSpec is the file form of a predicate. The class is NOT a field here:
+// it is derived from the kind, because an author-declared class that disagrees
+// with the kind is a lie with a plausible shape.
+type predicateSpec struct {
+	Kind  string `json:"kind"`
+	Value string `json:"value"`
+}
+
+// parsePredicates validates a rule's predicate block.
+func parsePredicates(ruleID string, specs []predicateSpec, action Action) ([]Predicate, error) {
+	if len(specs) == 0 {
+		return nil, nil
+	}
+	out := make([]Predicate, 0, len(specs))
+	for _, s := range specs {
+		kind := PredicateKind(strings.TrimSpace(s.Kind))
+		if !kind.Known() {
+			return nil, fmt.Errorf("rule %q: unknown predicate kind %q (want tool, effect, identity, volume, sequence, user_agent, filename or hash)", ruleID, s.Kind)
+		}
+		if strings.TrimSpace(s.Value) == "" {
+			return nil, fmt.Errorf("rule %q: predicate %q has no value", ruleID, kind)
+		}
+		out = append(out, Predicate{Kind: kind, Value: s.Value})
+	}
+	// A deny that only reads what the observed party authors is a deny the
+	// observed party can rewrite their way out of. Refused rather than recorded:
+	// the rule would look like a control and behave like a suggestion.
+	if action == ActionDeny && PredicatesAreCosmeticOnly(out) {
+		return nil, fmt.Errorf("rule %q: deny rests only on cosmetic predicates (%s); a rule matched by whoever reads it is not a boundary", ruleID, describePredicates(out))
+	}
+	return out, nil
+}
+
+func describePredicates(ps []Predicate) string {
+	parts := make([]string, 0, len(ps))
+	for _, p := range ps {
+		parts = append(parts, p.String())
+	}
+	return strings.Join(parts, ", ")
 }
 
 // artifactSpec is the file form of an artifact declaration. Lifetime is in
@@ -124,6 +169,10 @@ func ParsePolicy(r io.Reader) ([]Rule, error) {
 		if err != nil {
 			return nil, err
 		}
+		preds, err := parsePredicates(pr.ID, pr.Predicates, action)
+		if err != nil {
+			return nil, err
+		}
 		rules = append(rules, Rule{
 			ID:            pr.ID,
 			Tool:          pr.Tool,
@@ -132,6 +181,7 @@ func ParsePolicy(r io.Reader) ([]Rule, error) {
 			ActionClass:   class,
 			Reversibility: rev,
 			Artifact:      art,
+			Predicates:    preds,
 		})
 	}
 	return rules, nil
@@ -200,16 +250,16 @@ func parseAction(name string) (Action, error) {
 	case ActionAllow, ActionDeny, ActionReview:
 		return Action(name), nil
 	case ActionRateLimit:
-		// Refused, not accepted. Nothing in the kernel counts anything, and
-		// dispatch's switch has no case for this action, so it fell through to
-		// the deny default — the operator configured a throttle and got a
-		// block. Refusing at load is the only honest answer until a counter
-		// subsystem exists to honor it.
-		return "", fmt.Errorf("action %q is not enforced: no counter subsystem exists, so this rule would deny every matching call. Write \"deny\" explicitly if that is the intent", name)
+		// Accepted. M0.1 refused this at load because nothing counted anything
+		// and dispatch had no case for it, so the rule silently became a block.
+		// M8.2 supplies the counter and M8.3 supplies the dispatch case; keeping
+		// the rejection now would leave the branch unreachable and the feature
+		// unconfigurable while its tests passed.
+		return ActionRateLimit, nil
 	case "":
 		return "", fmt.Errorf("missing action")
 	default:
-		return "", fmt.Errorf("unknown action %q (want allow, deny, or review)", name)
+		return "", fmt.Errorf("unknown action %q (want allow, deny, review, or rate_limit)", name)
 	}
 }
 

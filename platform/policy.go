@@ -29,11 +29,23 @@ type Rule struct {
 	// rule declares none, which is a real answer: the consequence is unrecorded,
 	// not absent.
 	Artifact *Artifact
+	// Predicates are conditions the call must satisfy, in addition to the tool
+	// match. A rule should use Predicates or Match, not both: Match is the escape
+	// hatch for rules built in code, and predicates are what a linter can inspect.
+	Predicates []Predicate
 }
 
 func (r Rule) matches(tool string, args map[string]any) bool {
 	if r.Tool != "*" && r.Tool != tool {
 		return false
+	}
+	// Predicates are ANDed with each other and with Match, never ORed. Two
+	// conjunctive conditions can only narrow a rule; a disjunction is how a rule
+	// stops meaning anything specific.
+	for _, p := range r.Predicates {
+		if !p.matches(tool, args) {
+			return false
+		}
 	}
 	if r.Match == nil {
 		return true
