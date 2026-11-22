@@ -165,3 +165,58 @@ func TestEvictToBudgetKeepsPinnedAndNewestFirst(t *testing.T) {
 		t.Fatal("the newest entry was evicted before the oldest")
 	}
 }
+
+// The block is spent in the order it is rendered, so the best-justified content has to be
+// spent first: a fact ahead of an internal observation. The class comes from the closure,
+// not from the row, so this is also a check that promotion raises the effective class.
+func TestFactsSortAboveInternalEntries(t *testing.T) {
+	s := open(t)
+	// Two independent ticketed roots: one origin would be one root, and one root cannot
+	// promote, which is the launder the root closure exists to catch.
+	mustTicketAppend(t, s, "tkt-r1", "r1", "the cluster has three nodes")
+	mustTicketAppend(t, s, "tkt-r2", "r2", "the cluster has four nodes")
+	if err := s.Append(Entry{
+		ID: "derived", Kind: "summary", Body: "the cluster has three or four nodes",
+		SourceKind: TaintInternal, Parents: []string{"r1", "r2"},
+		ExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("derived append: %v", err)
+	}
+	if err := s.Promote("derived", "operator"); err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	mustTicketAppend(t, s, "tkt-i1", "i1", "an internal note")
+
+	got, err := s.Injectable(4000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 4 {
+		t.Fatalf("injectable = %d entries, want 4: %+v", len(got), got)
+	}
+	// Nothing weaker may precede something stronger.
+	for i := 1; i < len(got); i++ {
+		if taintRank[got[i-1].Effective] < taintRank[got[i].Effective] {
+			t.Fatalf("entry %d (%s) outranks entry %d (%s): %+v",
+				i-1, got[i-1].Effective, i, got[i].Effective, got)
+		}
+	}
+	if got[0].ID != "derived" || got[0].Effective != TaintFact {
+		t.Fatalf("first entry = %s/%s, want the promoted fact", got[0].ID, got[0].Effective)
+	}
+	// Within a class the newest-first order of the candidates survives: the sort is
+	// stable, so it groups by provenance without reordering what it grouped.
+	if got[1].ID != "i1" {
+		t.Fatalf("internal entries reordered: %s first, want the newest (i1)", got[1].ID)
+	}
+}
+
+func mustTicketAppend(t *testing.T, s *Store, ticket, id, body string) {
+	t.Helper()
+	if err := s.AppendWithTicket(ticket, Entry{
+		ID: id, Kind: "note", Body: body, Producer: "broker",
+		ExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("ticketed append %s: %v", id, err)
+	}
+}

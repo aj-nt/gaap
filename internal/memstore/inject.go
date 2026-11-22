@@ -41,7 +41,10 @@ func (s *Store) Injectable(budgetChars int) ([]InjectableEntry, error) {
 			COALESCE(e.source_ref,''), e.taint_own, e.expires_at
 		FROM gov_entry e
 		WHERE `+reachable+`
-		ORDER BY e.created_at DESC`, s.now().Unix())
+		-- created_at is whole seconds, so two entries written in the same second tie and
+		-- the order falls to whatever the planner returns. rowid breaks the tie in the
+		-- direction "newest first" claims, and makes the stable sort below meaningful.
+		ORDER BY e.created_at DESC, e.rowid DESC`, s.now().Unix())
 	if err != nil {
 		return nil, fmt.Errorf("memstore: injectable: %w", err)
 	}
@@ -69,8 +72,7 @@ func (s *Store) Injectable(budgetChars int) ([]InjectableEntry, error) {
 			// establish.
 			continue
 		}
-		rank := map[string]int{TaintExternal: 0, TaintInternal: 1, TaintFact: 2}[eff]
-		if rank < 1 {
+		if taintRank[eff] < taintRank[TaintInternal] {
 			continue
 		}
 		if used+len(e.Body) > budgetChars {
@@ -79,7 +81,16 @@ func (s *Store) Injectable(budgetChars int) ([]InjectableEntry, error) {
 		out = append(out, InjectableEntry{Entry: e, Effective: eff})
 		used += len(e.Body)
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Effective == out[j].Effective })
+	// Best-justified first: the block is spent top-down, so a fact must not sit below the
+	// internal observation it was promoted over. Stable, so the newest-first order above
+	// survives inside a class.
+	//
+	// This comparator used to read `Effective == Effective`, which returns true for equal
+	// elements — it violates irreflexivity, so the sort was a no-op and the order was
+	// whatever the query happened to return.
+	sort.SliceStable(out, func(i, j int) bool {
+		return taintRank[out[i].Effective] > taintRank[out[j].Effective]
+	})
 	return out, nil
 }
 
