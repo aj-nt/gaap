@@ -273,6 +273,14 @@ func governDecide(args []string, out io.Writer) error {
 	// seq as if it were the decision's.
 	entry := entries[before]
 
+	return renderDecision(out, g, decision, entry)
+}
+
+// renderDecision prints one decision: what was decided, on what evidence, and where the
+// record of it is. Extracted from governDecide so the decision verb can grow flags without
+// turning into a function that also formats, and so this rendering can be tested on a
+// Decision without a governor's whole state.
+func renderDecision(out io.Writer, g *platform.Governor, decision platform.Decision, entry platform.Entry) error {
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintf(tw, "decision:\t%s\n", decision.Action)
 	_, _ = fmt.Fprintf(tw, "rule:\t%s\n", orNone(decision.RuleID))
