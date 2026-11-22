@@ -183,3 +183,96 @@ func readLedger(t *testing.T, stateDir string) []platform.Entry {
 	}
 	return l.Entries()
 }
+
+// --- the attestation path, end to end through the CLI ---
+
+// ticketFrom pulls the token out of the rendered decision. The output is a tabwriter table,
+// so the token is the second field of the "ticket:" row.
+func ticketFrom(t *testing.T, out string) string {
+	t.Helper()
+	for _, line := range strings.Split(out, "\n") {
+		if f := strings.Fields(line); len(f) == 2 && f[0] == "ticket:" {
+			return f[1]
+		}
+	}
+	t.Fatalf("no ticket in output:\n%s", out)
+	return ""
+}
+
+// An allowed pure read, asked for with an entry and a resource, mints a token that verifies
+// against the key the CLI wrote — and that token is what the broker will accept.
+func TestGovernDecideIssuesATicketForAPureRead(t *testing.T) {
+	state, policy := governFixture(t)
+	var out bytes.Buffer
+	err := governDecide([]string{
+		"--state", state,
+		"--policy", policy,
+		"--subject", "agent-a",
+		"--tool", "ReadFile",
+		"--args", `{"path":"/etc/hosts"}`,
+		// The workload declares which of its tools are reads; the kernel never guesses.
+		"--read-tools", "ReadFile",
+		"--ticket-entry", "e1",
+		"--ticket-resource", "/etc/hosts",
+	}, &out)
+	if err != nil {
+		t.Fatalf("governDecide: %v", err)
+	}
+	if !strings.Contains(out.String(), "allow") {
+		t.Fatalf("output = %q, want an allow", out.String())
+	}
+	token := ticketFrom(t, out.String())
+
+	key, err := platform.LoadTicketKey(filepath.Join(state, "ticket.key"))
+	if err != nil {
+		t.Fatalf("the CLI did not leave a key both sides can read: %v", err)
+	}
+	tk, err := key.Verify(token, "e1", "agent-a", "/etc/hosts")
+	if err != nil {
+		t.Fatalf("issued ticket does not verify: %v", err)
+	}
+	if tk.EntryID != "e1" || tk.Resource != "/etc/hosts" {
+		t.Fatalf("claims = %+v", tk)
+	}
+}
+
+// Without the workload saying which tool is a read, the kernel classifies it irreversible and
+// the ticket is refused: the CLI cannot talk itself into an attestation.
+func TestGovernDecideRefusesATicketForAnUnclassifiedCall(t *testing.T) {
+	state, policy := governFixture(t)
+	var out bytes.Buffer
+	err := governDecide([]string{
+		"--state", state,
+		"--policy", policy,
+		"--subject", "agent-a",
+		"--tool", "ReadFile",
+		"--ticket-entry", "e1",
+		"--ticket-resource", "/etc/hosts",
+	}, &out)
+	if err != nil {
+		t.Fatalf("governDecide: %v", err)
+	}
+	s := out.String()
+	if !strings.Contains(s, "deny") || !strings.Contains(s, "only a pure read") {
+		t.Fatalf("output = %q, want a deny that says why", s)
+	}
+	if strings.Contains(s, "ticket:\t") {
+		t.Fatalf("a ticket was printed for a refused call:\n%s", s)
+	}
+}
+
+func TestGovernDecideRequiresBothTicketFlags(t *testing.T) {
+	state, policy := governFixture(t)
+	_, err := runDecide(t, state, policy, "agent-a", "ReadFile", `{}`)
+	if err != nil {
+		t.Fatalf("baseline: %v", err)
+	}
+	var out bytes.Buffer
+	err = governDecide([]string{
+		"--state", state, "--policy", policy, "--subject", "agent-a", "--tool", "ReadFile",
+		"--ticket-entry", "e1",
+	}, &out)
+	if err == nil || !strings.Contains(err.Error(), "go together") {
+		t.Fatalf("err = %v, want a complaint about the pair", err)
+	}
+}

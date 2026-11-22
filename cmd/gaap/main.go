@@ -141,6 +141,18 @@ Approve flags:
   --agent string    Who is deciding — required, recorded
   --agents string   Comma-separated allowlist of who may decide
   --json            Print the decision as JSON
+
+Govern decide flags:
+  --policy string      Policy file (required)
+  --subject string     Who the call is about: an agent id, or a person (required)
+  --tool string        Tool name the policy matches against (required)
+  --args string        Tool arguments as JSON (default {})
+  --state string       State directory for the ledger, keys and kill switch
+  --read-tools string  Comma-separated tool names to classify as pure reads
+  --trust-floor float  Escalate allows to review below this trust score (0 disables)
+  --ticket-entry string     Issue a gate ticket covering this memory entry id
+  --ticket-resource string  What the observation is about; must equal the entry's source_ref
+  --ticket-key string       Ticket key path (default <state>/ticket.key)
 `)
 }
 

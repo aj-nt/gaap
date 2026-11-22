@@ -58,6 +58,10 @@ type Response struct {
 type broker struct {
 	store *memstore.Store
 	rules *platform.PolicyEngine
+	// tickets verifies the attestation a write presents to claim internal provenance.
+	// nil = no key on this host, and then a ticketed write is refused rather than
+	// trusted: the whole point of the ticket is that the id alone proves nothing.
+	tickets *platform.TicketKey
 	// principals maps uid -> authorised agent type.
 	principals map[int]string
 	revision   string
@@ -68,6 +72,7 @@ func main() {
 		socketPath = flag.String("socket", "/run/govmem.sock", "unix socket to serve on")
 		storePath  = flag.String("store", "/var/lib/gaap/mem.db", "sqlite store path (created 0600)")
 		grantsPath = flag.String("grants", "/etc/gaap/memory-grants.json", "grant file with principals")
+		ticketKey  = flag.String("ticket-key", "/etc/gaap/ticket.key", "gate-ticket verification key (read only; the governor creates it)")
 		verbose    = flag.Bool("v", false, "log every decision")
 	)
 	flag.Parse()
@@ -102,7 +107,19 @@ func main() {
 	}
 	defer func() { _ = ln.Close() }()
 
-	b := &broker{store: store, rules: platform.GrantsEngine(rules), principals: principals, revision: rev}
+	tickets, err := loadTicketKey(*ticketKey)
+	if err != nil {
+		log.Fatalf("govmemd: ticket key: %v", err)
+	}
+	if tickets == nil {
+		// Not a fatal misconfiguration: the broker still serves reads, searches and
+		// unattested writes. What it cannot do is record anything as internal, and
+		// saying so at startup is the difference between a documented limitation and a
+		// silent one.
+		log.Printf("govmemd: no ticket key at %s — ticketed writes will be refused, so nothing can be recorded as internal", *ticketKey)
+	}
+
+	b := &broker{store: store, rules: platform.GrantsEngine(rules), tickets: tickets, principals: principals, revision: rev}
 	log.Printf("govmemd: serving %s (revision %s, %d principals)", *socketPath, short(rev), len(principals))
 
 	sig := make(chan os.Signal, 1)
@@ -147,6 +164,27 @@ func listen(path string) (net.Listener, error) {
 		return nil, err
 	}
 	return ln, nil
+}
+
+// loadTicketKey reads the verification key. nil with no error means "no key on this host":
+// the broker then refuses ticketed writes instead of trusting the id, which is the
+// fail-closed half of the fix. A key that exists but does not parse is fatal — it is a
+// deployed misconfiguration, and stepping over it would make every ticket look forged.
+//
+// The broker only ever reads: minting a key here would invalidate every token a governor
+// issued, on the first start after a lost file.
+func loadTicketKey(path string) (*platform.TicketKey, error) {
+	if path == "" {
+		return nil, nil
+	}
+	k, err := platform.LoadTicketKey(path)
+	if err == nil {
+		return k, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	return nil, err
 }
 
 func (b *broker) handle(conn net.Conn, verbose bool) {
@@ -260,13 +298,10 @@ func (b *broker) serve(req Request) Response {
 		if req.Entry == nil {
 			return Response{Error: "write requires entry"}
 		}
-		var err error
 		if req.Ticket != "" {
-			err = b.store.AppendWithTicket(req.Ticket, *req.Entry)
-		} else {
-			err = b.store.Append(*req.Entry)
+			return b.appendAttested(req)
 		}
-		if err != nil {
+		if err := b.store.Append(*req.Entry); err != nil {
 			return Response{Error: err.Error()}
 		}
 		return Response{OK: true}
@@ -293,6 +328,30 @@ func (b *broker) serve(req Request) Response {
 	default:
 		return Response{Error: "unknown op " + req.Op}
 	}
+}
+
+// appendAttested turns a presented ticket into an internal append, in that order: verify,
+// then consume, then write.
+//
+// Consuming first would burn a ticket on a token that never proved anything; verifying after
+// the write would leave a row recorded under a class nothing had checked. And a refusal is a
+// refusal: the content is not quietly appended as external instead, because a caller that
+// believes it holds an attestation must not be served as though it did.
+//
+// The claim is bound to the entry id, this agent, and the entry's SourceRef — so the token is
+// worth nothing for a different observation, a different entry, or a different agent.
+func (b *broker) appendAttested(req Request) Response {
+	if b.tickets == nil {
+		return Response{Error: "a ticket was presented but this broker has no ticket key; refusing rather than recording the content as external"}
+	}
+	t, err := b.tickets.Verify(req.Ticket, req.Entry.ID, req.Agent, req.Entry.SourceRef)
+	if err != nil {
+		return Response{Error: "ticket refused: " + err.Error()}
+	}
+	if err := b.store.AppendWithTicket(t.ID, *req.Entry); err != nil {
+		return Response{Error: err.Error()}
+	}
+	return Response{OK: true, Effective: memstore.TaintInternal}
 }
 
 func (b *broker) reply(conn net.Conn, r Response) {
