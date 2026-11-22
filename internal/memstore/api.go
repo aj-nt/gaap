@@ -76,17 +76,8 @@ func (s *Store) Append(e Entry) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	producer := e.Producer
-	if producer == "" {
-		producer = e.SourceRef
-	}
-	_, err = tx.Exec(`INSERT INTO gov_entry
-		(id, root_id, kind, body, source_kind, source_ref, taint_own, status, created_at, expires_at, producer)
-		VALUES (?,?,?,?,?,?,?, 'active', ?, ?, ?)`,
-		e.ID, e.RootID, e.Kind, e.Body, e.SourceKind, nullable(e.SourceRef), taint,
-		s.now().Unix(), e.ExpiresAt.Unix(), producer)
-	if err != nil {
-		return fmt.Errorf("memstore: append %s: %w", e.ID, err)
+	if err := insertEntry(tx, e, taint, producerOf(e), s.now().Unix()); err != nil {
+		return err
 	}
 	for _, p := range e.Parents {
 		if err := addEdge(tx, e.ID, p); err != nil {
@@ -117,6 +108,31 @@ func (s *Store) Append(e Entry) error {
 		// promoted.
 	}
 	return tx.Commit()
+}
+
+// insertEntry writes the row itself. Both append paths share it, because the column list
+// is the store's record of what happened and a column added to one path and not the other
+// is half a database whose readers cannot predict its shape.
+func insertEntry(tx *sql.Tx, e Entry, taint, producer string, now int64) error {
+	_, err := tx.Exec(`INSERT INTO gov_entry
+		(id, root_id, kind, body, source_kind, source_ref, taint_own, status, created_at, expires_at, producer)
+		VALUES (?,?,?,?,?,?,?, 'active', ?, ?, ?)`,
+		e.ID, e.RootID, e.Kind, e.Body, e.SourceKind, nullable(e.SourceRef), taint,
+		now, e.ExpiresAt.Unix(), producer)
+	if err != nil {
+		return fmt.Errorf("memstore: append %s: %w", e.ID, err)
+	}
+	return nil
+}
+
+// producerOf names what wrote the row, defaulting to what it was written about. Promotion
+// compares this against the promoter, so an empty producer is a row nobody is accountable
+// for — the default is a fallback, not a licence to leave it blank.
+func producerOf(e Entry) string {
+	if e.Producer != "" {
+		return e.Producer
+	}
+	return e.SourceRef
 }
 
 // addEdge inserts child -> parent after refusing any cycle.
