@@ -234,14 +234,28 @@ func parseRunFlags(name string, args []string) (*runConfig, error) {
 		APIKey:             envOr("GAAP_API_KEY", *apiKey, ""),
 		TLSCert:            envOr("GAAP_TLS_CERT", *tlsCert, ""),
 	}
-	if *agentTypes != "" {
-		cfg.AgentTypes = strings.Split(*agentTypes, ",")
-	} else if env := os.Getenv("GAAP_AGENT_TYPES"); env != "" {
-		cfg.AgentTypes = strings.Split(env, ",")
-	} else {
-		cfg.AgentTypes = []string{"static_analysis", "quality_scan", "file_analysis"}
-	}
+	cfg.AgentTypes = agentTypesFrom(*agentTypes)
 	return cfg, nil
+}
+
+// defaultAgentTypes is what a run dispatches when nothing says otherwise.
+var defaultAgentTypes = []string{"static_analysis", "quality_scan", "file_analysis"}
+
+// agentTypesFrom resolves the dispatch set: flag, then environment, then the default.
+//
+// One function because both subcommands resolved it inline, three ways each — and a resumed
+// run with a different agent-type set re-dispatches work the original run never planned, or
+// silently skips work it did. The default slice is copied rather than shared: it is handed
+// to two configs and read by the pool's dispatch loop, and a caller that appended to a
+// package-level slice would change the next run's dispatch set.
+func agentTypesFrom(flagVal string) []string {
+	if flagVal != "" {
+		return strings.Split(flagVal, ",")
+	}
+	if env := os.Getenv("GAAP_AGENT_TYPES"); env != "" {
+		return strings.Split(env, ",")
+	}
+	return append([]string(nil), defaultAgentTypes...)
 }
 
 // run is the entry point for the "run" subcommand. It parses flags,
@@ -411,13 +425,7 @@ func parseResumeFlags(name string, args []string) (*resumeConfig, error) {
 		MaxWaitSec:   atoiOr(envOr("GAAP_TIMEOUT", "", ""), *timeout, 300),
 		governFields: gov.settings(),
 	}
-	if *agentTypes != "" {
-		cfg.AgentTypes = strings.Split(*agentTypes, ",")
-	} else if env := os.Getenv("GAAP_AGENT_TYPES"); env != "" {
-		cfg.AgentTypes = strings.Split(env, ",")
-	} else {
-		cfg.AgentTypes = []string{"static_analysis", "quality_scan", "file_analysis"}
-	}
+	cfg.AgentTypes = agentTypesFrom(*agentTypes)
 	return cfg, nil
 }
 
