@@ -13,6 +13,21 @@ import (
 	"time"
 )
 
+// Kind values recorded on Entry.Kind. The set is closed: adding a kind is a
+// reader change (a filter, a tail renderer, a report) rather than only a writer
+// change, so it belongs here where those readers can see it.
+const (
+	KindDecision   = "decision"
+	KindGrant      = "grant"
+	KindKillswitch = "killswitch"
+	KindTrust      = "trust"
+	KindRequest    = "request"
+	// Reserved: named here so a writer cannot invent a spelling, but no
+	// production path emits them yet.
+	KindRevocation  = "revocation"
+	KindDenialBurst = "denial_burst"
+)
+
 // Entry is a single immutable record in the ledger. Only the governor appends;
 // the agent never writes here directly.
 //
@@ -27,8 +42,7 @@ import (
 type Entry struct {
 	Seq  int64     `json:"seq"`
 	Time time.Time `json:"time"`
-	// Kind is the record category: "decision", "grant", "killswitch", "trust",
-	// "request".
+	// Kind is the record category; see the Kind* constants.
 	Kind string `json:"kind"`
 	// SubjectHash commits to the identity the decision was about, without
 	// storing it. When CommitAlgo is set this is a KEYED commitment, not a plain
@@ -67,6 +81,14 @@ type Entry struct {
 	// Reversibility classifies whether the recorded effect can be undone.
 	// Zero value means "not classified" — valid for non-decision entries.
 	Reversibility Reversibility `json:"reversibility,omitempty"`
+	// DenialClass is what the refused call was FOR (shell, file_write, …), not
+	// what it was called. A name is authored by the observed party, so a counter
+	// or a report keyed on it is defeated by renaming the tool.
+	DenialClass string `json:"denial_class,omitempty"`
+	// CorrelationID ties the text shown to the agent to this row. It is minted
+	// once per non-allow decision; without it "the governor refused me" cannot be
+	// resolved to a record.
+	CorrelationID string `json:"correlation_id,omitempty"`
 	// KeyID identifies the signing key that authenticated this entry. Empty
 	// until signing is wired in; the field exists so entries are self-describing
 	// across key rotation.
@@ -162,6 +184,8 @@ func hashEntry(e Entry, prevHash string) (string, error) {
 		InputHash     string `json:"input_hash"`
 		Reason        string `json:"reason"`
 		Reversibility string `json:"reversibility"`
+		DenialClass   string `json:"denial_class,omitempty"`
+		CorrelationID string `json:"correlation_id,omitempty"`
 	}{
 		PrevHash:      prevHash,
 		KeyID:         e.KeyID,
@@ -178,6 +202,8 @@ func hashEntry(e Entry, prevHash string) (string, error) {
 		InputHash:     e.InputHash,
 		Reason:        e.Reason,
 		Reversibility: string(e.Reversibility),
+		DenialClass:   e.DenialClass,
+		CorrelationID: e.CorrelationID,
 	}
 	b, err := json.Marshal(content)
 	if err != nil {

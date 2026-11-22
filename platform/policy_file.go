@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -34,6 +35,11 @@ type policyRule struct {
 	// substring. Values are rendered with fmt.Sprint so a number or bool arg can
 	// be matched without a type puzzle.
 	ArgsContain map[string]string `json:"args_contain,omitempty"`
+	// Class names what the call is for (shell, file_write, network, memory,
+	// self_extension). Optional today; the linter in a later milestone requires
+	// it, because a refusal counter keyed on a tool name is defeated by renaming
+	// the tool.
+	Class string `json:"class,omitempty"`
 }
 
 // ParsePolicy reads a rule file and returns the rules in evaluation order.
@@ -47,7 +53,13 @@ func ParsePolicy(r io.Reader) ([]Rule, error) {
 		return nil, fmt.Errorf("read policy: %w", err)
 	}
 	var file policyFile
-	if err := json.Unmarshal(raw, &file); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	// A misspelled key is a rule the operator believes they wrote and did not:
+	// "decison": "deny" would load, produce no action, and fail the "missing
+	// action" check with a message that names nothing useful. Refusing unknown
+	// fields turns it into a load error naming the key.
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&file); err != nil {
 		return nil, fmt.Errorf("parse policy: %w", err)
 	}
 	if file.Version != 0 && file.Version != 1 {
@@ -74,11 +86,16 @@ func ParsePolicy(r io.Reader) ([]Rule, error) {
 		if action != ActionAllow && strings.TrimSpace(pr.Reason) == "" {
 			return nil, fmt.Errorf("rule %q: %s requires a reason", pr.ID, action)
 		}
+		class := ActionClass(pr.Class)
+		if pr.Class != "" && !class.Known() {
+			return nil, fmt.Errorf("rule %q: unknown class %q (want shell, file_write, network, memory, or self_extension)", pr.ID, pr.Class)
+		}
 		rules = append(rules, Rule{
-			ID:       pr.ID,
-			Tool:     pr.Tool,
-			Match:    argsContainMatcher(pr.ArgsContain),
-			Decision: Decision{Action: action, Reason: pr.Reason},
+			ID:          pr.ID,
+			Tool:        pr.Tool,
+			Match:       argsContainMatcher(pr.ArgsContain),
+			Decision:    Decision{Action: action, Reason: pr.Reason},
+			ActionClass: class,
 		})
 	}
 	return rules, nil
@@ -108,12 +125,19 @@ func LoadPolicyFile(path string) (*PolicyEngine, error) {
 // parseAction validates an action name against the typed set.
 func parseAction(name string) (Action, error) {
 	switch Action(name) {
-	case ActionAllow, ActionDeny, ActionReview, ActionRateLimit:
+	case ActionAllow, ActionDeny, ActionReview:
 		return Action(name), nil
+	case ActionRateLimit:
+		// Refused, not accepted. Nothing in the kernel counts anything, and
+		// dispatch's switch has no case for this action, so it fell through to
+		// the deny default — the operator configured a throttle and got a
+		// block. Refusing at load is the only honest answer until a counter
+		// subsystem exists to honor it.
+		return "", fmt.Errorf("action %q is not enforced: no counter subsystem exists, so this rule would deny every matching call. Write \"deny\" explicitly if that is the intent", name)
 	case "":
 		return "", fmt.Errorf("missing action")
 	default:
-		return "", fmt.Errorf("unknown action %q (want allow, deny, review, or rate_limit)", name)
+		return "", fmt.Errorf("unknown action %q (want allow, deny, or review)", name)
 	}
 }
 

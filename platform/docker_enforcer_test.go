@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDockerEnforcerRunChownsThenRuns(t *testing.T) {
@@ -176,7 +177,7 @@ func TestDockerEnforcerGrantChowns(t *testing.T) {
 			return nil, nil
 		},
 	}
-	if err := e.Grant(context.Background(), "c1", PathGrant{Path: "/data/foo", Mode: "rw", UID: 10001}); err != nil {
+	if err := e.Grant(context.Background(), "c1", PathGrant{Path: "/data/foo", Mode: "rw", UID: 10001, ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
 		t.Fatalf("Grant: %v", err)
 	}
 	if len(calls) != 1 || !strings.Contains(calls[0], "chown 10001:10001 /data/foo") {

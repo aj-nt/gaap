@@ -1,6 +1,9 @@
 package platform
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Enforcer applies the sovereign's decisions by running the agent's arbitrary
 // code inside a deny-by-default container on Gaap's own dedicated dockerd. The
@@ -65,6 +68,8 @@ func (NoopEnforcer) Status(context.Context, string) (string, int, error) {
 	return "exited", 0, nil
 }
 func (NoopEnforcer) Stop(context.Context, string) error { return nil }
-func (NoopEnforcer) Grant(context.Context, string, PathGrant) error {
-	return nil
+func (NoopEnforcer) Grant(_ context.Context, _ string, g PathGrant) error {
+	// The no-op fake still enforces the grant's own contract: a fake that
+	// accepts an expired grant hides the bug in every test that uses it.
+	return g.Validate(time.Now())
 }

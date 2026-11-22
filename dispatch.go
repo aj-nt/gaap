@@ -148,7 +148,7 @@ func (o *Orchestrator) decide(node *TaskNode) error {
 			// A review nobody can answer is a hang. Without the approval loop the
 			// safe reading of "a person should look at this" is that it does not
 			// run.
-			o.denyTask(node, "policy asked for review and no approval loop is configured: "+d.Reason)
+			o.denyTaskPolicy(node, d, "policy asked for review and no approval loop is configured: "+d.Reason)
 			return nil
 		}
 		node.Status = status.TaskBlocked
@@ -159,7 +159,7 @@ func (o *Orchestrator) decide(node *TaskNode) error {
 		})
 		return nil
 	default: // deny, and anything the kernel might add later
-		o.denyTask(node, d.Reason)
+		o.denyTaskPolicy(node, d, d.Reason)
 		return nil
 	}
 }
@@ -168,8 +168,34 @@ func (o *Orchestrator) decide(node *TaskNode) error {
 // is a decision, not a request for one, and asking a human to overrule the
 // standing orders would make the policy advisory.
 func (o *Orchestrator) denyTask(node *TaskNode, reason string) {
+	o.failDenied(node, "policy deny: "+reason, "")
+}
+
+// denyTaskPolicy is denyTask for a refusal that came with a structured Denial,
+// and it also writes the text the agent will read.
+//
+// Distinct from denyTask because the authorship differs. This refusal is the
+// platform's own standing orders, so the reframe says so and stops an agent
+// reading it as a target's defence to route around. A human declining a task
+// (approval.go) must NOT be reframed that way: telling an agent "your platform
+// blocked this" when a person did sends it looking for a policy to satisfy.
+func (o *Orchestrator) denyTaskPolicy(node *TaskNode, d platform.Decision, reason string) {
+	model := ""
+	if d.Denial != nil {
+		model = platform.ReframeDenial(*d.Denial)
+	}
+	o.failDenied(node, "policy deny: "+reason, model)
+}
+
+// failDenied is the shared tail: the task fails, its descendants are skipped, and
+// the failure is emitted. Summary stays the raw text because it is evidence; the
+// reframe goes alongside it, never in place of it.
+func (o *Orchestrator) failDenied(node *TaskNode, summary, summaryModel string) {
 	node.Status = status.TaskFailed
-	node.Summary = "policy deny: " + reason
+	node.Summary = summary
+	if summaryModel != "" {
+		node.SummaryModel = summaryModel
+	}
 	skipped := o.dag.SkipDescendants(node.ID)
 	o.fireTaskFailed(node.ID, "govern", skipped)
 }

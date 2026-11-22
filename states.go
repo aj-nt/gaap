@@ -374,7 +374,7 @@ func (o *Orchestrator) collectSynthesisInput() map[string]*TaskResult {
 		if node.Status != status.TaskDone {
 			continue
 		}
-		summary := node.Summary
+		summary := displaySummary(node)
 		if summary == "" {
 			summary = fmt.Sprintf("no summary reported (goal: %s)", node.Goal)
 		}
@@ -446,7 +446,7 @@ func (s *ApprovalState) Enter(ctx context.Context, o *Orchestrator) error {
 		}
 		if !reuse {
 			goal := fmt.Sprintf("Approve %s (%s): %s", s.Request.TaskID, s.Request.AgentType, s.Request.Reason)
-			if _, err := o.daemon.AddTask(ctx, s.ApprovalTaskID, ApprovalAgentType, goal, string(reqJSON), 3, 600, 0); err != nil {
+			if _, err := o.daemon.AddTask(ctx, s.ApprovalTaskID, ApprovalAgentType, goal, string(reqJSON), 3, ApprovalTaskTTL(o.cfg.Approval.Timeout), 0); err != nil {
 				return fmt.Errorf("approval: creating the request task %s: %w", s.ApprovalTaskID, err)
 			}
 		}
@@ -626,7 +626,7 @@ func (o *Orchestrator) reportFailure(c outcomeCounts) {
 	if len(c.failedIDs) > 0 {
 		fmt.Println("Failed tasks:")
 		for _, id := range c.failedIDs {
-			summary := o.dag.nodes[id].Summary
+			summary := displaySummary(o.dag.nodes[id])
 			if summary == "" {
 				summary = "no reason recorded"
 			}
