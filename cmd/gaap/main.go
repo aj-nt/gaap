@@ -150,6 +150,7 @@ Govern decide flags:
   --state string       State directory for the ledger, keys and kill switch
   --read-tools string  Comma-separated tool names to classify as pure reads
   --trust-floor float  Escalate allows to review below this trust score (0 disables)
+  --floor string       Provenance floor of the justification: external, internal or fact
   --ticket-entry string     Issue a gate ticket covering this memory entry id
   --ticket-resource string  What the observation is about; must equal the entry's source_ref
   --ticket-key string       Ticket key path (default <state>/ticket.key)

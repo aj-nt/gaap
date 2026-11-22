@@ -276,3 +276,109 @@ func TestGovernDecideRequiresBothTicketFlags(t *testing.T) {
 		t.Fatalf("err = %v, want a complaint about the pair", err)
 	}
 }
+
+// --- the provenance floor, through the decision verb ---
+
+// taintPolicy requires internal provenance before an allow stands. That requirement was
+// implementable and unreachable before this: the kernel could escalate since M7b, and no
+// production caller ever passed a floor.
+const taintPolicy = `{
+  "version": 1,
+  "rules": [
+    {"id": "read-own", "tool": "ReadFile", "action": "allow", "min_taint": "internal"}
+  ]
+}`
+
+func policyFixture(t *testing.T, body string) (stateDir, policyPath string) {
+	t.Helper()
+	dir := t.TempDir()
+	policyPath = filepath.Join(dir, "rules.json")
+	if err := os.WriteFile(policyPath, []byte(body), 0o600); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+	return filepath.Join(dir, "state"), policyPath
+}
+
+func runDecideExtra(t *testing.T, stateDir, policyPath, subject, tool string, extra ...string) (string, error) {
+	t.Helper()
+	args := []string{"--state", stateDir, "--policy", policyPath, "--subject", subject, "--tool", tool}
+	args = append(args, extra...)
+	var out bytes.Buffer
+	err := governDecide(args, &out)
+	return out.String(), err
+}
+
+// A weak justification does not carry an allow the rule reserved for a strong one.
+func TestGovernDecideEscalatesOnAWeakFloor(t *testing.T) {
+	state, policy := policyFixture(t, taintPolicy)
+	out, err := runDecideExtra(t, state, policy, "agent-a", "ReadFile", "--floor", "external")
+	if err != nil {
+		t.Fatalf("governDecide: %v", err)
+	}
+	if !strings.Contains(out, "review") {
+		t.Fatalf("output = %q, want a review", out)
+	}
+	if !strings.Contains(out, "requires internal") || !strings.Contains(out, "external") {
+		t.Fatalf("output = %q, want the requirement and the supplied floor", out)
+	}
+	if !strings.Contains(out, "min taint") || !strings.Contains(out, "justification floor") {
+		t.Fatalf("output = %q, want both provenance rows", out)
+	}
+}
+
+// Strong enough: the allow stands, and the floor is on the record instead of being implied.
+func TestGovernDecideAllowsAtTheRequiredFloor(t *testing.T) {
+	state, policy := policyFixture(t, taintPolicy)
+	out, err := runDecideExtra(t, state, policy, "agent-a", "ReadFile", "--floor", "internal")
+	if err != nil {
+		t.Fatalf("governDecide: %v", err)
+	}
+	if !strings.Contains(out, "allow") || strings.Contains(out, "review") {
+		t.Fatalf("output = %q, want an allow", out)
+	}
+}
+
+// No floor is not the same as external, and the difference is visible: unreported fails the
+// requirement too, but it says so.
+func TestGovernDecideTreatsAnUnstatedFloorAsUnreported(t *testing.T) {
+	state, policy := policyFixture(t, taintPolicy)
+	out, err := runDecideExtra(t, state, policy, "agent-a", "ReadFile")
+	if err != nil {
+		t.Fatalf("governDecide: %v", err)
+	}
+	if !strings.Contains(out, "review") || !strings.Contains(out, "unreported") {
+		t.Fatalf("output = %q, want a review naming the unreported floor", out)
+	}
+}
+
+// A typo must not quietly weaken the justification: it must not read as "no floor supplied"
+// either, which is a legitimate state the engine already handles.
+func TestGovernDecideRefusesAnUnknownFloor(t *testing.T) {
+	state, policy := policyFixture(t, taintPolicy)
+	_, err := runDecideExtra(t, state, policy, "agent-a", "ReadFile", "--floor", "externl")
+	if err == nil {
+		t.Fatal("a misspelled provenance class was accepted")
+	}
+	if !strings.Contains(err.Error(), "not a provenance class") {
+		t.Fatalf("err = %v, want it to name the vocabulary", err)
+	}
+}
+
+// The two mechanisms in one call: a review has authorised nothing, so it must not leave a
+// credential behind for a call a human then rejects.
+func TestGovernDecideMintsNoTicketForAnEscalatedAllow(t *testing.T) {
+	state, policy := policyFixture(t, taintPolicy)
+	out, err := runDecideExtra(t, state, policy, "agent-a", "ReadFile",
+		"--read-tools", "ReadFile",
+		"--floor", "external",
+		"--ticket-entry", "e1", "--ticket-resource", "/etc/hosts")
+	if err != nil {
+		t.Fatalf("governDecide: %v", err)
+	}
+	if !strings.Contains(out, "review") {
+		t.Fatalf("output = %q, want a review", out)
+	}
+	if strings.Contains(out, "ticket:") {
+		t.Fatalf("an escalated allow minted a ticket:\n%s", out)
+	}
+}

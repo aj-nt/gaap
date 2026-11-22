@@ -229,6 +229,7 @@ func governDecide(args []string, out io.Writer) error {
 	tool := fs.String("tool", "", "tool name the policy matches against")
 	argsJSON := fs.String("args", "{}", "tool arguments as JSON")
 	readTools := fs.String("read-tools", "", "comma-separated tool names to classify as pure reads")
+	floor := fs.String("floor", "", "provenance floor of the justification: external, internal or fact (default: unreported)")
 	ticketEntry := fs.String("ticket-entry", "", "issue an attestation covering this memory entry id (needs a pure read)")
 	ticketResource := fs.String("ticket-resource", "", "the resource the observation is about; must equal the entry's source_ref, which is what the broker verifies the ticket against")
 	ticketKeyPath := fs.String("ticket-key", "", "gate-ticket key path (default <state>/ticket.key)")
@@ -244,6 +245,13 @@ func governDecide(args []string, out io.Writer) error {
 	}
 	if *tool == "" {
 		return fmt.Errorf("govern decide requires --tool")
+	}
+	// The floor is what the caller knows about its own justification — including anything it
+	// read out of memory — and the governor refuses to guess it. An unknown word is an error
+	// rather than a silent external: a typo that quietly weakens the provenance would look
+	// exactly like a policy that never asked.
+	if *floor != "" && !platform.TaintClass(*floor).Known() {
+		return fmt.Errorf("--floor %q is not a provenance class (want external, internal or fact)", *floor)
 	}
 	if (*ticketEntry == "") != (*ticketResource == "") {
 		return fmt.Errorf("--ticket-entry and --ticket-resource go together: an attestation names the entry it covers and what that entry is about")
@@ -272,6 +280,9 @@ func governDecide(args []string, out io.Writer) error {
 	// deliberate operation, and a key that appeared when a deploy changed an environment
 	// variable would invalidate every in-flight ticket.
 	var opts []platform.DecideOpt
+	if *floor != "" {
+		opts = append(opts, platform.WithFloor(platform.TaintClass(*floor)))
+	}
 	if *ticketEntry != "" {
 		keyPath := *ticketKeyPath
 		if keyPath == "" {
@@ -308,6 +319,13 @@ func renderDecision(out io.Writer, g *platform.Governor, decision platform.Decis
 	_, _ = fmt.Fprintf(tw, "decision:\t%s\n", decision.Action)
 	_, _ = fmt.Fprintf(tw, "rule:\t%s\n", orNone(decision.RuleID))
 	_, _ = fmt.Fprintf(tw, "reason:\t%s\n", orNone(decision.Reason))
+	// Carried only when there is something to say: a rule that requires nothing and a
+	// caller that reported nothing have no provenance question, and two empty rows on every
+	// decision would train the reader to skip the section.
+	if decision.MinTaint != "" || decision.Floor != "" {
+		_, _ = fmt.Fprintf(tw, "min taint:\t%s\n", orNone(string(decision.MinTaint)))
+		_, _ = fmt.Fprintf(tw, "justification floor:\t%s\n", orUnreported(string(decision.Floor)))
+	}
 	_, _ = fmt.Fprintf(tw, "tool:	%s\n", entry.Tool)
 	_, _ = fmt.Fprintf(tw, "reversibility:	%s\n", entry.Reversibility)
 	// A bearer token, printed to the caller and nowhere else: the ledger records the
@@ -494,6 +512,16 @@ func governStatus(args []string, out io.Writer) error {
 }
 
 // orNone renders an empty field as a dash so the output has no blank values.
+// orUnreported names the absent floor rather than printing a dash. Absent is not external:
+// the first is ignorance about the justification, the second is a fact about it, and only the
+// second is attributable — the same distinction the kernel's downgrade reason draws.
+func orUnreported(s string) string {
+	if s == "" {
+		return "unreported (no floor stated)"
+	}
+	return s
+}
+
 func orNone(s string) string {
 	if s == "" {
 		return "-"
