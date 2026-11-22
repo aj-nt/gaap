@@ -127,6 +127,15 @@ func (o *Orchestrator) decide(node *TaskNode) error {
 	if agentID == "" {
 		agentID = "gaap-orchestrator"
 	}
+	// Tempo is measured before the decision so the arrival that triggers a burst
+	// is included in it. A failed write is logged, not fatal: it is a monitoring
+	// gap, and refusing to run because telemetry is unwritable would make
+	// observation a control.
+	if o.cfg.Tempo != nil {
+		if err := o.cfg.Tempo.Observe(agentID); err != nil {
+			slog.Warn("tempo: observation not recorded", "agent", agentID, "err", err)
+		}
+	}
 	d := o.cfg.Governor.Decide(agentID, node.AgentType, map[string]any{
 		"task_id": node.ID,
 		"goal":    node.Goal,

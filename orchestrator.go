@@ -77,6 +77,15 @@ type Config struct {
 	// call is denied with the rule's own reason, which is the pre-M8 behaviour
 	// minus the load-time rejection that made the rule unwritable.
 	RateLimit bool `yaml:"rate_limit"`
+	// Tempo records arrival timing per agent so the shape of a run can be
+	// inspected. nil = not measured.
+	//
+	// Observation only: nothing here changes a verdict. It is attached at the
+	// dispatch site rather than inside the governor because a failed measurement
+	// must not fail a decision — the governor's job is to judge, and a monitoring
+	// outage is not a reason to stop a run. The failure is logged at the call
+	// site instead of swallowed.
+	Tempo *platform.Tempo `yaml:"-"`
 	// Governor decides whether a task may be dispatched at all. nil = ungoverned,
 	// which is the default: a run is not governed by accident, because the
 	// governor's answer changes what the run does.

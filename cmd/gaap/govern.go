@@ -89,6 +89,7 @@ type governState struct {
 	refs    *platform.FileRefRegistry
 	content *platform.FileContentStore
 	kill    *platform.FileKillSwitch
+	tempo   *platform.Tempo
 }
 
 // openGovernState opens the durable halves of the governor from a state directory.
@@ -169,6 +170,15 @@ func buildGovernor(policyPath, stateDir string, trustFloor float64, readTools st
 		return nil, nil, err
 	}
 	g.Denials = denials
+	// Arrival timing, measured beside the ledger. Observation only — it changes no
+	// verdict, and a run with no tempo configured simply records no timing.
+	tempo, err := platform.OpenTempo(
+		filepath.Join(stateDir, "tempo.json"), platform.DefaultTempoWindow, 256)
+	if err != nil {
+		_ = state.Close()
+		return nil, nil, err
+	}
+	state.tempo = tempo
 	if readTools != "" {
 		// The workload knows its own read-only tools; the kernel never guesses.
 		pure := make(map[string]struct{})
@@ -195,16 +205,16 @@ const defaultStateDir = ".gaap"
 // openRunGovernor attaches a governor to a run. Empty policy means ungoverned —
 // the common case — and the returned cleanup is never nil, so a caller can
 // defer it without asking whether anything was opened.
-func openRunGovernor(policy, stateDir string, trustFloor float64) (*platform.Governor, func(), error) {
+func openRunGovernor(policy, stateDir string, trustFloor float64) (*platform.Governor, *platform.Tempo, func(), error) {
 	if policy == "" {
-		return nil, func() {}, nil
+		return nil, nil, func() {}, nil
 	}
 	g, state, err := buildGovernor(policy, stateDir, trustFloor, "")
 	if err != nil {
-		return nil, nil, fmt.Errorf("governed run: %w", err)
+		return nil, nil, nil, fmt.Errorf("governed run: %w", err)
 	}
 	slog.Info("govern: the run is governed", "policy", policy, "state", state.dir)
-	return g, func() { _ = state.Close() }, nil
+	return g, state.tempo, func() { _ = state.Close() }, nil
 }
 
 // governDecide asks the governor for one decision about one tool call, records
@@ -244,6 +254,13 @@ func governDecide(args []string, out io.Writer) error {
 	defer func() { _ = state.Close() }()
 
 	before := len(state.ledger.Entries())
+	// The CLI is a caller like any other, so it is measured like one. Skipping this
+	// would leave tempo with a producer only inside a run, and an operator checking
+	// the mechanism from the command line would find no file and conclude it was
+	// broken.
+	if err := state.tempo.Observe(*subject); err != nil {
+		slog.Warn("tempo: observation not recorded", "subject", *subject, "err", err)
+	}
 	decision := g.Decide(*subject, *tool, callArgs)
 	entries := state.ledger.Entries()
 	if len(entries) == before {
