@@ -197,12 +197,11 @@ func (s *Store) AppendWithTicket(ticketID string, e Entry) error {
 		return errors.New("memstore: an append with a ticket must not also cite parents; the ticket is the provenance")
 	}
 	e.SourceKind = TaintInternal
-	if e.Producer == "" {
-		e.Producer = e.SourceRef
-	}
+	e.Producer = producerOf(e)
 	if e.Producer == "" {
 		return errors.New("memstore: an append with a ticket must name its producer")
 	}
+	e.RootID = orSelf(e.RootID, e.ID)
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -213,13 +212,8 @@ func (s *Store) AppendWithTicket(ticketID string, e Entry) error {
 	if err := s.ConsumeTicket(tx, ticketID); err != nil {
 		return err
 	}
-	_, err = tx.Exec(`INSERT INTO gov_entry
-		(id, root_id, kind, body, source_kind, source_ref, taint_own, status, created_at, expires_at, producer)
-		VALUES (?,?,?,?,?,?,?, 'active', ?, ?, ?)`,
-		e.ID, orSelf(e.RootID, e.ID), e.Kind, e.Body, TaintInternal, nullable(e.SourceRef),
-		TaintInternal, s.now().Unix(), e.ExpiresAt.Unix(), e.Producer)
-	if err != nil {
-		return fmt.Errorf("memstore: append %s: %w", e.ID, err)
+	if err := insertEntry(tx, e, TaintInternal, e.Producer, s.now().Unix()); err != nil {
+		return err
 	}
 	// A ticketed observation is a root: nothing derived it from another entry.
 	if _, err := tx.Exec(`INSERT INTO gov_root(entry_id, root_id) VALUES (?,?)`, e.ID, e.ID); err != nil {
