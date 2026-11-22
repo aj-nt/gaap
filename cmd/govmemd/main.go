@@ -15,6 +15,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -167,24 +168,25 @@ func (b *broker) handle(conn net.Conn, verbose bool) {
 		b.reply(conn, Response{Error: "cannot identify the peer: " + err.Error()})
 		return
 	}
-	agent, ok := b.principals[int(uid)]
-	if !ok {
-		// Not "anonymous": unidentified. Refusing is the only safe answer, and the uid
-		// goes in the log because that is the only handle an operator has.
-		log.Printf("govmemd: refused uid %d: no principal mapping", uid)
-		b.reply(conn, Response{Error: "uid " + strconv.Itoa(int(uid)) + " is not mapped to an agent"})
-		return
-	}
-	// The agent field is a CLAIM. It must match what this uid is authorised to be; a
-	// mismatch is an attempt to act as someone else, not a typo.
-	if req.Agent != "" && req.Agent != agent {
-		log.Printf("govmemd: uid %d (agent %s) claimed %s", uid, agent, req.Agent)
-		b.reply(conn, Response{Error: "uid " + strconv.Itoa(int(uid)) + " is not authorised to act as " + req.Agent})
+	agent, err := resolveIdentity(b.principals, uid, req.Agent)
+	if err != nil {
+		// Two failures with one shape and different meanings: a uid nobody vouched for,
+		// and a uid claiming to be someone else. Both are refusals; only the second is an
+		// attempt at impersonation, and the operator log has to say which.
+		var unmapped unmappedUID
+		if errors.As(err, &unmapped) {
+			log.Printf("govmemd: refused uid %d: no principal mapping", uid)
+		} else {
+			log.Printf("govmemd: uid %d (agent %s) claimed %s", uid, b.principals[int(uid)], req.Agent)
+		}
+		b.reply(conn, Response{Error: err.Error()})
 		return
 	}
 	req.Agent = agent
 
-	tool := "mem." + req.Op
+	// The tool name comes from the capability vocabulary, not from string concatenation:
+	// an op the grant file cannot name is an op no rule can refuse by name.
+	tool := platform.MemoryTool(platform.MemoryCapability(req.Op))
 	d := b.rules.Evaluate(tool, map[string]any{"identity": agent})
 	if d.Action != platform.ActionAllow {
 		if verbose {
@@ -199,6 +201,36 @@ func (b *broker) handle(conn net.Conn, verbose bool) {
 		log.Printf("govmemd: %s uid=%d agent=%s ok=%v", tool, uid, agent, resp.OK)
 	}
 	b.reply(conn, resp)
+}
+
+// unmappedUID is a uid the grant file says nothing about. A type rather than a sentinel
+// error so the caller can tell "nobody vouched for you" from "you claimed to be someone
+// else" — the response text is the same shape, and the operator log is not.
+type unmappedUID struct{ uid uint32 }
+
+func (e unmappedUID) Error() string {
+	return "uid " + strconv.Itoa(int(e.uid)) + " is not mapped to an agent"
+}
+
+// resolveIdentity is the broker's whole identity rule, in one testable place.
+//
+// The uid is what the transport attested; the agent type is what the grant file says that
+// uid may be; the claimed type is what the caller asked to be. A uid with no mapping is
+// not "anonymous" but unidentified, and refusing is the only safe answer. A claim that
+// disagrees with the mapping is an attempt to act as someone else, not a typo.
+//
+// A separate function because this is the branch that decides who the store is opened for,
+// and it used to be three statements in the middle of a connection handler — reachable only
+// over a unix socket, by a real uid, which is why nothing tested it.
+func resolveIdentity(principals map[int]string, uid uint32, claimed string) (string, error) {
+	agent, ok := principals[int(uid)]
+	if !ok {
+		return "", unmappedUID{uid: uid}
+	}
+	if claimed != "" && claimed != agent {
+		return "", fmt.Errorf("uid %d is not authorised to act as %s", uid, claimed)
+	}
+	return agent, nil
 }
 
 func (b *broker) serve(req Request) Response {
