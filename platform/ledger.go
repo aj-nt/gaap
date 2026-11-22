@@ -89,6 +89,40 @@ type Entry struct {
 	// once per non-allow decision; without it "the governor refused me" cannot be
 	// resolved to a record.
 	CorrelationID string `json:"correlation_id,omitempty"`
+	// Artifact fields describe what outlives the run. They are empty on a deny:
+	// nothing happened, so there is no consequence to characterise. On an allow
+	// with no declaration, ArtifactClass is "unrecorded" — the dangerous state,
+	// recorded as a value so it can be queried.
+	ArtifactType    string `json:"artifact_type,omitempty"`
+	ArtifactClass   string `json:"artifact_class,omitempty"`
+	ArtifactTTL     string `json:"artifact_ttl,omitempty"`
+	ArtifactCeiling string `json:"artifact_ceiling,omitempty"`
+	ArtifactScope   string `json:"artifact_scope,omitempty"`
+	// ArtifactLocatable says whether the operator can find the thing again. False
+	// is the common honest answer, so it is omitted rather than written as a claim.
+	ArtifactLocatable bool `json:"artifact_locatable,omitempty"`
+	// ArtifactPreState is a commitment to the state a destructive call replaces,
+	// captured before it runs. Empty means either not applicable or not required;
+	// the class says which.
+	ArtifactPreState string `json:"artifact_pre_state,omitempty"`
+	// PolicyRev is a content hash of the policy file in force. Empty means the
+	// engine was built in code and has no file — unknown, not "version 1".
+	PolicyRev string `json:"policy_rev,omitempty"`
+	// RunID and ParentTasks place the decision in a run's lineage. Both are empty
+	// on the CLI path, which is a real answer: no run, no parent.
+	RunID       string `json:"run_id,omitempty"`
+	ParentTasks string `json:"parent_tasks,omitempty"`
+	// ArtifactRef points at the artifact a KindRevocation entry is about. The plan
+	// listed ten fields and not this one, but a revocation that cannot name what
+	// it revokes is unreadable: no existing field points at an artifact, and
+	// reusing SubjectRef would make an artifact erasure indistinguishable from a
+	// subject erasure.
+	ArtifactRef string `json:"artifact_ref,omitempty"`
+	// RevocationStage is requested|propagated|verified. State is derived from the
+	// sequence of these entries, never written back onto the original entry:
+	// entries are append-only, and a mutable field on one would be a lie the chain
+	// cannot detect.
+	RevocationStage string `json:"revocation_stage,omitempty"`
 	// KeyID identifies the signing key that authenticated this entry. Empty
 	// until signing is wired in; the field exists so entries are self-describing
 	// across key rotation.
@@ -186,6 +220,19 @@ func hashEntry(e Entry, prevHash string) (string, error) {
 		Reversibility string `json:"reversibility"`
 		DenialClass   string `json:"denial_class,omitempty"`
 		CorrelationID string `json:"correlation_id,omitempty"`
+
+		ArtifactType      string `json:"artifact_type,omitempty"`
+		ArtifactClass     string `json:"artifact_class,omitempty"`
+		ArtifactTTL       string `json:"artifact_ttl,omitempty"`
+		ArtifactCeiling   string `json:"artifact_ceiling,omitempty"`
+		ArtifactScope     string `json:"artifact_scope,omitempty"`
+		ArtifactLocatable bool   `json:"artifact_locatable,omitempty"`
+		ArtifactPreState  string `json:"artifact_pre_state,omitempty"`
+		PolicyRev         string `json:"policy_rev,omitempty"`
+		RunID             string `json:"run_id,omitempty"`
+		ParentTasks       string `json:"parent_tasks,omitempty"`
+		ArtifactRef       string `json:"artifact_ref,omitempty"`
+		RevocationStage   string `json:"revocation_stage,omitempty"`
 	}{
 		PrevHash:      prevHash,
 		KeyID:         e.KeyID,
@@ -204,6 +251,19 @@ func hashEntry(e Entry, prevHash string) (string, error) {
 		Reversibility: string(e.Reversibility),
 		DenialClass:   e.DenialClass,
 		CorrelationID: e.CorrelationID,
+
+		ArtifactType:      e.ArtifactType,
+		ArtifactClass:     e.ArtifactClass,
+		ArtifactTTL:       e.ArtifactTTL,
+		ArtifactCeiling:   e.ArtifactCeiling,
+		ArtifactScope:     e.ArtifactScope,
+		ArtifactLocatable: e.ArtifactLocatable,
+		ArtifactPreState:  e.ArtifactPreState,
+		PolicyRev:         e.PolicyRev,
+		RunID:             e.RunID,
+		ParentTasks:       e.ParentTasks,
+		ArtifactRef:       e.ArtifactRef,
+		RevocationStage:   e.RevocationStage,
 	}
 	b, err := json.Marshal(content)
 	if err != nil {

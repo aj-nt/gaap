@@ -210,12 +210,16 @@ func ledgerTail(args []string, out io.Writer) error {
 
 // formatLedgerEntries renders entries as an aligned table. Kept pure so the
 // output can be tested without touching stdout.
+//
+// ARTIFACT and REV are here because a field no command renders is JSON-only,
+// which in practice means unread: the whole point of recording the consequence is
+// that an operator looks at the ledger and sees it.
 func formatLedgerEntries(entries []platform.Entry) string {
 	var b strings.Builder
 	w := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(w, "SEQ	TIME	OUTCOME	TOOL	RULE	SUBJECT	REVERSIBILITY	REASON")
+	_, _ = fmt.Fprintln(w, "SEQ	TIME	OUTCOME	TOOL	RULE	SUBJECT	REVERSIBILITY	ARTIFACT	REV	REASON")
 	for _, e := range entries {
-		_, _ = fmt.Fprintf(w, "%d	%s	%s	%s	%s	%s	%s	%s\n",
+		_, _ = fmt.Fprintf(w, "%d	%s	%s	%s	%s	%s	%s	%s	%s	%s\n",
 			e.Seq,
 			e.Time.UTC().Format(time.RFC3339),
 			e.Outcome,
@@ -223,11 +227,33 @@ func formatLedgerEntries(entries []platform.Entry) string {
 			orDash(e.RuleID),
 			orDash(shortHash(e.SubjectHash)),
 			orDash(string(e.Reversibility)),
+			orDash(artifactCell(e)),
+			orDash(shortHash(e.PolicyRev)),
 			orDash(e.Reason),
 		)
 	}
 	_ = w.Flush()
 	return b.String()
+}
+
+// artifactCell renders the consequence compactly: type and class, with the
+// declared lifetime when there is one. "unrecorded" is written plainly rather
+// than as a dash — it is a finding, not a missing value.
+func artifactCell(e platform.Entry) string {
+	if e.ArtifactType == "" && e.ArtifactClass == "" {
+		return ""
+	}
+	cell := e.ArtifactType
+	if e.ArtifactClass != "" {
+		if cell != "" {
+			cell += "/"
+		}
+		cell += e.ArtifactClass
+	}
+	if e.ArtifactTTL != "" {
+		cell += " ttl=" + e.ArtifactTTL
+	}
+	return cell
 }
 
 // shortHash abbreviates a hash for display. The full hash is in the ledger.

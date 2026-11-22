@@ -35,9 +35,44 @@ func governCommand(args []string, out io.Writer) error {
 		return governKill(args[1:], out)
 	case "status":
 		return governStatus(args[1:], out)
+	case "lint":
+		return governLint(args[1:], out)
 	default:
-		return fmt.Errorf("unknown govern subcommand %q (want decide, erase, kill or status)", args[0])
+		return fmt.Errorf("unknown govern subcommand %q (want decide, erase, kill, status or lint)", args[0])
 	}
+}
+
+// governLint reports the gaps in a policy that would make the record weaker than
+// it reads, and fails only on the error-level ones. The check lives here rather
+// than at load because a policy that will not load cannot be inspected at all,
+// and an operator migrating an existing policy needs the report before the rule.
+func governLint(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("govern lint", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	policyPath := fs.String("policy", "", "policy file to lint (required)")
+	strict := fs.Bool("strict", false, "exit non-zero on error-level findings")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *policyPath == "" {
+		return fmt.Errorf("govern lint needs --policy")
+	}
+	engine, err := platform.LoadPolicyFile(*policyPath)
+	if err != nil {
+		return err
+	}
+	findings := engine.Lint()
+	if len(findings) == 0 {
+		_, _ = fmt.Fprintf(out, "policy %s: clean (revision %s)\n", *policyPath, shortRevision(engine.Revision()))
+		return nil
+	}
+	for _, f := range findings {
+		_, _ = fmt.Fprintln(out, f)
+	}
+	if *strict && platform.HasErrors(findings) {
+		return fmt.Errorf("policy has error-level findings")
+	}
+	return nil
 }
 
 // ledgerPath is where the state directory keeps the record.
@@ -236,6 +271,19 @@ func governDecide(args []string, out io.Writer) error {
 	if decision.Burst > 0 {
 		_, _ = fmt.Fprintf(tw, "burst:	%d denials of this action class in the window\n", decision.Burst)
 	}
+	if decision.Artifact != nil {
+		_, _ = fmt.Fprintf(tw, "artifact:	%s %s ttl=%s ceiling=%s scope=%s\n",
+			decision.Artifact.Type, platform.ArtifactClassOf(decision.Artifact),
+			orDash(decision.Artifact.Lifetime.String()), orDash(decision.Artifact.Ceiling.String()),
+			orDash(decision.Artifact.Scope))
+	} else if decision.Action == platform.ActionAllow {
+		// Not "absent": nobody characterised what this call leaves behind, which is
+		// the state an operator most needs to see.
+		_, _ = fmt.Fprintf(tw, "artifact:	unrecorded (no artifact declared on this rule)\n")
+	}
+	// The content revision of the policy actually in force. A hand-built engine
+	// has none, and saying so is better than printing the format version.
+	_, _ = fmt.Fprintf(tw, "policy revision:	%s\n", orUnrecorded(shortRevision(g.Policy.Revision())))
 	// The text the agent would be shown, distinct from the raw reason above:
 	// the reason is for the operator, this is for the refused workload.
 	if decision.Denial != nil {
@@ -248,6 +296,25 @@ func governDecide(args []string, out io.Writer) error {
 	// governed workload) is where the floor accumulates meaning.
 	_, _ = fmt.Fprintf(tw, "trust:	%.0f (process-local)\n", g.Trust.Score())
 	return tw.Flush()
+}
+
+// shortRevision abbreviates a content hash for a terminal line. The full value is
+// in the ledger row.
+func shortRevision(rev string) string {
+	const n = 12
+	if len(rev) <= n {
+		return rev
+	}
+	return rev[:n]
+}
+
+// orUnrecorded says "unknown" rather than printing an empty column: a hand-built
+// engine has no file and therefore no revision, and a blank reads as a bug.
+func orUnrecorded(s string) string {
+	if s == "" {
+		return "unrecorded (engine built in code, no policy file)"
+	}
+	return s
 }
 
 // governErase honors an erasure request for a subject: content deleted, key

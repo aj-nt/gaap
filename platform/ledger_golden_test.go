@@ -91,6 +91,10 @@ func TestEntryAndHashStructAgree(t *testing.T) {
 		"SubjectRef": true, "CommitAlgo": true, "Tool": true, "RuleID": true,
 		"Outcome": true, "InputHash": true, "Reason": true, "Reversibility": true,
 		"KeyID": true, "Algo": true, "DenialClass": true, "CorrelationID": true,
+		"ArtifactType": true, "ArtifactClass": true, "ArtifactTTL": true,
+		"ArtifactCeiling": true, "ArtifactScope": true, "ArtifactLocatable": true,
+		"ArtifactPreState": true, "PolicyRev": true, "RunID": true, "ParentTasks": true,
+		"ArtifactRef": true, "RevocationStage": true,
 	}
 	// Fields deliberately outside the chain, with the reason.
 	notHashed := map[string]string{

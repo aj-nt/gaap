@@ -31,6 +31,16 @@ type Decision struct {
 	// attempt is denied exactly like a single one, and a burst must never be
 	// downgraded to "ask a human".
 	Burst int
+	// Reversibility and Artifact are carried from the matched rule: what the
+	// standing order says this call costs, as opposed to what the call is called.
+	// Empty/nil means the rule declared nothing, and the governor falls back to
+	// the workload's classifier and records the consequence as unrecorded.
+	Reversibility Reversibility
+	Artifact      *Artifact
+	// PreState is the commitment to the state a destructive call replaces,
+	// captured before the decision is recorded. Never a value: the ledger holds
+	// the commitment, the content store holds what it points at.
+	PreState string
 }
 
 // Allow is the trivial allow decision.

@@ -132,7 +132,7 @@ func (o *Orchestrator) decide(node *TaskNode) error {
 		"goal":    node.Goal,
 		"repo":    o.cfg.RepoPath,
 		"context": node.Context,
-	})
+	}, platform.WithRun(o.RunID()), platform.WithParents(node.ParentIDs...))
 	slog.Info("govern: decision",
 		"task_id", node.ID,
 		"agent_type", node.AgentType,
