@@ -84,6 +84,15 @@ type Governor struct {
 	// and a separate burst entry is recorded. The decision itself does not
 	// change: a burst never turns a deny into a review.
 	Denials *DenialCounter
+	// Tickets mints the attestation a memory write needs before the store will
+	// record its content as internal. nil = this governor cannot attest, and a
+	// caller that asked for a ticket is refused rather than served without one.
+	//
+	// The key is the governor's because the governor is where a call is
+	// authorised: an attestation is a statement about an authorised observation,
+	// and the party that allowed the observation is the only one positioned to
+	// say so.
+	Tickets *TicketKey
 }
 
 // NewGovernor returns a governor with defaults: deny-by-default policy, an open
@@ -120,6 +129,12 @@ type DecideOpts struct {
 	// The governor does not derive it: provenance lives where the evidence is, and a
 	// governor that guessed would be certifying its own guess.
 	Floor TaintClass
+	// TicketEntryID and TicketResource name the observation a ticket would attest:
+	// "entry E, written by agent A, about resource R". Both empty means no ticket was
+	// asked for, which is the default — a token is never minted for an allow that did
+	// not say which observation it authorises, because then it would authorise any.
+	TicketEntryID  string
+	TicketResource string
 }
 
 // DecideOpt adjusts the context of one decision.
@@ -132,6 +147,16 @@ func WithRun(id string) DecideOpt { return func(o *DecideOpts) { o.RunID = id } 
 // set introduced in M5.4 rather than as another positional parameter: two ways to pass
 // context to one decision is how a call site ends up silently recording a blank.
 func WithFloor(floor TaintClass) DecideOpt { return func(o *DecideOpts) { o.Floor = floor } }
+
+// WithTicketFor asks for an attestation covering one observation. The governor issues it
+// only if the call is allowed and pure; otherwise the decision is a refusal, so the caller
+// cannot end up holding an allow it believes was attested when it was not.
+func WithTicketFor(entryID, resource string) DecideOpt {
+	return func(o *DecideOpts) {
+		o.TicketEntryID = entryID
+		o.TicketResource = resource
+	}
+}
 
 // WithParents attributes the decision to the tasks it descends from. The lineage
 // that exists is a list of task ids; an agent type has no parent.
@@ -217,6 +242,36 @@ func (g *Governor) Decide(agentID, tool string, args map[string]any, opts ...Dec
 		}
 		d.Action = ActionReview
 		d.Reason = fmt.Sprintf("rule %s requires %s provenance, justification floor is %s", d.RuleID, d.MinTaint, floor)
+	}
+	// A ticket attests an observation, so it is issued only where the design says: the
+	// call was allowed, the workload classified it as a pure read, and the caller named
+	// the observation. Everything else is refused rather than served without a ticket —
+	// a caller that asked for attestation and quietly got an unattested allow would
+	// record content believing it had provenance it never had.
+	//
+	// Placed after the trust floor, the artifact ceiling and the taint floor on purpose:
+	// a decision that ended as a review has authorised nothing yet, and minting a token
+	// for it would leave a valid credential behind for a call a human then rejected.
+	if d.Action == ActionAllow && do.TicketEntryID != "" {
+		ruleID, art, rev := d.RuleID, d.Artifact, d.Reversibility
+		switch class := g.reversibilityFor(d, tool); {
+		case g.Tickets == nil:
+			d = Deny("a ticket was requested but no ticket key is configured")
+		case do.TicketResource == "":
+			d = Deny("a ticket must name the resource it attests; an unattributed attestation is presentable for any observation")
+		case class != Pure:
+			d = Deny(fmt.Sprintf("a ticket was requested for %s, which is %s: only a pure read leaves an observation to attest", tool, class))
+		default:
+			token, _, err := g.Tickets.Issue(do.TicketEntryID, agentID, do.TicketResource, 0)
+			if err != nil {
+				// Cannot attest, so cannot authorise what was asked for. Same rule as
+				// recording: a governor that cannot do the thing it promised refuses.
+				d = Deny("ticket issuance failed: " + err.Error())
+			} else {
+				d.Ticket = token
+			}
+		}
+		d.RuleID, d.Artifact, d.Reversibility = ruleID, art, rev
 	}
 	// A refusal is rendered from structure, not from the reason text. The
 	// correlation id is minted here so the text the agent sees and the row the

@@ -47,6 +47,14 @@ type Decision struct {
 	// captured before the decision is recorded. Never a value: the ledger holds
 	// the commitment, the content store holds what it points at.
 	PreState string
+	// Ticket is the attestation issued for this decision, when the caller asked for
+	// one (WithTicketFor) and the call was allowed and pure.
+	//
+	// A bearer token: returned to the caller, and deliberately never recorded. The
+	// ledger has no field for it, because a token in an append-only file is a
+	// credential that cannot be withdrawn — and the store's own ticket row is the
+	// record of what it was used for.
+	Ticket string
 }
 
 // Allow is the trivial allow decision.
