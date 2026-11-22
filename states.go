@@ -374,7 +374,7 @@ func (o *Orchestrator) collectSynthesisInput() map[string]*TaskResult {
 		if node.Status != status.TaskDone {
 			continue
 		}
-		summary := node.Summary
+		summary := displaySummary(node)
 		if summary == "" {
 			summary = fmt.Sprintf("no summary reported (goal: %s)", node.Goal)
 		}
@@ -626,7 +626,7 @@ func (o *Orchestrator) reportFailure(c outcomeCounts) {
 	if len(c.failedIDs) > 0 {
 		fmt.Println("Failed tasks:")
 		for _, id := range c.failedIDs {
-			summary := o.dag.nodes[id].Summary
+			summary := displaySummary(o.dag.nodes[id])
 			if summary == "" {
 				summary = "no reason recorded"
 			}

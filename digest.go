@@ -112,7 +112,7 @@ func collectDigestTasks(o *Orchestrator) []digestTask {
 	for id, node := range o.dag.nodes {
 		all = append(all, digestTask{
 			id: id, status: node.Status, goal: node.Goal,
-			summary: node.Summary, agentType: node.AgentType, parents: node.ParentIDs,
+			summary: displaySummary(node), agentType: node.AgentType, parents: node.ParentIDs,
 		})
 	}
 	sort.Slice(all, func(i, j int) bool { return digestTaskIDLess(all[i].id, all[j].id) })

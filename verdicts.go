@@ -112,7 +112,7 @@ func (o *Orchestrator) approvalVerdict() OrchestratorState {
 	}
 	o.pendingFailures = o.pendingFailures[1:]
 
-	req := NewApprovalRequest(node.ID, node.AgentType, f.Attempts, node.Summary, time.Now(), o.cfg.Approval.Timeout)
+	req := NewApprovalRequest(node.ID, node.AgentType, f.Attempts, displaySummary(node), time.Now(), o.cfg.Approval.Timeout)
 	slog.Info("approval: asking a human",
 		"task_id", req.TaskID, "agent_type", req.AgentType,
 		"attempts", req.Attempts, "deadline", req.Deadline.Format(time.RFC3339))

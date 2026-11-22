@@ -20,6 +20,17 @@ type Decision struct {
 	// come from a rule (e.g. the kill switch). The governor records it, which is
 	// what makes a decision attributable instead of anonymous.
 	RuleID string
+	// Denial is the structured refusal, set by the governor for any non-allow
+	// decision and nil otherwise. It is what the caller renders to the agent: the
+	// raw Reason is written for the operator and encodes thresholds the agent
+	// must not learn.
+	Denial *DenialClass
+	// Burst is how many refusals this agent has accumulated for this action class
+	// inside the counter's window, when a counter is attached and the threshold
+	// was reached. Zero means no burst. It never changes Action: a sustained
+	// attempt is denied exactly like a single one, and a burst must never be
+	// downgraded to "ask a human".
+	Burst int
 }
 
 // Allow is the trivial allow decision.

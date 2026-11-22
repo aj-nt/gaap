@@ -57,6 +57,14 @@ type Governor struct {
 	// Hash commits to a value without storing it. nil = sha256. Only used when
 	// Committer is nil; it cannot be erased, so it survives as the legacy path.
 	Hash func(value string) string
+	// Denials counts recent refusals per (agent, action class). nil = no
+	// counting, which is the memory-only default: a counter that lives as long
+	// as the process cannot see the pattern that spans one.
+	//
+	// When set, a refusal that reaches the threshold is annotated on the decision
+	// and a separate burst entry is recorded. The decision itself does not
+	// change: a burst never turns a deny into a review.
+	Denials *DenialCounter
 }
 
 // NewGovernor returns a governor with defaults: deny-by-default policy, an open
@@ -109,6 +117,30 @@ func (g *Governor) Decide(agentID, tool string, args map[string]any) Decision {
 	} else {
 		g.Trust.Penalize(1)
 	}
+	// A refusal is rendered from structure, not from the reason text. The
+	// correlation id is minted here so the text the agent sees and the row the
+	// operator reads carry the same handle; minting it at the call site would
+	// leave the ledger row unsearchable.
+	if d.Action != ActionAllow {
+		dc := DenialClass{
+			Rule:          d.RuleID,
+			ActionClass:   g.Policy.ActionClassOf(tool),
+			Forbidden:     tool,
+			Permitted:     g.Policy.PermittedFor(tool),
+			CorrelationID: NewCorrelationID(),
+		}
+		d.Denial = &dc
+	}
+	// A burst is a pattern, not a different verdict: the deny already stands, and
+	// the count only makes the sustained attempt visible in the record. It is
+	// counted here rather than at the call site so a workload that retries in a
+	// new process still lands in the same bucket.
+	if d.Action == ActionDeny && g.Denials != nil && d.Denial != nil {
+		count, burst, err := g.Denials.Observe(agentID, d.Denial.ActionClass)
+		if err == nil && burst {
+			d.Burst = count
+		}
+	}
 	if err := g.record(agentID, tool, args, d); err != nil {
 		return Deny("governor could not record the decision: " + err.Error())
 	}
@@ -128,7 +160,7 @@ func (g *Governor) record(agentID, tool string, args map[string]any, d Decision)
 			return fmt.Errorf("store decision content: %w", err)
 		}
 	}
-	_, err = g.Ledger.Append(Entry{
+	if _, err := g.Ledger.Append(Entry{
 		Kind:          KindDecision,
 		SubjectHash:   subjectHash,
 		SubjectRef:    ref,
@@ -139,8 +171,50 @@ func (g *Governor) record(agentID, tool string, args map[string]any, d Decision)
 		InputHash:     inputHash,
 		Reason:        d.Reason,
 		Reversibility: g.classifyTool(tool),
-	})
-	return err
+		DenialClass:   denialClassOf(d),
+		CorrelationID: correlationOf(d),
+	}); err != nil {
+		return err
+	}
+	if d.Burst > 0 {
+		// A separate row: a burst is a pattern observed about the agent, not a
+		// property of this call. Folding it into the decision row would make two
+		// identical calls hash differently depending on history, and the chain's
+		// job is to say what happened, not why it was suspicious.
+		if _, err := g.Ledger.Append(Entry{
+			Kind:          KindDenialBurst,
+			SubjectHash:   subjectHash,
+			SubjectRef:    ref,
+			CommitAlgo:    algo,
+			Tool:          tool,
+			RuleID:        d.RuleID,
+			Outcome:       d.Action,
+			Reason:        fmt.Sprintf("sustained refusal: %d denials of this action class inside the window", d.Burst),
+			Reversibility: g.classifyTool(tool),
+			DenialClass:   denialClassOf(d),
+			CorrelationID: correlationOf(d),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// denialClassOf and correlationOf read the structured refusal, if there is one.
+// Kept as free functions so record stays a flat struct literal: a nil Denial must
+// produce empty fields, not a panic, because allow decisions have none.
+func denialClassOf(d Decision) string {
+	if d.Denial == nil {
+		return ""
+	}
+	return string(d.Denial.ActionClass)
+}
+
+func correlationOf(d Decision) string {
+	if d.Denial == nil {
+		return ""
+	}
+	return d.Denial.CorrelationID
 }
 
 // commitments returns the subject and input commitments for a decision, plus

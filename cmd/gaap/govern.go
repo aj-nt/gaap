@@ -123,6 +123,17 @@ func buildGovernor(policyPath, stateDir string, trustFloor float64, readTools st
 	// the trip is durable, so a run cannot forget it.
 	g.Kill = state.kill
 	g.TrustFloor = trustFloor
+	// A refusal pattern outlives the process that saw it: the counter lives
+	// beside the kill switch, so a run that dies and resumes still sees itself
+	// as the same prober.
+	denials, err := platform.OpenDenialCounter(
+		filepath.Join(stateDir, "denials.json"),
+		platform.DefaultDenialWindow, platform.DefaultDenialThreshold)
+	if err != nil {
+		_ = state.Close()
+		return nil, nil, err
+	}
+	g.Denials = denials
 	if readTools != "" {
 		// The workload knows its own read-only tools; the kernel never guesses.
 		pure := make(map[string]struct{})
@@ -205,15 +216,32 @@ func governDecide(args []string, out io.Writer) error {
 		// instead of printing a decision with no record behind it.
 		return fmt.Errorf("decision was not recorded: %s", decision.Reason)
 	}
-	entry := entries[len(entries)-1]
+	// The decision is the first entry appended, not the last: a burst records a
+	// second row after it, and printing that one would report the annotation's
+	// seq as if it were the decision's.
+	entry := entries[before]
 
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintf(tw, "decision:\t%s\n", decision.Action)
 	_, _ = fmt.Fprintf(tw, "rule:\t%s\n", orNone(decision.RuleID))
 	_, _ = fmt.Fprintf(tw, "reason:\t%s\n", orNone(decision.Reason))
-	_, _ = fmt.Fprintf(tw, "tool:\t%s\n", entry.Tool)
-	_, _ = fmt.Fprintf(tw, "reversibility:\t%s\n", entry.Reversibility)
-	_, _ = fmt.Fprintf(tw, "subject handle:\t%s\n", entry.SubjectRef)
+	_, _ = fmt.Fprintf(tw, "tool:	%s\n", entry.Tool)
+	_, _ = fmt.Fprintf(tw, "reversibility:	%s\n", entry.Reversibility)
+	if entry.DenialClass != "" {
+		_, _ = fmt.Fprintf(tw, "denial class:	%s\n", entry.DenialClass)
+	}
+	if entry.CorrelationID != "" {
+		_, _ = fmt.Fprintf(tw, "correlation:	%s\n", entry.CorrelationID)
+	}
+	if decision.Burst > 0 {
+		_, _ = fmt.Fprintf(tw, "burst:	%d denials of this action class in the window\n", decision.Burst)
+	}
+	// The text the agent would be shown, distinct from the raw reason above:
+	// the reason is for the operator, this is for the refused workload.
+	if decision.Denial != nil {
+		_, _ = fmt.Fprintf(tw, "reframe:	%s\n", platform.ReframeDenial(*decision.Denial))
+	}
+	_, _ = fmt.Fprintf(tw, "subject handle:	%s\n", entry.SubjectRef)
 	_, _ = fmt.Fprintf(tw, "seq:	%d\n", entry.Seq)
 	// The score is process-local: TrustManager decays and updates in memory, and
 	// each CLI invocation starts a fresh governor. A long-lived governor (a

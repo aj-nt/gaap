@@ -81,6 +81,14 @@ type Entry struct {
 	// Reversibility classifies whether the recorded effect can be undone.
 	// Zero value means "not classified" — valid for non-decision entries.
 	Reversibility Reversibility `json:"reversibility,omitempty"`
+	// DenialClass is what the refused call was FOR (shell, file_write, …), not
+	// what it was called. A name is authored by the observed party, so a counter
+	// or a report keyed on it is defeated by renaming the tool.
+	DenialClass string `json:"denial_class,omitempty"`
+	// CorrelationID ties the text shown to the agent to this row. It is minted
+	// once per non-allow decision; without it "the governor refused me" cannot be
+	// resolved to a record.
+	CorrelationID string `json:"correlation_id,omitempty"`
 	// KeyID identifies the signing key that authenticated this entry. Empty
 	// until signing is wired in; the field exists so entries are self-describing
 	// across key rotation.
@@ -176,6 +184,8 @@ func hashEntry(e Entry, prevHash string) (string, error) {
 		InputHash     string `json:"input_hash"`
 		Reason        string `json:"reason"`
 		Reversibility string `json:"reversibility"`
+		DenialClass   string `json:"denial_class,omitempty"`
+		CorrelationID string `json:"correlation_id,omitempty"`
 	}{
 		PrevHash:      prevHash,
 		KeyID:         e.KeyID,
@@ -192,6 +202,8 @@ func hashEntry(e Entry, prevHash string) (string, error) {
 		InputHash:     e.InputHash,
 		Reason:        e.Reason,
 		Reversibility: string(e.Reversibility),
+		DenialClass:   e.DenialClass,
+		CorrelationID: e.CorrelationID,
 	}
 	b, err := json.Marshal(content)
 	if err != nil {

@@ -21,11 +21,33 @@ type TaskNode struct {
 	Context   map[string]any `json:"context"`
 	Findings  map[string]any `json:"findings,omitempty"` // structured findings from worker execution
 	Summary   string         `json:"summary,omitempty"`  // natural-language summary from DONE: line (maps to worker ExecuteResult.Summary)
+	// SummaryModel is what a model should be shown when it differs from Summary:
+	// a policy refusal reframed for the agent that was refused. Summary stays
+	// raw because it is evidence — the operator reads what the rule said, the
+	// agent reads what the platform said.
+	SummaryModel string `json:"summary_model,omitempty"`
 
 	// SupersededBy names the node that replaced this one after a human said
 	// "try again". The status stays as it was: the task did fail, and that is
 	// evidence about the agent type, not clutter to be cleaned up.
 	SupersededBy string `json:"superseded_by,omitempty"`
+}
+
+// displaySummary is what every reader shows: the reframed text when there is
+// one, the raw summary otherwise.
+//
+// It is one function on purpose. Four readers (digest, approval prompt,
+// synthesis input, failure report) each picked Summary directly; a field added
+// for those readers without them switching is a field with a writer and no
+// reader, which is the defect this whole plan exists to avoid.
+func displaySummary(n *TaskNode) string {
+	if n == nil {
+		return ""
+	}
+	if n.SummaryModel != "" {
+		return n.SummaryModel
+	}
+	return n.Summary
 }
 
 // DAG is a directed acyclic graph of tasks with dependency tracking.
