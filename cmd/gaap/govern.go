@@ -229,6 +229,9 @@ func governDecide(args []string, out io.Writer) error {
 	tool := fs.String("tool", "", "tool name the policy matches against")
 	argsJSON := fs.String("args", "{}", "tool arguments as JSON")
 	readTools := fs.String("read-tools", "", "comma-separated tool names to classify as pure reads")
+	ticketEntry := fs.String("ticket-entry", "", "issue an attestation covering this memory entry id (needs a pure read)")
+	ticketResource := fs.String("ticket-resource", "", "the resource the observation is about; must equal the entry's source_ref, which is what the broker verifies the ticket against")
+	ticketKeyPath := fs.String("ticket-key", "", "gate-ticket key path (default <state>/ticket.key)")
 	trustFloor := fs.Float64("trust-floor", 0, "escalate allows to review while the trust score is below this (0 disables)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -241,6 +244,9 @@ func governDecide(args []string, out io.Writer) error {
 	}
 	if *tool == "" {
 		return fmt.Errorf("govern decide requires --tool")
+	}
+	if (*ticketEntry == "") != (*ticketResource == "") {
+		return fmt.Errorf("--ticket-entry and --ticket-resource go together: an attestation names the entry it covers and what that entry is about")
 	}
 	var callArgs map[string]any
 	if err := json.Unmarshal([]byte(*argsJSON), &callArgs); err != nil {
@@ -261,7 +267,24 @@ func governDecide(args []string, out io.Writer) error {
 	if err := state.tempo.Observe(*subject); err != nil {
 		slog.Warn("tempo: observation not recorded", "subject", *subject, "err", err)
 	}
-	decision := g.Decide(*subject, *tool, callArgs)
+	// The attestation path: the one place a decision mints a credential. The key is the
+	// issuer's, created beside the kill switch and the ledger if absent — rotation is a
+	// deliberate operation, and a key that appeared when a deploy changed an environment
+	// variable would invalidate every in-flight ticket.
+	var opts []platform.DecideOpt
+	if *ticketEntry != "" {
+		keyPath := *ticketKeyPath
+		if keyPath == "" {
+			keyPath = filepath.Join(state.dir, "ticket.key")
+		}
+		key, err := platform.LoadOrCreateTicketKey(keyPath)
+		if err != nil {
+			return fmt.Errorf("ticket key: %w", err)
+		}
+		g.Tickets = key
+		opts = append(opts, platform.WithTicketFor(*ticketEntry, *ticketResource))
+	}
+	decision := g.Decide(*subject, *tool, callArgs, opts...)
 	entries := state.ledger.Entries()
 	if len(entries) == before {
 		// Decide refuses rather than allows when it cannot record; surface that
@@ -287,6 +310,12 @@ func renderDecision(out io.Writer, g *platform.Governor, decision platform.Decis
 	_, _ = fmt.Fprintf(tw, "reason:\t%s\n", orNone(decision.Reason))
 	_, _ = fmt.Fprintf(tw, "tool:	%s\n", entry.Tool)
 	_, _ = fmt.Fprintf(tw, "reversibility:	%s\n", entry.Reversibility)
+	// A bearer token, printed to the caller and nowhere else: the ledger records the
+	// decision, not the credential. Only present when attestation was asked for and
+	// granted — an empty line would read as "issued but lost".
+	if decision.Ticket != "" {
+		_, _ = fmt.Fprintf(tw, "ticket:\t%s\n", decision.Ticket)
+	}
 	if entry.DenialClass != "" {
 		_, _ = fmt.Fprintf(tw, "denial class:	%s\n", entry.DenialClass)
 	}
