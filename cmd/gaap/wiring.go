@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log/slog"
 	"os"
@@ -53,6 +54,72 @@ type connFields struct {
 // the same fields in the same order, so a flag added to the CLI and not carried
 // to the wiring stops compiling instead of silently arriving empty.
 func (c connFields) settings() llmSettings { return llmSettings(c) }
+
+// governFields carries the flags that decide how a run is governed, and governFlagSet is
+// their parsed form — the seam registerGovernFlags hands back so the flag text, the
+// environment variable and the default are stated once.
+//
+// These seven were registered and projected separately in `run` and `resume` before this,
+// which is the defect connFields exists to prevent: a governance flag added to one command
+// and forgotten in the other is a resumed run that dispatches around the policy it was
+// started with. Both commands embed this.
+type governFields struct {
+	// BreakerThreshold/BreakerCooldownSec enable per-agent-type circuit breakers for the
+	// run; zero threshold leaves them off. A resumed run has to be told again, because
+	// breakers are not part of the persisted run state.
+	BreakerThreshold   int
+	BreakerCooldownSec int
+	// Policy governs the run: every dispatch is decided against it and recorded. Empty
+	// means ungoverned, which is the default — a run is not governed by accident.
+	Policy     string
+	StateDir   string
+	TrustFloor float64
+	// RateLimit turns a `rate_limit` rule into a deny carrying a cooldown. Off means the
+	// rule still denies, without promising a retry window.
+	RateLimit bool
+	// AllowHostExec accepts uncoerced execution on the host. Off by default, and named
+	// after what it permits rather than what it disables.
+	AllowHostExec bool
+}
+
+type governFlagSet struct {
+	breakerThreshold *int
+	breakerCooldown  *int
+	policy           *string
+	stateDir         *string
+	trustFloor       *float64
+	rateLimit        *bool
+	allowHostExec    *bool
+}
+
+// registerGovernFlags declares the governance flags on fs and returns their parsed form.
+// Flags are declared here rather than in each parser because the usage text is part of the
+// interface: two copies of it drift, and the copy a user reads is whichever command they
+// happened to type.
+func registerGovernFlags(fs *flag.FlagSet) governFlagSet {
+	return governFlagSet{
+		breakerThreshold: fs.Int("breaker-threshold", 0, "Open an agent type's circuit breaker after N dead-lettered tasks (default: 0 = off)"),
+		breakerCooldown:  fs.Int("breaker-cooldown", 0, "Seconds an open breaker refuses dispatch (default: 60 when breakers are on)"),
+		policy:           fs.String("policy", "", "Policy file: govern every dispatch against it"),
+		stateDir:         fs.String("state", defaultStateDir, "State directory for the ledger, keys and kill switch"),
+		trustFloor:       fs.Float64("trust-floor", 0, "Escalate allows to review while trust is below this (0 disables)"),
+		rateLimit:        fs.Bool("rate-limit", false, "Make a rate_limit rule deny with a cooldown and a count"),
+		allowHostExec:    fs.Bool("allow-host-exec", false, "Run worker commands on the host, uncoerced (default: refuse unless containment is available)"),
+	}
+}
+
+// settings resolves the environment fallbacks. Flag, then environment, then default.
+func (f governFlagSet) settings() governFields {
+	return governFields{
+		BreakerThreshold:   atoiOr(envOr("GAAP_BREAKER_THRESHOLD", "", ""), *f.breakerThreshold, 0),
+		BreakerCooldownSec: atoiOr(envOr("GAAP_BREAKER_COOLDOWN", "", ""), *f.breakerCooldown, 0),
+		Policy:             envOr("GAAP_POLICY", *f.policy, ""),
+		StateDir:           envOr("GAAP_STATE", *f.stateDir, defaultStateDir),
+		TrustFloor:         *f.trustFloor,
+		RateLimit:          *f.rateLimit,
+		AllowHostExec:      *f.allowHostExec,
+	}
+}
 
 // signalContext returns a context cancelled by SIGINT/SIGTERM.
 func signalContext() (context.Context, context.CancelFunc) {

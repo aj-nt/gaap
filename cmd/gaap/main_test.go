@@ -610,3 +610,40 @@ func TestParseRunFlagsBreakerThresholdFromEnv(t *testing.T) {
 		t.Fatalf("threshold = %d, want 2 from the environment", cfg.BreakerThreshold)
 	}
 }
+
+// TestRunAndResumeAgreeOnGovernance pins the reason the seven governance flags live in one
+// place. They were registered and projected twice, so `resume` could honour a governance
+// flag `run` set — or silently ignore one added later — and nothing failed: a resumed run
+// dispatches around the policy it was started with, and the only symptom is a run that was
+// governed reading as a run that was not.
+func TestRunAndResumeAgreeOnGovernance(t *testing.T) {
+	t.Parallel()
+
+	args := []string{
+		"--breaker-threshold", "3",
+		"--breaker-cooldown", "45",
+		"--policy", "/etc/gaap/policy.json",
+		"--state", "/tmp/gaap-state",
+		"--trust-floor", "250",
+		"--rate-limit",
+		"--allow-host-exec",
+	}
+	runCfg, err := parseRunFlags("run", append(append([]string{}, args...), "goal"))
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	resumeCfg, err := parseResumeFlags("resume", append(append([]string{}, args...), "runstate_x"))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if runCfg.governFields != resumeCfg.governFields {
+		t.Fatalf("run and resume parsed different governance settings:\n run=%+v\nresume=%+v",
+			runCfg.governFields, resumeCfg.governFields)
+	}
+	// Parsed, not just equal: two zero values would also be equal.
+	if runCfg.Policy != "/etc/gaap/policy.json" || !runCfg.RateLimit || !runCfg.AllowHostExec ||
+		runCfg.BreakerThreshold != 3 || runCfg.BreakerCooldownSec != 45 || runCfg.TrustFloor != 250 ||
+		runCfg.StateDir != "/tmp/gaap-state" {
+		t.Fatalf("governance flags were not parsed: %+v", runCfg.governFields)
+	}
+}

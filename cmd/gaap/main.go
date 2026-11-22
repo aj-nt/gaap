@@ -153,22 +153,6 @@ type runConfig struct {
 	DryRun          bool
 	Subscribe       bool
 	FailureMode     gaap.FailureMode
-	// BreakerThreshold/BreakerCooldownSec enable per-agent-type circuit breakers
-	// for the run; zero threshold leaves them off.
-	BreakerThreshold   int
-	BreakerCooldownSec int
-	// Policy governs the run: every dispatch is decided against it and recorded.
-	// Empty means ungoverned, which is the default — a run is not governed by
-	// accident.
-	Policy     string
-	StateDir   string
-	TrustFloor float64
-	// RateLimit turns a `rate_limit` rule into a deny carrying a cooldown. Off
-	// means the rule still denies, without promising a retry window.
-	RateLimit bool
-	// AllowHostExec accepts uncoerced execution on the host. Off by default, and
-	// named after what it permits rather than what it disables.
-	AllowHostExec bool
 	// Approval asks a human about dead-lettered tasks. Off unless asked for.
 	Approval           bool
 	ApprovalTimeoutSec int
@@ -178,6 +162,11 @@ type runConfig struct {
 	// copies that drift: a field added to one command and not the other is a
 	// resume that reaches the wrong daemon.
 	connFields
+	// governFields carries the flags that decide how a run is governed. Embedded for
+	// the same reason as connFields: registered and projected twice, a flag added to
+	// `run` and forgotten in `resume` is a resumed run that dispatches around the
+	// policy it was started with.
+	governFields
 }
 
 // failureMode resolves the run's failure policy. The flag wins over the
@@ -207,19 +196,14 @@ func parseRunFlags(name string, args []string) (*runConfig, error) {
 	temperature := fs.Float64("temperature", 0, "LLM temperature, 0.0-1.0 (default: 0.1)")
 	subscribe := fs.Bool("subscribe", false, "Use gRPC subscription for push-based task updates (falls back to polling)")
 	failFast := fs.Bool("fail-fast", false, "Stop the run at the first task failure instead of letting other branches finish")
-	breakerThreshold := fs.Int("breaker-threshold", 0, "Open an agent type's circuit breaker after N dead-lettered tasks (default: 0 = off)")
-	breakerCooldown := fs.Int("breaker-cooldown", 0, "Seconds an open breaker refuses dispatch (default: 60 when breakers are on)")
+	// The governance flags are shared with `resume`: one declaration, one usage text.
+	gov := registerGovernFlags(fs)
 	agentTypes := fs.String("agent-types", "", "Comma-separated agent types to dispatch (default: static_analysis,quality_scan,file_analysis)")
 	apiKey := fs.String("api-key", "", "Vassago daemon API key (Bearer token)")
 	tlsCert := fs.String("tls-cert", "", "Path to TLS CA certificate for daemon connection")
 	approval := fs.Bool("approval", false, "Ask a human about dead-lettered tasks instead of failing the run")
 	approvalTimeout := fs.Int("approval-timeout", 0, "Seconds a pending approval stays open (default: 900)")
 	approvalAgents := fs.String("approval-agents", "", "Comma-separated allowlist of who may answer an approval")
-	policy := fs.String("policy", "", "Policy file: govern every dispatch against it")
-	stateDir := fs.String("state", defaultStateDir, "State directory for the ledger, keys and kill switch")
-	trustFloor := fs.Float64("trust-floor", 0, "Escalate allows to review while trust is below this (0 disables)")
-	rateLimit := fs.Bool("rate-limit", false, "Make a rate_limit rule deny with a cooldown and a count")
-	allowHostExec := fs.Bool("allow-host-exec", false, "Run worker commands on the host, uncoerced (default: refuse unless containment is available)")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -239,8 +223,6 @@ func parseRunFlags(name string, args []string) (*runConfig, error) {
 		DryRun:             *dryRun,
 		Subscribe:          *subscribe,
 		FailureMode:        failureMode(*failFast, os.Getenv("GAAP_FAILURE_MODE")),
-		BreakerThreshold:   atoiOr(envOr("GAAP_BREAKER_THRESHOLD", "", ""), *breakerThreshold, 0),
-		BreakerCooldownSec: atoiOr(envOr("GAAP_BREAKER_COOLDOWN", "", ""), *breakerCooldown, 0),
 		Model:              envOr("GAAP_MODEL", *model, gaap.DefaultModel),
 		OllamaURL:          envOr("GAAP_OLLAMA_URL", *ollamaURL, "http://localhost:11434/v1"),
 		MaxTokens:          atoiOr(envOr("GAAP_MAX_TOKENS", "", ""), *maxTokens, 4096),
@@ -248,11 +230,7 @@ func parseRunFlags(name string, args []string) (*runConfig, error) {
 		Approval:           *approval || os.Getenv("GAAP_APPROVAL") != "",
 		ApprovalTimeoutSec: atoiOr(envOr("GAAP_APPROVAL_TIMEOUT", "", ""), *approvalTimeout, gaap.DefaultApprovalTimeoutSec),
 		ApprovalAgents:     splitList(envOr("GAAP_APPROVAL_AGENTS", *approvalAgents, "")),
-		Policy:             envOr("GAAP_POLICY", *policy, ""),
-		StateDir:           envOr("GAAP_STATE", *stateDir, defaultStateDir),
-		TrustFloor:         *trustFloor,
-		RateLimit:          *rateLimit,
-		AllowHostExec:      *allowHostExec,
+		governFields:       gov.settings(),
 		APIKey:             envOr("GAAP_API_KEY", *apiKey, ""),
 		TLSCert:            envOr("GAAP_TLS_CERT", *tlsCert, ""),
 	}
@@ -387,19 +365,12 @@ func run(args []string) error {
 type resumeConfig struct {
 	RunKey     string
 	MaxWaitSec int
-	// Breakers are not part of the persisted run state, so a resumed run has to
-	// be told about them again — otherwise a guard the operator turned on
-	// disappears exactly when the run is recovering.
-	BreakerThreshold   int
-	BreakerCooldownSec int
-	// Governance is not part of the persisted run state either: a resumed run that
-	// is not told about the policy would dispatch around it.
-	Policy        string
-	StateDir      string
-	TrustFloor    float64
-	RateLimit     bool
-	AllowHostExec bool
 	connFields
+	// governFields carries the flags that decide how a run is governed. Embedded for
+	// the same reason as connFields: registered and projected twice, a flag added to
+	// `run` and forgotten in `resume` is a resumed run that dispatches around the
+	// policy it was started with.
+	governFields
 }
 
 // parseResumeFlags parses "gaap resume [--addr <daemon>] [--api-key <key>] [--tls-cert <path>] <run-key>".
@@ -416,13 +387,8 @@ func parseResumeFlags(name string, args []string) (*resumeConfig, error) {
 	temperature := fs.Float64("temperature", 0, "LLM temperature, 0.0-1.0 (default: 0.1)")
 	agentTypes := fs.String("agent-types", "", "Comma-separated agent types to dispatch (default: static_analysis,quality_scan,file_analysis)")
 	timeout := fs.Int("timeout", 0, "Max wait for workers in seconds (default: 300)")
-	breakerThreshold := fs.Int("breaker-threshold", 0, "Open an agent type's circuit breaker after N dead-lettered tasks (default: 0 = off)")
-	breakerCooldown := fs.Int("breaker-cooldown", 0, "Seconds an open breaker refuses dispatch (default: 60 when breakers are on)")
-	policy := fs.String("policy", "", "Policy file: govern every dispatch against it")
-	stateDir := fs.String("state", defaultStateDir, "State directory for the ledger, keys and kill switch")
-	trustFloor := fs.Float64("trust-floor", 0, "Escalate allows to review while trust is below this (0 disables)")
-	rateLimit := fs.Bool("rate-limit", false, "Make a rate_limit rule deny with a cooldown and a count")
-	allowHostExec := fs.Bool("allow-host-exec", false, "Run worker commands on the host, uncoerced (default: refuse unless containment is available)")
+	// Same governance flags as `run`, from the same declaration.
+	gov := registerGovernFlags(fs)
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -434,22 +400,16 @@ func parseResumeFlags(name string, args []string) (*resumeConfig, error) {
 	}
 
 	cfg := &resumeConfig{
-		RunKey:             runKey,
-		DaemonAddr:         envOr("GAAP_DAEMON_ADDR", *addr, "localhost:50051"),
-		APIKey:             envOr("GAAP_API_KEY", *apiKey, ""),
-		TLSCert:            envOr("GAAP_TLS_CERT", *tlsCert, ""),
-		Model:              envOr("GAAP_MODEL", *model, gaap.DefaultModel),
-		OllamaURL:          envOr("GAAP_OLLAMA_URL", *ollamaURL, "http://localhost:11434/v1"),
-		MaxTokens:          atoiOr(envOr("GAAP_MAX_TOKENS", "", ""), *maxTokens, 4096),
-		Temperature:        atofOr(envOr("GAAP_TEMPERATURE", "", ""), *temperature, 0.1),
-		MaxWaitSec:         atoiOr(envOr("GAAP_TIMEOUT", "", ""), *timeout, 300),
-		BreakerThreshold:   atoiOr(envOr("GAAP_BREAKER_THRESHOLD", "", ""), *breakerThreshold, 0),
-		BreakerCooldownSec: atoiOr(envOr("GAAP_BREAKER_COOLDOWN", "", ""), *breakerCooldown, 0),
-		Policy:             envOr("GAAP_POLICY", *policy, ""),
-		StateDir:           envOr("GAAP_STATE", *stateDir, defaultStateDir),
-		TrustFloor:         *trustFloor,
-		RateLimit:          *rateLimit,
-		AllowHostExec:      *allowHostExec,
+		RunKey:       runKey,
+		DaemonAddr:   envOr("GAAP_DAEMON_ADDR", *addr, "localhost:50051"),
+		APIKey:       envOr("GAAP_API_KEY", *apiKey, ""),
+		TLSCert:      envOr("GAAP_TLS_CERT", *tlsCert, ""),
+		Model:        envOr("GAAP_MODEL", *model, gaap.DefaultModel),
+		OllamaURL:    envOr("GAAP_OLLAMA_URL", *ollamaURL, "http://localhost:11434/v1"),
+		MaxTokens:    atoiOr(envOr("GAAP_MAX_TOKENS", "", ""), *maxTokens, 4096),
+		Temperature:  atofOr(envOr("GAAP_TEMPERATURE", "", ""), *temperature, 0.1),
+		MaxWaitSec:   atoiOr(envOr("GAAP_TIMEOUT", "", ""), *timeout, 300),
+		governFields: gov.settings(),
 	}
 	if *agentTypes != "" {
 		cfg.AgentTypes = strings.Split(*agentTypes, ",")
