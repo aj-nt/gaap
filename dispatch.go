@@ -158,6 +158,28 @@ func (o *Orchestrator) decide(node *TaskNode) error {
 			Reason:    ReviewReason(d.Reason),
 		})
 		return nil
+	case platform.ActionRateLimit:
+		// Deny with a cooldown. This does not re-queue: there is no scheduler and
+		// no retry pipeline behind this switch, and building one inside a policy
+		// arm would be a queueing subsystem wearing a rule. Deferring the call is
+		// the caller's business — the same division M6.2 already establishes.
+		//
+		// The count comes from the same durable counter that detects a refusal
+		// burst: a rate limiter and a burst counter are the same mechanism, and
+		// keeping two of them would let one fire while the other stayed silent.
+		reason := d.Reason
+		if o.cfg.RateLimit && o.cfg.Governor.Denials != nil {
+			cls := platform.ActionClass("")
+			if d.Denial != nil {
+				cls = d.Denial.ActionClass
+			}
+			if count, _, err := o.cfg.Governor.Denials.Observe(agentID, cls); err == nil {
+				reason = fmt.Sprintf("%s (rate limited: retry after %s; %d refused in that window)",
+					reason, o.cfg.Governor.Denials.Window(), count)
+			}
+		}
+		o.denyTaskPolicy(node, d, reason)
+		return nil
 	default: // deny, and anything the kernel might add later
 		o.denyTaskPolicy(node, d, d.Reason)
 		return nil
