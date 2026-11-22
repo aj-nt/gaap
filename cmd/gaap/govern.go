@@ -295,7 +295,7 @@ func governKill(args []string, out io.Writer) error {
 		return err
 	}
 	seq, err := state.ledger.Append(platform.Entry{
-		Kind:    "killswitch",
+		Kind:    platform.KindKillswitch,
 		Tool:    *scope,
 		Outcome: platform.ActionDeny,
 		Reason:  *reason,

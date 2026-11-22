@@ -446,7 +446,7 @@ func (s *ApprovalState) Enter(ctx context.Context, o *Orchestrator) error {
 		}
 		if !reuse {
 			goal := fmt.Sprintf("Approve %s (%s): %s", s.Request.TaskID, s.Request.AgentType, s.Request.Reason)
-			if _, err := o.daemon.AddTask(ctx, s.ApprovalTaskID, ApprovalAgentType, goal, string(reqJSON), 3, 600, 0); err != nil {
+			if _, err := o.daemon.AddTask(ctx, s.ApprovalTaskID, ApprovalAgentType, goal, string(reqJSON), 3, ApprovalTaskTTL(o.cfg.Approval.Timeout), 0); err != nil {
 				return fmt.Errorf("approval: creating the request task %s: %w", s.ApprovalTaskID, err)
 			}
 		}

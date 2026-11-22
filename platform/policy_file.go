@@ -108,12 +108,19 @@ func LoadPolicyFile(path string) (*PolicyEngine, error) {
 // parseAction validates an action name against the typed set.
 func parseAction(name string) (Action, error) {
 	switch Action(name) {
-	case ActionAllow, ActionDeny, ActionReview, ActionRateLimit:
+	case ActionAllow, ActionDeny, ActionReview:
 		return Action(name), nil
+	case ActionRateLimit:
+		// Refused, not accepted. Nothing in the kernel counts anything, and
+		// dispatch's switch has no case for this action, so it fell through to
+		// the deny default — the operator configured a throttle and got a
+		// block. Refusing at load is the only honest answer until a counter
+		// subsystem exists to honor it.
+		return "", fmt.Errorf("action %q is not enforced: no counter subsystem exists, so this rule would deny every matching call. Write \"deny\" explicitly if that is the intent", name)
 	case "":
 		return "", fmt.Errorf("missing action")
 	default:
-		return "", fmt.Errorf("unknown action %q (want allow, deny, review, or rate_limit)", name)
+		return "", fmt.Errorf("unknown action %q (want allow, deny, or review)", name)
 	}
 }
 

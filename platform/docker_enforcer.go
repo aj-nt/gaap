@@ -390,6 +390,9 @@ func (e *DockerEnforcer) Stop(ctx context.Context, handle string) error {
 // so this is a placeholder until the re-spawn flow. For now it only chowns the
 // granted path (the part that is valid standalone).
 func (e *DockerEnforcer) Grant(ctx context.Context, handle string, g PathGrant) error {
+	if err := g.Validate(time.Now()); err != nil {
+		return err
+	}
 	return e.chown(ctx, g.UID, g.Path)
 }
 

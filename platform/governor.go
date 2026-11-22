@@ -129,7 +129,7 @@ func (g *Governor) record(agentID, tool string, args map[string]any, d Decision)
 		}
 	}
 	_, err = g.Ledger.Append(Entry{
-		Kind:          "decision",
+		Kind:          KindDecision,
 		SubjectHash:   subjectHash,
 		SubjectRef:    ref,
 		CommitAlgo:    algo,

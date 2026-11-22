@@ -13,6 +13,21 @@ import (
 	"time"
 )
 
+// Kind values recorded on Entry.Kind. The set is closed: adding a kind is a
+// reader change (a filter, a tail renderer, a report) rather than only a writer
+// change, so it belongs here where those readers can see it.
+const (
+	KindDecision   = "decision"
+	KindGrant      = "grant"
+	KindKillswitch = "killswitch"
+	KindTrust      = "trust"
+	KindRequest    = "request"
+	// Reserved: named here so a writer cannot invent a spelling, but no
+	// production path emits them yet.
+	KindRevocation  = "revocation"
+	KindDenialBurst = "denial_burst"
+)
+
 // Entry is a single immutable record in the ledger. Only the governor appends;
 // the agent never writes here directly.
 //
@@ -27,8 +42,7 @@ import (
 type Entry struct {
 	Seq  int64     `json:"seq"`
 	Time time.Time `json:"time"`
-	// Kind is the record category: "decision", "grant", "killswitch", "trust",
-	// "request".
+	// Kind is the record category; see the Kind* constants.
 	Kind string `json:"kind"`
 	// SubjectHash commits to the identity the decision was about, without
 	// storing it. When CommitAlgo is set this is a KEYED commitment, not a plain

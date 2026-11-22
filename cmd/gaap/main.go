@@ -237,7 +237,7 @@ func parseRunFlags(name string, args []string) (*runConfig, error) {
 		MaxTokens:          atoiOr(envOr("GAAP_MAX_TOKENS", "", ""), *maxTokens, 4096),
 		Temperature:        atofOr(envOr("GAAP_TEMPERATURE", "", ""), *temperature, 0.1),
 		Approval:           *approval || os.Getenv("GAAP_APPROVAL") != "",
-		ApprovalTimeoutSec: atoiOr(envOr("GAAP_APPROVAL_TIMEOUT", "", ""), *approvalTimeout, 900),
+		ApprovalTimeoutSec: atoiOr(envOr("GAAP_APPROVAL_TIMEOUT", "", ""), *approvalTimeout, gaap.DefaultApprovalTimeoutSec),
 		ApprovalAgents:     splitList(envOr("GAAP_APPROVAL_AGENTS", *approvalAgents, "")),
 		Policy:             envOr("GAAP_POLICY", *policy, ""),
 		StateDir:           envOr("GAAP_STATE", *stateDir, defaultStateDir),
