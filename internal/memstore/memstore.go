@@ -196,9 +196,21 @@ CREATE TRIGGER IF NOT EXISTS gov_entry_append_only
 BEFORE UPDATE ON gov_entry
 FOR EACH ROW
 WHEN NOT (
-	OLD.status = 'active'
-	AND NEW.status = 'tombstoned'
-	AND NEW.body = ''
+	(
+		(
+			-- The one-way tombstone: the row stays, the body stops being readable.
+			OLD.status = 'active' AND NEW.status = 'tombstoned' AND NEW.body = ''
+		)
+		OR
+		(
+			-- Eviction: dropped from consideration, not erased. It clears no body,
+			-- because an evicted entry is still evidence; it is only no longer worth
+			-- spending context on. One-way, so a budget squeeze cannot be walked back by
+			-- a later writer.
+			OLD.status = 'active' AND NEW.status = 'active' AND NEW.body = OLD.body
+			AND OLD.evicted_at IS NULL AND NEW.evicted_at IS NOT NULL
+		)
+	)
 	AND NEW.id = OLD.id
 	AND NEW.root_id = OLD.root_id
 	AND NEW.kind = OLD.kind
@@ -208,10 +220,10 @@ WHEN NOT (
 	AND NEW.created_at = OLD.created_at
 	AND NEW.expires_at = OLD.expires_at
 	AND COALESCE(NEW.superseded_by,'') = COALESCE(OLD.superseded_by,'')
-	AND COALESCE(NEW.evicted_at,0) = COALESCE(OLD.evicted_at,0)
+	AND NEW.producer = OLD.producer
 )
 BEGIN
-	SELECT RAISE(ABORT, 'gov_entry is append-only: only a one-way tombstone is permitted');
+	SELECT RAISE(ABORT, 'gov_entry is append-only: only a one-way tombstone or eviction is permitted');
 END;
 
 CREATE TRIGGER IF NOT EXISTS gov_entry_no_delete
