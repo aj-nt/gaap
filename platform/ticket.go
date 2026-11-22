@@ -63,13 +63,9 @@ type TicketKey struct {
 // deliberate operation, and a key that changes when a deploy changes an environment
 // variable invalidates every in-flight ticket and looks like a forgery wave.
 func LoadOrCreateTicketKey(path string) (*TicketKey, error) {
-	raw, err := os.ReadFile(path)
+	k, err := LoadTicketKey(path)
 	if err == nil {
-		b, derr := hex.DecodeString(strings.TrimSpace(string(raw)))
-		if derr != nil || len(b) < 32 {
-			return nil, fmt.Errorf("ticket key %s is not a hex-encoded 32-byte key: %w", path, derr)
-		}
-		return &TicketKey{key: b}, nil
+		return k, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
@@ -86,6 +82,28 @@ func LoadOrCreateTicketKey(path string) (*TicketKey, error) {
 		return nil, err
 	}
 	return &TicketKey{key: key}, nil
+}
+
+// LoadTicketKey reads the ticket key at path and reports a missing file as such.
+//
+// The verifier's loader, distinct from the issuer's. The two sides have opposite failure
+// modes: an issuer with no key creates one, because a fresh install has none and rotation is
+// a deliberate operation; a verifier that created one would mint a key that every presented
+// ticket fails against, and a forgery wave on the first day of a deployment is
+// indistinguishable from a misconfiguration.
+func LoadTicketKey(path string) (*TicketKey, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	b, err := hex.DecodeString(strings.TrimSpace(string(raw)))
+	if err != nil {
+		return nil, fmt.Errorf("ticket key %s is not hex-encoded: %w", path, err)
+	}
+	if len(b) < 32 {
+		return nil, fmt.Errorf("ticket key %s decodes to %d bytes; an HMAC-SHA256 key needs at least 32", path, len(b))
+	}
+	return &TicketKey{key: b}, nil
 }
 
 // NewTicketKey builds a key from raw bytes. Tests only.
