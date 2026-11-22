@@ -154,6 +154,39 @@ func TestAllowIsNotCounted(t *testing.T) {
 	}
 }
 
+func TestDenyByDefaultUsesInjectedClass(t *testing.T) {
+	g := NewGovernor()
+	// No rule names Execute: this is the deny-by-default path, which is the
+	// common case and the one where the class is not knowable from policy.
+	g.ClassOf = func(tool string) ActionClass {
+		if tool == "Execute" {
+			return ClassShell
+		}
+		return ""
+	}
+	d := g.Decide("agent-1", "Execute", nil)
+	if d.Denial == nil {
+		t.Fatal("no denial")
+	}
+	if d.Denial.ActionClass != ClassShell {
+		t.Fatalf("class = %q, want shell from the injected classifier", d.Denial.ActionClass)
+	}
+	if got := g.Ledger.Entries()[0].DenialClass; got != "shell" {
+		t.Fatalf("ledger denial_class = %q, want shell", got)
+	}
+}
+
+// A rule's own declaration is more specific than the tool's default class.
+func TestRuleClassBeatsInjectedClass(t *testing.T) {
+	g := NewGovernor()
+	g.Policy.AddRule(Rule{ID: "no-exec", Tool: "Execute", Decision: Deny("no"), ActionClass: ClassShell})
+	g.ClassOf = func(string) ActionClass { return ClassNetwork }
+	d := g.Decide("agent-1", "Execute", nil)
+	if d.Denial.ActionClass != ClassShell {
+		t.Fatalf("class = %q, want the rule's shell", d.Denial.ActionClass)
+	}
+}
+
 // The deny-by-default path has no rule, so it has no class — and must still
 // produce a correlation id and an honest reframe.
 func TestDenyByDefaultStillReframes(t *testing.T) {
