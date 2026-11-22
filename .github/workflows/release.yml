@@ -23,6 +23,10 @@ jobs:
       - name: Run tests with race detector
         run: go test -race -timeout 120s -count=1 ./...
 
+      - name: Kernel tests (separate module)
+        working-directory: platform
+        run: go test -race -timeout 120s -count=1 ./...
+
   release:
     name: Release
     runs-on: ubuntu-latest

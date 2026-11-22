@@ -35,6 +35,18 @@ jobs:
       - name: Check build
         run: go build ./...
 
+      # The kernel is a separate module, so the `./...` above does NOT reach it.
+      # Without these steps the split would silently drop the governance kernel
+      # from CI entirely — and the code with the guarantees is the code most worth
+      # testing.
+      - name: Kernel tests (separate module)
+        working-directory: platform
+        run: go test -race -timeout 120s -count=1 ./...
+
+      - name: Kernel vet
+        working-directory: platform
+        run: go vet ./...
+
   # ── Lint ──
   lint:
     name: Lint
@@ -53,6 +65,14 @@ jobs:
           version: v2.15.0
           install-mode: "binary"
           args: --timeout=5m
+
+      - name: golangci-lint (kernel module)
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.15.0
+          install-mode: "binary"
+          args: --timeout=5m
+          working-directory: platform
 
   # ── Security scan ──
   security:
