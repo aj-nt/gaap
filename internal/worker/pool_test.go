@@ -132,7 +132,7 @@ func TestPoolWorkerLoopSuccess(t *testing.T) {
 	mockLLM := &mockChatClient{
 		responses: []string{"DONE: scan complete, found 3 issues"},
 	}
-	exec := NewExecutor(mockLLM, 5)
+	exec := NewExecutor(mockLLM, 5, HostRunner{})
 
 	p := &Pool{
 		cfg: PoolConfig{
@@ -181,7 +181,7 @@ func TestPoolWorkerLoopFail(t *testing.T) {
 	mockLLM := &mockChatClient{
 		responses: []string{"FAIL: repo not found"},
 	}
-	exec := NewExecutor(mockLLM, 5)
+	exec := NewExecutor(mockLLM, 5, HostRunner{})
 
 	p := &Pool{
 		cfg: PoolConfig{
@@ -227,7 +227,7 @@ func TestPoolWorkerLoopNoTasks(t *testing.T) {
 	}
 
 	mockLLM := &mockChatClient{}
-	exec := NewExecutor(mockLLM, 5)
+	exec := NewExecutor(mockLLM, 5, HostRunner{})
 
 	p := &Pool{
 		cfg: PoolConfig{
@@ -269,7 +269,7 @@ func TestPoolContextCancellation(t *testing.T) {
 	}
 
 	mockLLM := &mockChatClient{}
-	exec := NewExecutor(mockLLM, 5)
+	exec := NewExecutor(mockLLM, 5, HostRunner{})
 
 	p := &Pool{
 		cfg: PoolConfig{

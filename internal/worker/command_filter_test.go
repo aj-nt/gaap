@@ -310,7 +310,7 @@ func TestWorkLogLinesCarryTaskIdentity(t *testing.T) {
 		`echo hello`,
 		`DONE: done`,
 	}}
-	exec := NewExecutor(mock, 5)
+	exec := NewExecutor(mock, 5, HostRunner{})
 	task := makeTask("task-identity", "test goal", "test")
 	task.RetryCount = 1 // second claim of the same task
 
@@ -341,7 +341,7 @@ func TestUnparseableResponseIsLogged(t *testing.T) {
 		"Let me start by examining the repository structure.",
 		`DONE: finished`,
 	}}
-	exec := NewExecutor(mock, 5)
+	exec := NewExecutor(mock, 5, HostRunner{})
 	task := makeTask("task-drift", "test goal", "test")
 
 	if result := exec.Execute(context.Background(), task, "/tmp"); result.Status != "success" {

@@ -206,7 +206,7 @@ func TestExecuteRunsCommandWithTrailingMarkup(t *testing.T) {
 		"CMD: echo sanitised</parameter>\n</invoke>\n</｜DSML｜",
 		"DONE: done",
 	}}
-	exec := NewExecutor(mock, 5)
+	exec := NewExecutor(mock, 5, HostRunner{})
 	task := makeTask("task-markup", "test goal", "test")
 
 	result := exec.Execute(context.Background(), task, "/tmp")
@@ -228,7 +228,7 @@ func TestExecuteRunsCommandAfterNarration(t *testing.T) {
 		"Let me look at the package layout first.\nCMD: echo narrated",
 		"DONE: done",
 	}}
-	exec := NewExecutor(mock, 5)
+	exec := NewExecutor(mock, 5, HostRunner{})
 	task := makeTask("task-narration", "test goal", "test")
 
 	result := exec.Execute(context.Background(), task, "/tmp")
