@@ -1,4 +1,4 @@
-package platform
+package protocol
 
 // ActionClass is a coarse grouping of what a call is FOR, declared per rule.
 //
@@ -30,3 +30,20 @@ func (c ActionClass) Known() bool {
 
 // String makes the class usable in formatting and ledger output.
 func (c ActionClass) String() string { return string(c) }
+
+// DenialClass is the structured refusal carried by a decision.
+type DenialClass struct {
+	// Rule names the standing order. It is recorded and never rendered: an id
+	// like "no-destructive-shell" is a threshold in prose.
+	Rule string
+	// ActionClass is what the call was for, not what it was called.
+	ActionClass ActionClass
+	// Forbidden is the tool name that was refused.
+	Forbidden string
+	// Permitted lists tool names these standing orders do allow. Sorted, so the
+	// text is stable across runs and diffable in a report.
+	Permitted []string
+	// CorrelationID ties what the agent was shown to the row an operator can
+	// read. Without it "the governor refused me" is unanswerable.
+	CorrelationID string
+}

@@ -1,20 +1,9 @@
 package platform
 
-// Decider is the one method the enforcement path needs from the kernel.
+// Decider lives in the protocol module: it is the contract a remote client is written
+// against, and a client should not have to import the machinery that answers it.
 //
-// An agent that decides its own calls governs itself: the policy it reads, the record it
-// writes and the process that runs the tool are all the same process, so anything that can
-// run code there can also permit itself. That is the arrangement every framework surveyed on
-// 2026-11-22 drifted back to, and one of them deleted its scope check on the way.
-//
-// The interface exists so the decision can live in a daemon while the agent holds a client:
-// same signature, different answer to "can the workload rewrite the rule that just refused
-// it". Nothing about Decision changes — the caller still gets a struct, a rule id and a
-// correlation id, and the ledger still belongs to whoever made the call.
-type Decider interface {
-	Decide(agentID, tool string, args map[string]any, opts ...DecideOpt) Decision
-}
-
-// *Governor satisfies the interface for free; the assertion is here so a future change to
-// Decide's signature breaks the client and the daemon together instead of drifting apart.
+// This assertion stays here. *Governor satisfies the interface, and a change to Decide's
+// signature must break the kernel and the client together instead of letting them drift
+// apart.
 var _ Decider = (*Governor)(nil)

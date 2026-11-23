@@ -16,7 +16,12 @@ require (
 // ignored by anyone who depends on gaap.
 replace github.com/aj-nt/gaap/platform => ./platform
 
+// The kernel now depends on the protocol module, and a replace inside a dependency is
+// ignored: the root module needs its own.
+replace github.com/aj-nt/gaap/protocol => ./protocol
+
 require (
+	github.com/aj-nt/gaap/protocol v0.1.0 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
