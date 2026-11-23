@@ -206,7 +206,7 @@ func (b *broker) handle(conn net.Conn, verbose bool) {
 		b.reply(conn, Response{Error: "cannot identify the peer: " + err.Error()})
 		return
 	}
-	agent, err := principal.Resolve(b.principals, uid, req.Agent)
+	agent, err := principal.Resolve(principal.FromSingle(b.principals), uid, req.Agent)
 	if err != nil {
 		// Two failures with one shape and different meanings: a uid nobody vouched for,
 		// and a uid claiming to be someone else. Both are refusals; only the second is an
