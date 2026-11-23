@@ -145,7 +145,6 @@ type broker struct {
 	// in the ledger that half the fleet contradicts.
 	classes    map[string]platform.Reversibility
 	owners     map[string]string
-	tickets    *platform.TicketKey
 	ticketPath string
 	verbose    bool
 }
