@@ -4,6 +4,21 @@ All notable changes to Gaap.
 
 ## [Unreleased]
 
+`gaapd` absorbs the memory broker: one socket, one identity rule, one state directory. A
+refused call also stops advertising tools the caller does not have, and an agent's own tool
+classes now decide what the ledger claims about reversibility.
+
+### Added
+- **The tool catalogue carries the class.** `register` reports `{tool: "pure"|"irreversible"}`, and the daemon builds the fleet classifier from it, so a read that crosses the socket is recorded as `pure` instead of the kernel's conservative `irreversible`. Two refusals come with it: a tool with two classes in one fleet is refused and names both agents (whichever registered last would otherwise decide what the ledger claims about both), and `reversible`/`compensable` are refused outright because no snapshot or compensation mechanism backs them — recording one would claim an inverse the runtime does not hold.
+- **Gate tickets over the socket.** `decide` may name `{entry_id, resource}`; the daemon mints from the key beside `kill.json` (created on first use, so tokens survive restarts) and the governor refuses a ticket for anything that is not a pure read, or one with no resource. Before this a ticket was unreachable from a broker-connected agent.
+- **Refusals name only tools the caller has.** `Governor.Catalogue` filters "permitted alternatives" through what the agent registered; a policy typo that named a nonexistent tool used to be taught to the model as an instruction.
+- **`register` answers with the policy's tool names that agent lacks** — a rule that can never match, reported at startup instead of discovered by an agent flailing.
+
+### Changed
+- **`govmemd` is gone; its ops live on `gaapd`.** `read`, `search`, `write`, `tombstone`, `resolve` and `injectable` are served on the one socket, by the same identity rule every decision uses, with the store (`<state>/mem.db`, 0600) in the same state directory as the ledger that records what was done to it. The grant file is unchanged: principals and memory grants stay in `memory-grants.json`, and every answer carries `mem_revision`.
+- **`search` is a read.** The standalone broker cast the op name to a capability, so it asked for `mem.search` — a name no grant can contain, because the compiler rejects unknown capabilities. The op existed and could never be allowed. It now maps to the `read` capability, so a read grant opens it.
+- `internal/principal.FromSingle` is deleted with the single-agent model it existed for.
+
 A failed task stops being reported as a finished one, the governor's control
 surfaces do something when you touch them, and a run can now ask a person what
 to do about a dead letter instead of giving up on the branch.

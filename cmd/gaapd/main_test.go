@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aj-nt/gaap/internal/memstore"
 	"github.com/aj-nt/gaap/internal/principal"
 	"github.com/aj-nt/gaap/platform"
 )
@@ -598,5 +599,98 @@ func TestATicketIsMintedOverTheSocket(t *testing.T) {
 		Args: map[string]any{}, Ticket: &TicketAsk{EntryID: "obs-4"}}, 501)
 	if r.OK {
 		t.Fatal("a ticket with no resource was served")
+	}
+}
+
+// testBrokerWithGrants is testBroker with a hand-written grant file, because the memory
+// capabilities live in that file and the principal helper only writes principals.
+func testBrokerWithGrants(t *testing.T, policy, grantsJSON string) *broker {
+	t.Helper()
+	dir := t.TempDir()
+	policyPath := filepath.Join(dir, "policy.json")
+	if err := os.WriteFile(policyPath, []byte(policy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	grantsPath := filepath.Join(dir, "memory-grants.json")
+	if err := os.WriteFile(grantsPath, []byte(grantsJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b, err := newBroker(config{
+		StateDir:   filepath.Join(dir, "state"),
+		PolicyPath: policyPath,
+		GrantsPath: grantsPath,
+	})
+	if err != nil {
+		t.Fatalf("newBroker: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+	return b
+}
+
+const memGrants = `{
+  "version": 2,
+  "principals": [{"uid": 501, "agents": ["vagent-analyst", "vagent-worker"]}],
+  "grants": [
+    {"id": "read-analyst", "capability": "read", "scope": "vagent-analyst"},
+    {"id": "write-analyst", "capability": "write", "scope": "vagent-analyst", "max_ttl_seconds": 600},
+    {"id": "inject-analyst", "capability": "injectable", "scope": "vagent-analyst"}
+  ]
+}`
+
+// The memory store used to be a second daemon with its own socket and its own identity rule.
+// It is now an op on this one, and the grant file is still what opens it.
+func TestMemoryOpsAreOnTheOneSocket(t *testing.T) {
+	b := testBrokerWithGrants(t, allowRead, memGrants)
+
+	entry := memstore.Entry{ID: "m1", Kind: "note", Body: "the analyst saw a thing", SourceRef: "src-1", ExpiresAt: time.Now().Add(10 * time.Minute)}
+	if r := b.serve(Request{Op: "write", Agent: "vagent-analyst", Entry: &entry}, 501); !r.OK {
+		t.Fatalf("write: %+v", r)
+	}
+	r := b.serve(Request{Op: "read", Agent: "vagent-analyst", ID: "m1"}, 501)
+	if !r.OK || len(r.Entries) != 1 || r.Entries[0].ID != "m1" {
+		t.Fatalf("read: %+v", r)
+	}
+	if r.MemRev == "" {
+		t.Fatal("a memory answer did not carry the grant revision it was served under")
+	}
+}
+
+// A peer holding several agents must still say which, for memory ops too: the same rule that
+// keeps a decision from being attributed to the wrong workload keeps a write from being.
+func TestMemoryOpsNeedTheSameIdentityClaim(t *testing.T) {
+	b := testBrokerWithGrants(t, allowRead, memGrants)
+	r := b.serve(Request{Op: "read", ID: "m1"}, 501)
+	if r.OK || !strings.Contains(r.Error, "may act as") {
+		t.Fatalf("an unclaimed multi-agent peer was served memory: %+v", r)
+	}
+}
+
+// The grant file is the door: an agent with no write grant cannot write, on this socket or any.
+func TestMemoryFollowsTheGrantNotTheOp(t *testing.T) {
+	b := testBrokerWithGrants(t, allowRead, memGrants)
+	entry := memstore.Entry{ID: "m2", Kind: "note", Body: "worker tries to write", ExpiresAt: time.Now().Add(10 * time.Minute)}
+	r := b.serve(Request{Op: "write", Agent: "vagent-worker", Entry: &entry}, 501)
+	if r.OK {
+		t.Fatal("vagent-worker has no write grant and wrote anyway")
+	}
+	if !strings.Contains(r.Error, "mem.write") || !strings.Contains(r.Error, "mem-deny-write") {
+		t.Fatalf("refusal = %q, want the capability and the rule that refused it", r.Error)
+	}
+}
+
+// The standalone broker cast the op name to a capability, so "search" asked for a capability
+// called mem.search that no grant can name — the op existed and could never be allowed.
+func TestSearchIsAReadOfTheStore(t *testing.T) {
+	b := testBrokerWithGrants(t, allowRead, memGrants)
+	entry := memstore.Entry{ID: "m3", Kind: "note", Body: "tide tables for the harbour", ExpiresAt: time.Now().Add(10 * time.Minute)}
+	if r := b.serve(Request{Op: "write", Agent: "vagent-analyst", Entry: &entry}, 501); !r.OK {
+		t.Fatalf("write: %+v", r)
+	}
+	r := b.serve(Request{Op: "search", Agent: "vagent-analyst", Query: "tide"}, 501)
+	if !r.OK {
+		t.Fatalf("search refused under a read grant: %+v", r)
+	}
+	if len(r.Entries) != 1 || r.Entries[0].ID != "m3" {
+		t.Fatalf("search returned %+v", r.Entries)
 	}
 }
