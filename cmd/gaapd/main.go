@@ -375,6 +375,10 @@ func (b *broker) serve(req Request, uid uint32) Response {
 		if len(req.Catalog) == 0 {
 			return Response{Error: "register requires the tool names this agent exposes, with their classes"}
 		}
+		// Validate the whole catalogue before recording any of it. The class map is shared by
+		// every agent on the socket, so a request that is about to be refused must not have
+		// taught it anything: a half-applied claim would classify a tool for a fleet nobody
+		// registered it with, and then refuse the agent that would.
 		catalog := make(map[string]platform.Reversibility, len(req.Catalog))
 		for tool, class := range req.Catalog {
 			rev, err := parseReversibility(class)
@@ -389,6 +393,8 @@ func (b *broker) serve(req Request, uid uint32) Response {
 					tool, b.classes[tool], owner, rev, agent)}
 			}
 			catalog[tool] = rev
+		}
+		for tool, rev := range catalog {
 			b.classes[tool] = rev
 			b.owners[tool] = agent
 		}
