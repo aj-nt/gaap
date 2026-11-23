@@ -323,6 +323,9 @@ func loadGrants(path string) (principal.Grants, *platform.PolicyEngine, string, 
 }
 
 // serve answers one request from a peer whose uid the transport established.
+//
+// One lock, one identity rule, one dispatch. The handlers below run with b.mu held and, except
+// for status, with an agent the kernel attested rather than one the caller named.
 func (b *broker) serve(req Request, uid uint32) Response {
 	_, isMem := memoryCapability(req.Op)
 	if !isMem && req.Op != "decide" && req.Op != "status" && req.Op != "register" {
@@ -333,20 +336,7 @@ func (b *broker) serve(req Request, uid uint32) Response {
 	}
 	agent, err := principal.Resolve(b.grants, uid, req.Agent)
 	if err != nil {
-		var unmapped principal.ErrUnmapped
-		var ambiguous principal.ErrAmbiguous
-		switch {
-		case errors.As(err, &unmapped):
-			log.Printf("gaapd: refused uid %d: %v", uid, err)
-		case errors.As(err, &ambiguous):
-			// Not a misconfiguration and not an attempt: the peer holds several agents and
-			// did not say which, so the request is answerable only by the caller.
-			log.Printf("gaapd: ambiguous peer uid %d: %v", uid, err)
-		default:
-			// A mapped peer naming an agent it does not hold is an attempt, and the log
-			// has to say so.
-			log.Printf("gaapd: IMPERSONATION uid %d: %v", uid, err)
-		}
+		logIdentityFailure(uid, err)
 		return Response{Error: err.Error()}
 	}
 
@@ -362,59 +352,96 @@ func (b *broker) serve(req Request, uid uint32) Response {
 
 	switch req.Op {
 	case "status":
-		if b.verbose {
-			log.Printf("gaapd: uid=%d agent=%s status", uid, agent)
-		}
-		return Response{OK: true, Revision: b.gov.Policy.Revision(), Status: &Status{
-			PolicyPath: b.policyPath,
-			Principals: len(b.grants),
-			Agents:     b.agentNamesLocked(),
-			Started:    b.started.Format(time.RFC3339),
-		}}
+		return b.serveStatusLocked(uid, agent)
 	case "register":
-		if len(req.Catalog) == 0 {
-			return Response{Error: "register requires the tool names this agent exposes, with their classes"}
-		}
-		// Validate the whole catalogue before recording any of it. The class map is shared by
-		// every agent on the socket, so a request that is about to be refused must not have
-		// taught it anything: a half-applied claim would classify a tool for a fleet nobody
-		// registered it with, and then refuse the agent that would.
-		catalog := make(map[string]platform.Reversibility, len(req.Catalog))
-		for tool, class := range req.Catalog {
-			rev, err := parseReversibility(class)
-			if err != nil {
-				return Response{Error: fmt.Sprintf("%s: %v", tool, err)}
-			}
-			// A tool with two classes in one fleet is two answers to "can this be undone".
-			// The second one is refused rather than overwriting: whichever agent registered
-			// last would otherwise decide what the ledger claims about both.
-			if owner, ok := b.owners[tool]; ok && b.classes[tool] != rev && owner != agent {
-				return Response{Error: fmt.Sprintf("%s is %s for %s and %s for %s; one tool cannot have two classes — rename one of them",
-					tool, b.classes[tool], owner, rev, agent)}
-			}
-			catalog[tool] = rev
-		}
-		for tool, rev := range catalog {
-			b.classes[tool] = rev
-			b.owners[tool] = agent
-		}
-		b.catalogues[agent] = catalog
-		tools := sortedCopy(keysOf(catalog))
-		unknown := b.policyToolsNotInLocked(tools)
-		var pure int
-		for _, rev := range catalog {
-			if rev == platform.Pure {
-				pure++
-			}
-		}
-		if b.verbose || len(unknown) > 0 {
-			log.Printf("gaapd: %s registered %d tools (%d pure); policy names %d it does not have %v",
-				agent, len(catalog), pure, len(unknown), unknown)
-		}
-		return Response{OK: true, Revision: b.gov.Policy.Revision(),
-			Tools: len(catalog), UnknownPolicyTools: unknown}
+		return b.serveRegisterLocked(agent, req)
 	}
+	return b.serveDecideLocked(uid, agent, req)
+}
 
+// logIdentityFailure separates three failures an operator has to be able to tell apart: a uid
+// nobody vouched for, a peer that holds several agents and named none, and a mapped peer naming
+// an agent it does not hold.
+func logIdentityFailure(uid uint32, err error) {
+	var unmapped principal.ErrUnmapped
+	var ambiguous principal.ErrAmbiguous
+	switch {
+	case errors.As(err, &unmapped):
+		log.Printf("gaapd: refused uid %d: %v", uid, err)
+	case errors.As(err, &ambiguous):
+		// Not a misconfiguration and not an attempt: the peer holds several agents and
+		// did not say which, so the request is answerable only by the caller.
+		log.Printf("gaapd: ambiguous peer uid %d: %v", uid, err)
+	default:
+		// A mapped peer naming an agent it does not hold is an attempt, and the log
+		// has to say so.
+		log.Printf("gaapd: IMPERSONATION uid %d: %v", uid, err)
+	}
+}
+
+// serveStatusLocked reports what the broker is running under. Called under b.mu.
+func (b *broker) serveStatusLocked(uid uint32, agent string) Response {
+	if b.verbose {
+		log.Printf("gaapd: uid=%d agent=%s status", uid, agent)
+	}
+	return Response{OK: true, Revision: b.gov.Policy.Revision(), Status: &Status{
+		PolicyPath: b.policyPath,
+		Principals: len(b.grants),
+		Agents:     b.agentNamesLocked(),
+		Started:    b.started.Format(time.RFC3339),
+	}}
+}
+
+// serveRegisterLocked records an agent's tool catalogue, which is what lets a refusal name only
+// tools the agent can actually call. Called under b.mu.
+func (b *broker) serveRegisterLocked(agent string, req Request) Response {
+	if len(req.Catalog) == 0 {
+		return Response{Error: "register requires the tool names this agent exposes, with their classes"}
+	}
+	// Validate the whole catalogue before recording any of it. The class map is shared by
+	// every agent on the socket, so a request that is about to be refused must not have
+	// taught it anything: a half-applied claim would classify a tool for a fleet nobody
+	// registered it with, and then refuse the agent that would.
+	catalog := make(map[string]platform.Reversibility, len(req.Catalog))
+	for tool, class := range req.Catalog {
+		rev, err := parseReversibility(class)
+		if err != nil {
+			return Response{Error: fmt.Sprintf("%s: %v", tool, err)}
+		}
+		// A tool with two classes in one fleet is two answers to "can this be undone".
+		// The second one is refused rather than overwriting: whichever agent registered
+		// last would otherwise decide what the ledger claims about both.
+		if owner, ok := b.owners[tool]; ok && b.classes[tool] != rev && owner != agent {
+			return Response{Error: fmt.Sprintf("%s is %s for %s and %s for %s; one tool cannot have two classes — rename one of them",
+				tool, b.classes[tool], owner, rev, agent)}
+		}
+		catalog[tool] = rev
+	}
+	for tool, rev := range catalog {
+		b.classes[tool] = rev
+		b.owners[tool] = agent
+	}
+	b.catalogues[agent] = catalog
+	tools := sortedCopy(keysOf(catalog))
+	unknown := b.policyToolsNotInLocked(tools)
+	var pure int
+	for _, rev := range catalog {
+		if rev == platform.Pure {
+			pure++
+		}
+	}
+	if b.verbose || len(unknown) > 0 {
+		log.Printf("gaapd: %s registered %d tools (%d pure); policy names %d it does not have %v",
+			agent, len(catalog), pure, len(unknown), unknown)
+	}
+	return Response{OK: true, Revision: b.gov.Policy.Revision(),
+		Tools: len(catalog), UnknownPolicyTools: unknown}
+}
+
+// serveDecideLocked decides a tool call for an attested agent. The unknown-tool check runs
+// before the policy: a tool the agent did not register is incoherent before it is a question
+// about what is allowed. Called under b.mu.
+func (b *broker) serveDecideLocked(uid uint32, agent string, req Request) Response {
 	// A tool the agent did not register is incoherent before it is policy: refusing here means
 	// the record says "asked for a tool it does not have" instead of a rule that would have
 	// allowed it if only the name had been right.
