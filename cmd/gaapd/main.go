@@ -13,6 +13,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -20,11 +21,13 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/aj-nt/gaap/internal/peercred"
@@ -386,7 +389,11 @@ func (b *broker) reloadLocked() {
 	log.Printf("gaapd: reloaded %s, revision %s", b.policyPath, engine.Revision())
 }
 
-func listen(path string) (net.Listener, error) {
+// listen binds the socket. The mode is a parameter because the default (0666) means "any
+// local user may ask", which is only defensible because the grant file decides who may act;
+// an install that puts the socket in a group should say 0660 and let the filesystem say no
+// before the broker has to.
+func listen(path string, mode os.FileMode) (net.Listener, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
@@ -399,11 +406,35 @@ func listen(path string) (net.Listener, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(path, 0o666); err != nil {
+	if err := os.Chmod(path, mode); err != nil {
 		_ = ln.Close()
 		return nil, err
 	}
 	return ln, nil
+}
+
+// serveLoop accepts until the listener closes, then waits for the handlers already running.
+// Draining matters more here than in a normal server: a decision cut off mid-response has
+// already been written to the ledger, so stopping abruptly leaves a record of a call the
+// caller was told nothing about.
+func (b *broker) serveLoop(ln net.Listener) {
+	var wg sync.WaitGroup
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				wg.Wait()
+				return
+			}
+			log.Printf("gaapd: accept: %v", err)
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			b.handle(conn)
+		}()
+	}
 }
 
 func (b *broker) handle(conn net.Conn) {
@@ -429,16 +460,35 @@ func (b *broker) reply(conn net.Conn, r Response) {
 	}
 }
 
-func main() {
+// Exit codes a supervisor can act on. A broken policy or grant file is a configuration
+// error, not a transient fault: restarting it just buries the message and burns the start
+// limit, so the unit is told (RestartPreventExitStatus=78) to stop rather than loop.
+const (
+	exitOK     = 0
+	exitUsage  = 2
+	exitConfig = 78 // sysexits.h EX_CONFIG
+)
+
+func main() { os.Exit(run(os.Args[1:])) }
+
+func run(args []string) int {
+	fs := flag.NewFlagSet("gaapd", flag.ContinueOnError)
 	var (
-		socketPath = flag.String("socket", "", "unix socket (default <state>/govern.sock)")
-		stateDir   = flag.String("state", "/var/lib/gaap", "state directory: ledger, kill switch, denials")
-		policyPath = flag.String("policy", "", "policy file (default <state>/policy.json)")
-		grantsPath = flag.String("grants", "", "grant file with principals (default <state>/memory-grants.json)")
-		trustFloor = flag.Float64("trust-floor", 0, "escalate allows to review below this trust score")
-		verbose    = flag.Bool("v", false, "log one line per decision")
+		socketPath = fs.String("socket", "", "unix socket (default <state>/govern.sock)")
+		stateDir   = fs.String("state", "/var/lib/gaap", "state directory: ledger, keys, kill switch, denials")
+		policyPath = fs.String("policy", "", "policy file (default <state>/policy.json)")
+		grantsPath = fs.String("grants", "", "grant file with principals (default <state>/memory-grants.json)")
+		socketMode = fs.Uint("socket-mode", 0o666, "permissions on the unix socket (an install that uses a group wants 0660)")
+		trustFloor = fs.Float64("trust-floor", 0, "escalate allows to review below this trust score")
+		verbose    = fs.Bool("v", false, "log one line per decision")
 	)
-	flag.Parse()
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return exitOK
+		}
+		fmt.Fprintf(os.Stderr, "gaapd: %v\n", err)
+		return exitUsage
+	}
 
 	cfg := config{
 		Socket:     *socketPath,
@@ -459,26 +509,35 @@ func main() {
 
 	b, err := newBroker(cfg)
 	if err != nil {
-		log.Fatalf("gaapd: %v", err)
+		log.Printf("gaapd: %v", err)
+		return exitConfig
 	}
 	b.verbose = *verbose
 	defer func() { _ = b.Close() }()
 
-	ln, err := listen(cfg.Socket)
+	ln, err := listen(cfg.Socket, os.FileMode(*socketMode).Perm())
 	if err != nil {
-		log.Fatalf("gaapd: listen %s: %v", cfg.Socket, err)
+		log.Printf("gaapd: listen %s: %v", cfg.Socket, err)
+		return exitConfig
 	}
 	defer func() { _ = ln.Close() }()
 
 	log.Printf("gaapd: serving %s (policy %s, revision %s, %d principals)",
 		cfg.Socket, cfg.PolicyPath, b.gov.Policy.Revision(), len(b.grants))
 
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			log.Printf("gaapd: accept: %v", err)
-			continue
-		}
-		go b.handle(conn)
-	}
+	// SIGTERM is how a supervisor stops this. There is no graceful state to save — every
+	// decision is fsynced as it is made — but in-flight requests are drained, and the socket
+	// is unlinked so a restart does not have to reason about a file left behind.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	go func() {
+		<-ctx.Done()
+		log.Printf("gaapd: stopping")
+		_ = ln.Close()
+	}()
+
+	b.serveLoop(ln)
+	_ = os.Remove(cfg.Socket)
+	log.Printf("gaapd: stopped")
+	return exitOK
 }
