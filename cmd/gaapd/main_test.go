@@ -300,7 +300,7 @@ func TestRegisterReportsPolicyNamesTheAgentLacks(t *testing.T) {
   {"id": "shell", "tool": "Shell", "action": "deny", "reason": "no shell"}
 ]}`, twoAgentsOnOneLogin())
 
-	resp := b.serve(Request{Op: "register", Agent: "vagent-analyst", Tools: []string{"FileRead", "CodeRead"}}, 501)
+	resp := b.serve(Request{Op: "register", Agent: "vagent-analyst", Catalog: map[string]string{"FileRead": "pure", "CodeRead": "pure"}}, 501)
 	if !resp.OK {
 		t.Fatalf("register: %+v", resp)
 	}
@@ -314,7 +314,7 @@ func TestRegisterReportsPolicyNamesTheAgentLacks(t *testing.T) {
 
 func TestUnregisteredToolIsRefusedBeforeThePolicy(t *testing.T) {
 	b := testBroker(t, allowRead, twoAgentsOnOneLogin())
-	if resp := b.serve(Request{Op: "register", Agent: "vagent-analyst", Tools: []string{"FileRead"}}, 501); !resp.OK {
+	if resp := b.serve(Request{Op: "register", Agent: "vagent-analyst", Catalog: map[string]string{"FileRead": "pure"}}, 501); !resp.OK {
 		t.Fatalf("register: %+v", resp)
 	}
 
@@ -358,7 +358,7 @@ func TestRefusalAlternativesAreFilteredToTheCatalogue(t *testing.T) {
   {"id": "write", "tool": "FileWrite", "action": "allow"},
   {"id": "shell", "tool": "Execute", "action": "deny", "reason": "no shell"}
 ]}`, twoAgentsOnOneLogin())
-	if resp := b.serve(Request{Op: "register", Agent: "vagent-analyst", Tools: []string{"FileRead", "Execute"}}, 501); !resp.OK {
+	if resp := b.serve(Request{Op: "register", Agent: "vagent-analyst", Catalog: map[string]string{"FileRead": "pure", "Execute": "irreversible"}}, 501); !resp.OK {
 		t.Fatalf("register: %+v", resp)
 	}
 	resp := decide(t, b, 501, "vagent-analyst", "Execute")
@@ -398,7 +398,7 @@ func TestServeLoopDrainsOnClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	if err := json.NewEncoder(conn).Encode(Request{Op: "register", Agent: "vagent-analyst", Tools: []string{"FileRead"}}); err != nil {
+	if err := json.NewEncoder(conn).Encode(Request{Op: "register", Agent: "vagent-analyst", Catalog: map[string]string{"FileRead": "pure"}}); err != nil {
 		t.Fatal(err)
 	}
 	var resp Response
@@ -472,5 +472,131 @@ func TestStateDirectoryInsideTheRuntimeRootIsRefused(t *testing.T) {
 	}
 	if same, err := isWithin("/var/lib/gaapd", "/var/lib/gaap"); err != nil || same {
 		t.Fatalf("a sibling directory was judged inside the runtime root: %v %v", same, err)
+	}
+}
+
+// The class is the caller's claim about its own tools, and it is what makes the ledger's
+// reversibility mean something over the socket: without it every row says "irreversible"
+// because the kernel cannot see the workload's tool surface.
+func TestTheLedgerRecordsTheClassTheAgentClaimed(t *testing.T) {
+	b := testBroker(t, `{"version": 1, "rules": [
+  {"id": "read", "tool": "FileRead", "action": "allow"},
+  {"id": "exec", "tool": "Execute", "action": "allow"}
+]}`, twoAgentsOnOneLogin())
+	if r := b.serve(Request{Op: "register", Agent: "vagent-analyst",
+		Catalog: map[string]string{"FileRead": "pure", "Execute": "irreversible"}}, 501); !r.OK {
+		t.Fatalf("register: %+v", r)
+	}
+
+	for _, tc := range []struct {
+		tool string
+		want platform.Reversibility
+	}{
+		{"FileRead", platform.Pure},
+		{"Execute", platform.Irreversible},
+	} {
+		decide(t, b, 501, "vagent-analyst", tc.tool)
+		entries := b.ledger.Entries()
+		last := entries[len(entries)-1]
+		if last.Tool != tc.tool || last.Reversibility != tc.want {
+			t.Fatalf("%s recorded as %q, want %q", tc.tool, last.Reversibility, tc.want)
+		}
+	}
+}
+
+// One tool name, two classes, is two answers to "can this be undone". Whichever agent
+// registered last would otherwise decide what the ledger claims about both.
+func TestAClassConflictBetweenAgentsIsRefused(t *testing.T) {
+	b := testBroker(t, allowRead, twoAgentsOnOneLogin())
+	if r := b.serve(Request{Op: "register", Agent: "vagent-analyst",
+		Catalog: map[string]string{"FileRead": "pure"}}, 501); !r.OK {
+		t.Fatalf("first register: %+v", r)
+	}
+	r := b.serve(Request{Op: "register", Agent: "vagent-worker",
+		Catalog: map[string]string{"FileRead": "irreversible"}}, 501)
+	if r.OK {
+		t.Fatal("the conflicting class was accepted")
+	}
+	for _, want := range []string{"vagent-analyst", "vagent-worker", "two classes"} {
+		if !strings.Contains(r.Error, want) {
+			t.Fatalf("error %q does not name %q", r.Error, want)
+		}
+	}
+	// The first claim still stands: a refused second claim must not silently replace it.
+	if got := b.classifyFor("FileRead"); got != platform.Pure {
+		t.Fatalf("class after the conflict = %s, want the original pure", got)
+	}
+}
+
+// Reversible and compensable are reserved: no snapshot or compensation mechanism exists, so a
+// workload claiming one would be writing an inverse the runtime cannot back into the audit trail.
+func TestReservedClassesAreRefused(t *testing.T) {
+	b := testBroker(t, allowRead, twoAgentsOnOneLogin())
+	for _, class := range []string{"reversible", "compensable"} {
+		r := b.serve(Request{Op: "register", Agent: "vagent-analyst",
+			Catalog: map[string]string{"FileWrite": class}}, 501)
+		if r.OK {
+			t.Fatalf("%s was accepted", class)
+		}
+		if !strings.Contains(r.Error, "reserved") {
+			t.Fatalf("error for %s = %q", class, r.Error)
+		}
+	}
+	r := b.serve(Request{Op: "register", Agent: "vagent-analyst",
+		Catalog: map[string]string{"FileWrite": "harmless"}}, 501)
+	if r.OK {
+		t.Fatal("an invented class was accepted")
+	}
+}
+
+// A gate ticket over the socket: the caller asks, the broker mints from the key beside
+// kill.json, and the token only covers the observation and resource it named.
+func TestATicketIsMintedOverTheSocket(t *testing.T) {
+	b := testBroker(t, `{"version": 1, "rules": [
+  {"id": "read", "tool": "FileRead", "action": "allow"},
+  {"id": "exec", "tool": "Execute", "action": "allow"}
+]}`, twoAgentsOnOneLogin())
+	if r := b.serve(Request{Op: "register", Agent: "vagent-analyst",
+		Catalog: map[string]string{"FileRead": "pure", "Execute": "irreversible"}}, 501); !r.OK {
+		t.Fatalf("register: %+v", r)
+	}
+
+	resp := b.serve(Request{Op: "decide", Agent: "vagent-analyst", Tool: "FileRead",
+		Args:   map[string]any{"path": "/etc/hosts"},
+		Ticket: &TicketAsk{EntryID: "obs-1", Resource: "memory://obs-1"}}, 501)
+	if resp.Decision == nil || resp.Decision.Action != platform.ActionAllow {
+		t.Fatalf("decide: %+v", resp.Decision)
+	}
+	if resp.Decision.Ticket == "" {
+		t.Fatal("no ticket in the response")
+	}
+	key, err := platform.LoadTicketKey(b.ticketPath)
+	if err != nil {
+		t.Fatalf("ticket key: %v", err)
+	}
+	if _, err := key.Verify(resp.Decision.Ticket, "obs-1", "vagent-analyst", "memory://obs-1"); err != nil {
+		t.Fatalf("the minted ticket does not verify: %v", err)
+	}
+	// Bound to what it named: a different observation is not covered.
+	if _, err := key.Verify(resp.Decision.Ticket, "obs-2", "vagent-analyst", "memory://obs-1"); err == nil {
+		t.Fatal("the ticket verified for an observation it did not name")
+	}
+
+	// Only a pure read leaves an observation to attest.
+	exec := b.serve(Request{Op: "decide", Agent: "vagent-analyst", Tool: "Execute",
+		Args:   map[string]any{},
+		Ticket: &TicketAsk{EntryID: "obs-3", Resource: "memory://obs-3"}}, 501)
+	if exec.Decision == nil || exec.Decision.Action != platform.ActionDeny {
+		t.Fatalf("a ticket for an irreversible tool was served: %+v", exec.Decision)
+	}
+	if !strings.Contains(exec.Decision.Reason, "pure") {
+		t.Fatalf("reason = %q", exec.Decision.Reason)
+	}
+
+	// An unnamed resource is refused rather than attested for anything.
+	r := b.serve(Request{Op: "decide", Agent: "vagent-analyst", Tool: "FileRead",
+		Args: map[string]any{}, Ticket: &TicketAsk{EntryID: "obs-4"}}, 501)
+	if r.OK {
+		t.Fatal("a ticket with no resource was served")
 	}
 }
