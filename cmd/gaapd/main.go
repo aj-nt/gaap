@@ -21,6 +21,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -41,6 +43,8 @@ type Request struct {
 	Args  map[string]any `json:"args,omitempty"`
 	// Floor is what the caller knows about its own justification and the broker cannot see.
 	Floor string `json:"floor,omitempty"`
+	// Tools is what a register request reports: the tool names this agent actually exposes.
+	Tools []string `json:"tools,omitempty"`
 	// RunID and Parents are the caller's story about where this call came from. They are
 	// attribution, not identity, and the ledger records them as the caller's claim.
 	RunID   string `json:"run_id,omitempty"`
@@ -55,6 +59,11 @@ type Response struct {
 	// know whether it can rely on this broker must be able to ask without leaving a decision
 	// in the ledger it is asking about.
 	Status *Status `json:"status,omitempty"`
+	// Tools and UnknownPolicyTools answer a register: how many names the agent reported, and
+	// which the policy uses that this agent does not have. That list is the typo detector —
+	// without it the mistake surfaces as an agent flailing through refusals.
+	Tools              int      `json:"tools,omitempty"`
+	UnknownPolicyTools []string `json:"unknown_policy_tools,omitempty"`
 	// Revision names the policy that produced this decision. A caller that logs only the
 	// verdict cannot tell "the rule I wrote refuses this" from "the rule I replaced an hour
 	// ago refuses this".
@@ -64,9 +73,10 @@ type Response struct {
 // Status is what the broker says about itself. Deliberately small: everything here is a fact
 // the operator cannot otherwise see without reading the state directory.
 type Status struct {
-	PolicyPath string `json:"policy_path"`
-	Principals int    `json:"principals"`
-	Started    string `json:"started"`
+	PolicyPath string   `json:"policy_path"`
+	Principals int      `json:"principals"`
+	Agents     []string `json:"agents,omitempty"`
+	Started    string   `json:"started"`
 }
 
 // grantsFile is the principals half of the memory grant file, so one file configures identity
@@ -112,6 +122,11 @@ type broker struct {
 	stamp      policyStamp
 	stateDir   string
 	started    time.Time
+	// catalogues is what each agent said about its own tools, by agent id. An absent entry
+	// means "not known", which must behave like no catalogue at all rather than like an
+	// empty one — an empty catalogue would refuse every call.
+	catalogues map[string][]string
+	verbose    bool
 }
 
 func newBroker(cfg config) (*broker, error) {
@@ -184,7 +199,9 @@ func newBroker(cfg config) (*broker, error) {
 		policyPath: cfg.PolicyPath,
 		stateDir:   cfg.StateDir,
 		started:    time.Now().UTC(),
+		catalogues: make(map[string][]string),
 	}
+	gov.Catalogue = b.catalogueFor
 	if fi, err := os.Stat(cfg.PolicyPath); err == nil {
 		b.stamp = policyStamp{size: fi.Size(), mod: fi.ModTime()}
 	}
@@ -224,8 +241,8 @@ func loadGrants(path string) (principal.Grants, error) {
 
 // serve answers one request from a peer whose uid the transport established.
 func (b *broker) serve(req Request, uid uint32) Response {
-	if req.Op != "decide" && req.Op != "status" {
-		return Response{Error: fmt.Sprintf("unknown op %q (want \"decide\" or \"status\")", req.Op)}
+	if req.Op != "decide" && req.Op != "status" && req.Op != "register" {
+		return Response{Error: fmt.Sprintf("unknown op %q (want \"decide\", \"status\" or \"register\")", req.Op)}
 	}
 	if req.Op == "decide" && req.Tool == "" {
 		return Response{Error: "decide requires tool"}
@@ -253,12 +270,44 @@ func (b *broker) serve(req Request, uid uint32) Response {
 	defer b.mu.Unlock()
 	b.reloadLocked()
 
-	if req.Op == "status" {
+	switch req.Op {
+	case "status":
+		if b.verbose {
+			log.Printf("gaapd: uid=%d agent=%s status", uid, agent)
+		}
 		return Response{OK: true, Revision: b.gov.Policy.Revision(), Status: &Status{
 			PolicyPath: b.policyPath,
 			Principals: len(b.grants),
+			Agents:     b.agentNamesLocked(),
 			Started:    b.started.Format(time.RFC3339),
 		}}
+	case "register":
+		if len(req.Tools) == 0 {
+			return Response{Error: "register requires the tool names this agent exposes"}
+		}
+		b.catalogues[agent] = append([]string(nil), req.Tools...)
+		unknown := b.policyToolsNotInLocked(req.Tools)
+		if b.verbose || len(unknown) > 0 {
+			log.Printf("gaapd: %s registered %d tools; policy names %d it does not have %v",
+				agent, len(req.Tools), len(unknown), unknown)
+		}
+		return Response{OK: true, Revision: b.gov.Policy.Revision(),
+			Tools: len(req.Tools), UnknownPolicyTools: unknown}
+	}
+
+	// A tool the agent did not register is incoherent before it is policy: refusing here means
+	// the record says "asked for a tool it does not have" instead of a rule that would have
+	// allowed it if only the name had been right.
+	if cat, known := b.catalogues[agent]; known {
+		if !slices.Contains(cat, req.Tool) {
+			d := b.gov.Refuse(agent, req.Tool, req.Args, "broker:unknown-tool",
+				fmt.Sprintf("this agent registered no tool named %q, so the policy was not consulted; its tools are: %s",
+					req.Tool, strings.Join(sortedCopy(cat), ", ")))
+			if b.verbose {
+				log.Printf("gaapd: uid=%d agent=%s tool=%s -> deny (unknown tool)", uid, agent, req.Tool)
+			}
+			return Response{OK: true, Decision: &d, Revision: b.gov.Policy.Revision()}
+		}
 	}
 
 	var opts []platform.DecideOpt
@@ -276,7 +325,42 @@ func (b *broker) serve(req Request, uid uint32) Response {
 		opts = append(opts, platform.WithParents(strings.Split(req.Parents, ",")...))
 	}
 	d := b.gov.Decide(agent, req.Tool, req.Args, opts...)
+	if b.verbose {
+		log.Printf("gaapd: uid=%d agent=%s tool=%s -> %s", uid, agent, req.Tool, d.Action)
+	}
 	return Response{OK: true, Decision: &d, Revision: b.gov.Policy.Revision()}
+}
+
+// catalogueFor reports an agent's registered tools to the governor, so a refusal can narrow
+// its "permitted alternatives" to names the agent can actually call. Called under b.mu.
+func (b *broker) catalogueFor(agentID string) []string { return b.catalogues[agentID] }
+
+func (b *broker) policyToolsNotInLocked(tools []string) []string {
+	has := make(map[string]struct{}, len(tools))
+	for _, t := range tools {
+		has[t] = struct{}{}
+	}
+	var out []string
+	for _, name := range b.gov.Policy.Tools() {
+		if _, ok := has[name]; !ok {
+			out = append(out, name)
+		}
+	}
+	return sortedCopy(out)
+}
+
+func (b *broker) agentNamesLocked() []string {
+	out := make([]string, 0, len(b.catalogues))
+	for name := range b.catalogues {
+		out = append(out, name)
+	}
+	return sortedCopy(out)
+}
+
+func sortedCopy(in []string) []string {
+	out := append([]string(nil), in...)
+	sort.Strings(out)
+	return out
 }
 
 // reloadLocked swaps in a new policy when the file changed, and keeps the last good one when
@@ -322,7 +406,7 @@ func listen(path string) (net.Listener, error) {
 	return ln, nil
 }
 
-func (b *broker) handle(conn net.Conn, verbose bool) {
+func (b *broker) handle(conn net.Conn) {
 	defer func() { _ = conn.Close() }()
 	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
 
@@ -336,15 +420,7 @@ func (b *broker) handle(conn net.Conn, verbose bool) {
 		b.reply(conn, Response{Error: "cannot identify the peer: " + err.Error()})
 		return
 	}
-	resp := b.serve(req, uid)
-	if verbose {
-		outcome := "refused"
-		if resp.OK && resp.Decision != nil {
-			outcome = string(resp.Decision.Action)
-		}
-		log.Printf("gaapd: uid=%d agent=%s tool=%s -> %s", uid, strings.Join(b.grants[int(uid)], ","), req.Tool, outcome)
-	}
-	b.reply(conn, resp)
+	b.reply(conn, b.serve(req, uid))
 }
 
 func (b *broker) reply(conn net.Conn, r Response) {
@@ -385,6 +461,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("gaapd: %v", err)
 	}
+	b.verbose = *verbose
 	defer func() { _ = b.Close() }()
 
 	ln, err := listen(cfg.Socket)
@@ -402,6 +479,6 @@ func main() {
 			log.Printf("gaapd: accept: %v", err)
 			continue
 		}
-		go b.handle(conn, *verbose)
+		go b.handle(conn)
 	}
 }

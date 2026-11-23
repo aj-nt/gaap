@@ -90,6 +90,26 @@ func NewPolicyEngine() *PolicyEngine {
 	return &PolicyEngine{}
 }
 
+// Tools returns every tool name the policy mentions, for checking against a catalogue. The
+// wildcard is not a name, so it is not returned: there is nothing to check it against.
+func (e *PolicyEngine) Tools() []string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	seen := make(map[string]struct{}, len(e.rules))
+	for _, r := range e.rules {
+		if r.Tool == "" || r.Tool == "*" {
+			continue
+		}
+		seen[r.Tool] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for name := range seen {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // AddRule appends a rule. Rules are evaluated in insertion order; the first
 // match wins.
 func (e *PolicyEngine) AddRule(r Rule) {
