@@ -92,14 +92,13 @@ func (s *Store) Append(e Entry) error {
 			return fmt.Errorf("memstore: root %s: %w", e.ID, err)
 		}
 	} else {
-		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(e.Parents)), ",")
 		args := make([]any, 0, len(e.Parents)+1)
 		args = append(args, e.ID)
 		for _, p := range e.Parents {
 			args = append(args, p)
 		}
 		if _, err := tx.Exec(`INSERT OR IGNORE INTO gov_root(entry_id, root_id)
-			SELECT ?, root_id FROM gov_root WHERE entry_id IN (`+placeholders+`)`, args...); err != nil {
+			SELECT ?, root_id FROM gov_root WHERE entry_id IN (`+placeholders(len(e.Parents))+`)`, args...); err != nil {
 			return fmt.Errorf("memstore: inherit roots of %s: %w", e.ID, err)
 		}
 		// No fallback to the parent's own id here. Treating a lineage hole as an origin
