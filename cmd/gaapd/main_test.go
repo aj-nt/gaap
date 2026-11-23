@@ -694,3 +694,38 @@ func TestSearchIsAReadOfTheStore(t *testing.T) {
 		t.Fatalf("search returned %+v", r.Entries)
 	}
 }
+
+// A refused register must leave no trace.
+//
+// Validation and mutation were one pass, so whatever the loop had already walked was written
+// into the fleet's class map before a later tool in the same request was refused. That map is
+// shared by every agent on the socket, so a rejected request could claim a class on a tool
+// nobody registered — and then refuse the agent that legitimately would, with an error naming
+// two agents that never both claimed anything.
+//
+// Map iteration order decides whether the mutation is observed, so one pass can miss it by
+// luck. Repeat until the order that hides the defect is no longer plausible.
+func TestARefusedRegisterLeavesNoTrace(t *testing.T) {
+	for i := 0; i < 32; i++ {
+		b := testBroker(t, allowRead, twoAgentsOnOneLogin())
+		if r := b.serve(Request{Op: "register", Agent: "vagent-analyst",
+			Catalog: map[string]string{"FileRead": "pure"}}, 501); !r.OK {
+			t.Fatalf("analyst register: %+v", r)
+		}
+
+		// One tool the worker may claim, one that conflicts with the analyst's.
+		r := b.serve(Request{Op: "register", Agent: "vagent-worker",
+			Catalog: map[string]string{"CodeRead": "pure", "FileRead": "irreversible"}}, 501)
+		if r.OK {
+			t.Fatal("the conflicting class was accepted")
+		}
+
+		// CodeRead is the analyst's to claim: it never asked for it, and the request that
+		// mentioned it was refused. If the refusal left it behind, this is a conflict.
+		r = b.serve(Request{Op: "register", Agent: "vagent-analyst",
+			Catalog: map[string]string{"CodeRead": "irreversible"}}, 501)
+		if !r.OK {
+			t.Fatalf("iteration %d: a refused register claimed CodeRead: %s", i, r.Error)
+		}
+	}
+}
