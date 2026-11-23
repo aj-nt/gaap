@@ -373,7 +373,10 @@ func TestRefusalAlternativesAreFilteredToTheCatalogue(t *testing.T) {
 // The stop path: a listener that closes drains what is running and returns, so a supervisor's
 // SIGTERM cannot cut a decision in half after its row is already in the ledger.
 func TestServeLoopDrainsOnClose(t *testing.T) {
-	b := testBroker(t, allowRead, twoAgentsOnOneLogin())
+	// The transport attests the uid the test runs as, so the grant has to name it: a synthetic
+	// 501 passes on this machine and fails on any CI runner that is not uid 501.
+	me := uint32(os.Getuid())
+	b := testBroker(t, allowRead, principal.Grants{int(me): {"vagent-analyst", "vagent-worker"}})
 	dir, err := os.MkdirTemp("", "gaapd")
 	if err != nil {
 		t.Fatal(err)
