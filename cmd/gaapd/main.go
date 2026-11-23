@@ -471,11 +471,24 @@ const (
 
 func main() { os.Exit(run(os.Args[1:])) }
 
+// isWithin reports whether path is root or sits under it.
+func isWithin(path, root string) (bool, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return false, err
+	}
+	rel, err := filepath.Rel(root, abs)
+	if err != nil {
+		return false, err
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))), nil
+}
+
 func run(args []string) int {
 	fs := flag.NewFlagSet("gaapd", flag.ContinueOnError)
 	var (
 		socketPath = fs.String("socket", "", "unix socket (default <state>/govern.sock)")
-		stateDir   = fs.String("state", "/var/lib/gaap", "state directory: ledger, keys, kill switch, denials")
+		stateDir   = fs.String("state", "/var/lib/gaapd", "state directory: ledger, keys, policy, grants (never the workload runtime's data root)")
 		policyPath = fs.String("policy", "", "policy file (default <state>/policy.json)")
 		grantsPath = fs.String("grants", "", "grant file with principals (default <state>/memory-grants.json)")
 		socketMode = fs.Uint("socket-mode", 0o666, "permissions on the unix socket (an install that uses a group wants 0660)")
@@ -505,6 +518,15 @@ func run(args []string) int {
 	}
 	if cfg.GrantsPath == "" {
 		cfg.GrantsPath = filepath.Join(cfg.StateDir, "memory-grants.json")
+	}
+
+	// The policy file this daemon hot-reloads must not live where the governed workloads can
+	// write. /var/lib/gaap is the dedicated dockerd data root (and /var/lib/gaap/ws/<agent> is
+	// an agent's workspace): a broker whose rules sit there can have its rules rewritten by the
+	// thing it is judging. Found by deploying next to a real worker, not by reasoning.
+	if same, err := isWithin(cfg.StateDir, "/var/lib/gaap"); err == nil && same {
+		log.Printf("gaapd: %s is the workload runtime's data root; the broker needs its own state directory (e.g. /var/lib/gaapd)", cfg.StateDir)
+		return exitConfig
 	}
 
 	b, err := newBroker(cfg)

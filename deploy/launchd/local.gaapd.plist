@@ -24,9 +24,9 @@
 	<array>
 		<string>/usr/local/bin/gaapd</string>
 		<string>-state</string>
-		<string>/Users/aj/.gaap</string>
+		<string>/Users/aj/.gaapd</string>
 		<string>-socket</string>
-		<string>/Users/aj/.gaap/govern.sock</string>
+		<string>/Users/aj/.gaapd/govern.sock</string>
 		<string>-socket-mode</string>
 		<string>0600</string>
 		<string>-v</string>
@@ -42,8 +42,8 @@
 	<key>ProcessType</key>
 	<string>Background</string>
 	<key>StandardOutPath</key>
-	<string>/Users/aj/.gaap/gaapd.log</string>
+	<string>/Users/aj/.gaapd/gaapd.log</string>
 	<key>StandardErrorPath</key>
-	<string>/Users/aj/.gaap/gaapd.log</string>
+	<string>/Users/aj/.gaapd/gaapd.log</string>
 </dict>
 </plist>

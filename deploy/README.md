@@ -3,6 +3,20 @@
 The broker is a single process with a unix socket and a state directory. One job, no
 dependencies: no database, no network, no tool execution.
 
+## Where the state lives, and why not `/var/lib/gaap`
+
+`/var/lib/gaap` is the dedicated dockerd data root on a host that runs containerized agents
+(`platform.DockerEnforcer`; `/var/lib/gaap/ws/<agent-id>` is an agent's workspace). A broker
+whose policy file sat there would let the governed workloads rewrite the rules that judge them,
+so:
+
+| thing | path | account |
+|---|---|---|
+| workload container runtime | `/var/lib/gaap`, `/run/gaap.sock` | `gaap` |
+| **decision broker** | `/var/lib/gaapd`, `/run/gaapd/govern.sock` | `gaapd` |
+
+`gaapd` refuses to start if `-state` resolves inside `/var/lib/gaap`.
+
 ## What lives in the state directory
 
 | file | what | if it goes missing |
@@ -21,12 +35,12 @@ Back up `keys.json` with the ledger or neither is worth much.
 ```sh
 sudo install -m 0755 gaapd /usr/local/bin/gaapd
 sudo install -m 0644 deploy/systemd/gaapd.service /etc/systemd/system/
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin gaap
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin gaapd
 sudo systemctl daemon-reload && sudo systemctl enable --now gaapd
 ```
 
-`StateDirectory=gaap` creates `/var/lib/gaap` owned by `gaap` at 0700; put `policy.json` and
-`memory-grants.json` there, readable by that account. The socket is `/run/gaap/govern.sock` at
+`StateDirectory=gaapd` creates `/var/lib/gaapd` owned by `gaapd` at 0700; put `policy.json` and
+`memory-grants.json` there, readable by that account. The socket is `/run/gaapd/govern.sock` at
 0660 `gaap:gaap`, so a client must be in the `gaap` group.
 
 Verify:
@@ -36,7 +50,7 @@ systemctl is-active gaapd
 journalctl -u gaapd -n 5 --no-pager
 python3 - <<'PY'
 import json, socket
-s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.connect('/run/gaap/govern.sock')
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.connect('/run/gaapd/govern.sock')
 s.sendall(json.dumps({"op": "status"}).encode()); s.shutdown(socket.SHUT_WR)
 print(s.recv(65536).decode())
 PY
@@ -53,7 +67,7 @@ expand `~`: replace `/Users/aj` if this is not that host.
 
 ```sh
 sudo install -m 0755 gaapd /usr/local/bin/gaapd
-mkdir -p ~/.gaap && cp policy.json memory-grants.json ~/.gaap/
+mkdir -p ~/.gaapd && cp policy.json memory-grants.json ~/.gaapd/
 cp deploy/launchd/local.gaapd.plist ~/Library/LaunchAgents/
 ```
 

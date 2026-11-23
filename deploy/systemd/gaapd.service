@@ -14,8 +14,8 @@ After=local-fs.target
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/gaapd \
-    -state /var/lib/gaap \
-    -socket /run/gaap/govern.sock \
+    -state /var/lib/gaapd \
+    -socket /run/gaapd/govern.sock \
     -socket-mode 0660 \
     -v
 Restart=on-failure
@@ -27,13 +27,15 @@ RestartSec=2s
 # unit retried every 2s; with it, the unit stops and the journal has one message.
 RestartPreventExitStatus=78
 
-# A dedicated account, because the identity the broker attests is a uid: if agents and the
-# broker shared one, the grants file could not tell a caller from the service itself.
-User=gaap
-Group=gaap
-StateDirectory=gaap
+# gaapd, not gaap. On a host that runs containerized workloads `gaap` is the account that owns
+# the dedicated dockerd data root (/var/lib/gaap) and the agents' workspaces: putting the broker
+# on it would make the governed thing own the governance, and its state would live beside the
+# policy it is meant to judge.
+User=gaapd
+Group=gaapd
+StateDirectory=gaapd
 StateDirectoryMode=0700
-RuntimeDirectory=gaap
+RuntimeDirectory=gaapd
 RuntimeDirectoryMode=0750
 UMask=0077
 

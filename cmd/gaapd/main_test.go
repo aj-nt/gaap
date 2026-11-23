@@ -460,3 +460,17 @@ func TestBadFlagIsAUsageError(t *testing.T) {
 		t.Fatalf("-h exit code = %d, want 0", code)
 	}
 }
+
+// The broker's rules must not live where the workloads it judges can write them. /var/lib/gaap
+// is the container runtime's data root, so a state directory inside it is a policy file the
+// governed party owns.
+func TestStateDirectoryInsideTheRuntimeRootIsRefused(t *testing.T) {
+	for _, dir := range []string{"/var/lib/gaap", "/var/lib/gaap/state", "/var/lib/gaap/ws/agent"} {
+		if code := run([]string{"-state", dir, "-socket", filepath.Join(os.TempDir(), "x.sock")}); code != exitConfig {
+			t.Fatalf("%s: exit code = %d, want EX_CONFIG", dir, code)
+		}
+	}
+	if same, err := isWithin("/var/lib/gaapd", "/var/lib/gaap"); err != nil || same {
+		t.Fatalf("a sibling directory was judged inside the runtime root: %v %v", same, err)
+	}
+}
