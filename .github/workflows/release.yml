@@ -27,6 +27,10 @@ jobs:
         working-directory: platform
         run: go test -race -timeout 120s -count=1 ./...
 
+      - name: Protocol module build (separate module)
+        working-directory: protocol
+        run: go build ./... && go vet ./...
+
   release:
     name: Release
     runs-on: ubuntu-latest

@@ -9,3 +9,10 @@
 module github.com/aj-nt/gaap/platform
 
 go 1.27.2
+
+require github.com/aj-nt/gaap/protocol v0.1.0
+
+// Monorepo development: the two modules are built together until protocol is tagged.
+// A replace in a dependency is ignored by its consumers, so this does not travel to
+// vagent or anyone else — they resolve the tag.
+replace github.com/aj-nt/gaap/protocol => ../protocol

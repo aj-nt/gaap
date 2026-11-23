@@ -1,4 +1,4 @@
-package platform
+package protocol
 
 // Action is the deterministic outcome of a policy evaluation.
 type Action string

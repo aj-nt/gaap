@@ -47,6 +47,13 @@ jobs:
         working-directory: platform
         run: go vet ./...
 
+      # Same reason as the kernel: `./...` at the root does not reach a nested module.
+      # The protocol module is types and constants, so this proves it compiles and is
+      # vetted — which is the whole guarantee such a module can offer.
+      - name: Protocol module build and vet
+        working-directory: protocol
+        run: go build ./... && go vet ./...
+
   # ── Lint ──
   lint:
     name: Lint
@@ -73,6 +80,14 @@ jobs:
           install-mode: "binary"
           args: --timeout=5m
           working-directory: platform
+
+      - name: golangci-lint (protocol module)
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.15.0
+          install-mode: "binary"
+          args: --timeout=5m
+          working-directory: protocol
 
   # ── Security scan ──
   security:

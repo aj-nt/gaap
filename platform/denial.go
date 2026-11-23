@@ -7,29 +7,6 @@ import (
 	"strings"
 )
 
-// DenialClass is the structured shape of a refusal: what was forbidden, what the
-// standing orders do permit, and how to look the decision up.
-//
-// It exists because the raw reason is written for the operator, not for the
-// agent. An agent told "no rule allows Execute" learns nothing about whether it
-// hit a policy it could appeal, a target's defence it should route around, or a
-// typo. The reframe answers the first question and refuses to guess at the third.
-type DenialClass struct {
-	// Rule names the standing order. It is recorded and never rendered: an id
-	// like "no-destructive-shell" is a threshold in prose.
-	Rule string
-	// ActionClass is what the call was for, not what it was called.
-	ActionClass ActionClass
-	// Forbidden is the tool name that was refused.
-	Forbidden string
-	// Permitted lists tool names these standing orders do allow. Sorted, so the
-	// text is stable across runs and diffable in a report.
-	Permitted []string
-	// CorrelationID ties what the agent was shown to the row an operator can
-	// read. Without it "the governor refused me" is unanswerable.
-	CorrelationID string
-}
-
 // NewCorrelationID returns a short random handle. 8 bytes is enough to join a
 // message to a ledger row and short enough to quote in a prompt.
 func NewCorrelationID() string {
