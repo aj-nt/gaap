@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -26,6 +27,12 @@ var ErrInsufficientRoots = errors.New("memstore: promotion needs at least two di
 // ErrTicketReused is returned when a ticket was already consumed.
 var ErrTicketReused = errors.New("memstore: ticket already consumed")
 
+// provenance is one entry's immutably-recorded class and the class a reader may rely on.
+type provenance struct {
+	own       string
+	effective string
+}
+
 // EffectiveTaint returns the provenance a reader may rely on for an entry.
 //
 // Computed on every read, never stored. A stored effective taint is a value that can
@@ -35,83 +42,173 @@ var ErrTicketReused = errors.New("memstore: ticket already consumed")
 // own is this row's immutably-recorded class; effective is the worst along the path
 // that produced it.
 func (s *Store) EffectiveTaint(id string) (own, effective string, err error) {
-	rows, err := s.db.QueryContext(context.Background(), `WITH RECURSIVE anc(node, depth) AS (
-			SELECT ?, 0
-			UNION
-			SELECT e.parent_id, anc.depth + 1
-			FROM gov_edge e JOIN anc ON e.child_id = anc.node
-			WHERE anc.depth < ?
-		)
-		SELECT e.id, e.taint_own FROM gov_entry e JOIN anc ON e.id = anc.node`,
-		id, MaxDepth)
+	resolved, err := s.provenanceOf([]string{id})
 	if err != nil {
 		return "", "", err
 	}
-	defer func() { _ = rows.Close() }()
+	p, ok := resolved[id]
+	if !ok {
+		return "", "", ErrUnreachable
+	}
+	return p.own, p.effective, nil
+}
 
-	found := false
-	worst := 99
+// provenanceOf resolves a whole set in three queries, whatever the set's size.
+//
+// The block that goes into every prompt needs the class of every candidate, and walking
+// the lineage once per row made the cost of building a prompt grow with the size of
+// memory rather than with what was in it. One closure for the set, one promotion lookup,
+// one live root count.
+//
+// The rule lives here and only here: effective is the worst class in the chain, raised to
+// fact where two independent roots are vouched for. Batched and single-entry resolution
+// share this code so they cannot drift — a second copy of "what does the lineage say" is
+// a second answer to the question that decides what reaches the prompt.
+func (s *Store) provenanceOf(ids []string) (map[string]provenance, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]provenance, len(ids))
+	worst := make(map[string]int, len(ids))
+
+	args := make([]any, 0, len(ids)+1)
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	args = append(args, MaxDepth)
+	rows, err := s.db.QueryContext(context.Background(), `WITH RECURSIVE anc(node, depth, start) AS (
+			SELECT e.id, 0, e.id FROM gov_entry e WHERE e.id IN (`+placeholders(len(ids))+`)
+			UNION
+			SELECT p.parent_id, anc.depth + 1, anc.start
+			FROM gov_edge p JOIN anc ON p.child_id = anc.node
+			WHERE anc.depth < ?
+		)
+		SELECT anc.start, anc.node, e.taint_own
+		FROM anc JOIN gov_entry e ON e.id = anc.node`,
+		args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
-		var nodeID, taint string
-		if err := rows.Scan(&nodeID, &taint); err != nil {
-			return "", "", err
+		var start, node, taint string
+		if err := rows.Scan(&start, &node, &taint); err != nil {
+			return nil, err
 		}
-		if nodeID == id {
-			own = taint
-			found = true
+		p := out[start]
+		if node == start {
+			p.own = taint
 		}
-		if r, ok := taintRank[taint]; ok && r < worst {
-			worst = r
+		out[start] = p
+		if r, ok := taintRank[taint]; ok {
+			if cur, seen := worst[start]; !seen || r < cur {
+				worst[start] = r
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return "", "", err
+		return nil, err
 	}
-	if !found {
-		return "", "", ErrUnreachable
+	for id, r := range worst {
+		p := out[id]
+		p.effective = classOfRank(r)
+		out[id] = p
 	}
-	effective = TaintExternal
-	for cls, r := range taintRank {
-		if r == worst {
-			effective = cls
-		}
+	if err := s.applyPromotions(out); err != nil {
+		return nil, err
 	}
-
-	// A promotion can raise the effective class, and only above the lineage's floor:
-	// two independent roots agreeing is evidence the single chain did not have.
-	promoted, err := s.promotedRoots(id)
-	if err != nil {
-		return "", "", err
-	}
-	if promoted >= 2 && taintRank[effective] < taintRank[TaintFact] {
-		effective = TaintFact
-	}
-	return own, effective, nil
+	return out, nil
 }
 
-// promotedRoots returns the distinct-root count recorded for a promotion, or 0.
+// applyPromotions raises a resolved class to fact where a voucher and two independent roots
+// agree.
 //
-// The count is re-validated against the live lineage rather than trusted from the
+// The recorded count is re-validated against the live lineage rather than trusted from the
 // promotion row: the row records what was true when it was written, and the lineage is
-// append-only, so a live count can only be equal or larger. Trusting the column would
-// mean a corrupted row could assert a promotion the graph does not support.
-func (s *Store) promotedRoots(id string) (int, error) {
-	var recorded int
-	err := s.db.QueryRow(`SELECT distinct_roots FROM gov_promotion WHERE entry_id = ?`, id).Scan(&recorded)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, nil
+// append-only, so a live count can only be equal or larger. Trusting the column would mean
+// a corrupted row could assert a promotion the graph does not support.
+func (s *Store) applyPromotions(resolved map[string]provenance) error {
+	if len(resolved) == 0 {
+		return nil
 	}
+	ids := make([]any, 0, len(resolved))
+	for id := range resolved {
+		ids = append(ids, id)
+	}
+	in := placeholders(len(ids))
+
+	recorded := make(map[string]int, len(resolved))
+	rows, err := s.db.Query(`SELECT entry_id, distinct_roots FROM gov_promotion WHERE entry_id IN (`+in+`)`, ids...)
 	if err != nil {
-		return 0, err
+		return err
 	}
-	live, err := s.distinctRoots(id)
+	for rows.Next() {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		recorded[id] = n
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(recorded) == 0 {
+		return nil
+	}
+
+	live := make(map[string]int, len(recorded))
+	liveArgs := make([]any, 0, len(recorded))
+	for id := range recorded {
+		liveArgs = append(liveArgs, id)
+	}
+	rows, err = s.db.Query(`SELECT entry_id, COUNT(DISTINCT root_id) FROM gov_root
+		WHERE entry_id IN (`+placeholders(len(liveArgs))+`) GROUP BY entry_id`, liveArgs...)
 	if err != nil {
-		return 0, err
+		return err
 	}
-	if live < recorded {
-		return live, nil
+	for rows.Next() {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		live[id] = n
 	}
-	return recorded, nil
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for id, rec := range recorded {
+		promoted := min(rec, live[id])
+		if promoted < 2 {
+			continue
+		}
+		if p := resolved[id]; taintRank[p.effective] < taintRank[TaintFact] {
+			p.effective = TaintFact
+			resolved[id] = p
+		}
+	}
+	return nil
+}
+
+// classOfRank is the inverse of taintRank. Ranks are unique, so the scan is deterministic.
+func classOfRank(rank int) string {
+	for cls, r := range taintRank {
+		if r == rank {
+			return cls
+		}
+	}
+	return TaintExternal
+}
+
+// placeholders builds "?,?,?" for an IN list. The ids are still bound as arguments.
+func placeholders(n int) string {
+	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
 }
 
 // distinctRoots counts the distinct root ids in an entry's ancestry, including itself.

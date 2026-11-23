@@ -62,23 +62,30 @@ func (s *Store) Injectable(budgetChars int) ([]InjectableEntry, error) {
 		return nil, err
 	}
 
+	// One resolution for the whole candidate set, then the budget filter. A row whose
+	// provenance cannot be resolved is not injectable: injecting it would assert a class
+	// nothing established, so it is skipped rather than assumed.
+	//
+	// A resolution that fails outright is an error, not an empty block — the caller has to
+	// distinguish "memory says nothing worth injecting" from "the store could not answer".
+	prov, err := s.provenanceOf(entryIDs(candidates))
+	if err != nil {
+		return nil, fmt.Errorf("memstore: injectable: %w", err)
+	}
 	var out []InjectableEntry
 	used := len(InjectableHeader)
 	for _, e := range candidates {
-		_, eff, err := s.EffectiveTaint(e.ID)
-		if err != nil {
-			// A row whose provenance cannot be computed is not injectable. Skipping is
-			// the only safe answer: injecting it would assert a class we could not
-			// establish.
+		p, ok := prov[e.ID]
+		if !ok {
 			continue
 		}
-		if taintRank[eff] < taintRank[TaintInternal] {
+		if taintRank[p.effective] < taintRank[TaintInternal] {
 			continue
 		}
 		if used+len(e.Body) > budgetChars {
 			continue
 		}
-		out = append(out, InjectableEntry{Entry: e, Effective: eff})
+		out = append(out, InjectableEntry{Entry: e, Effective: p.effective})
 		used += len(e.Body)
 	}
 	// Best-justified first: the block is spent top-down, so a fact must not sit below the
@@ -92,6 +99,15 @@ func (s *Store) Injectable(budgetChars int) ([]InjectableEntry, error) {
 		return taintRank[out[i].Effective] > taintRank[out[j].Effective]
 	})
 	return out, nil
+}
+
+// entryIDs is the id slice the batched resolver takes.
+func entryIDs(entries []Entry) []string {
+	ids := make([]string, len(entries))
+	for i, e := range entries {
+		ids[i] = e.ID
+	}
+	return ids
 }
 
 // RenderInjectable formats the injected block with its header. The header is not
