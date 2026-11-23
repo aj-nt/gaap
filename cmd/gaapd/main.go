@@ -23,7 +23,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -37,6 +36,12 @@ import (
 
 // Request is one question. Ops are refused by name rather than ignored, because a broker that
 // answers an unknown op with silence is indistinguishable from one that crashed.
+// TicketAsk names the observation a caller wants attested and the resource it attests.
+type TicketAsk struct {
+	EntryID  string `json:"entry_id"`
+	Resource string `json:"resource"`
+}
+
 type Request struct {
 	Op string `json:"op"`
 	// Agent is an assertion, not an identity: the broker uses it only to check that the peer
@@ -46,12 +51,17 @@ type Request struct {
 	Args  map[string]any `json:"args,omitempty"`
 	// Floor is what the caller knows about its own justification and the broker cannot see.
 	Floor string `json:"floor,omitempty"`
-	// Tools is what a register request reports: the tool names this agent actually exposes.
-	Tools []string `json:"tools,omitempty"`
+	// Catalog is what a register request reports: the tool names this agent exposes and, for
+	// each, its reversibility class. The class is the caller's claim about its own tools; the
+	// broker cannot derive it, and the kernel must not guess it.
+	Catalog map[string]string `json:"catalog,omitempty"`
 	// RunID and Parents are the caller's story about where this call came from. They are
 	// attribution, not identity, and the ledger records them as the caller's claim.
 	RunID   string `json:"run_id,omitempty"`
 	Parents string `json:"parents,omitempty"`
+	// Ticket asks for an attestation covering one observation. Only a pure read can be
+	// attested, so asking for one on anything else is refused rather than served.
+	Ticket *TicketAsk `json:"ticket,omitempty"`
 }
 
 type Response struct {
@@ -128,7 +138,15 @@ type broker struct {
 	// catalogues is what each agent said about its own tools, by agent id. An absent entry
 	// means "not known", which must behave like no catalogue at all rather than like an
 	// empty one — an empty catalogue would refuse every call.
-	catalogues map[string][]string
+	catalogues map[string]map[string]platform.Reversibility
+	// classes is the fleet-wide tool -> reversibility index built from every catalogue, and
+	// owners says who supplied each entry so a disagreement can name both agents. A tool with
+	// two classes is two answers to "can this be undone", and guessing one would put a claim
+	// in the ledger that half the fleet contradicts.
+	classes    map[string]platform.Reversibility
+	owners     map[string]string
+	tickets    *platform.TicketKey
+	ticketPath string
 	verbose    bool
 }
 
@@ -202,9 +220,13 @@ func newBroker(cfg config) (*broker, error) {
 		policyPath: cfg.PolicyPath,
 		stateDir:   cfg.StateDir,
 		started:    time.Now().UTC(),
-		catalogues: make(map[string][]string),
+		catalogues: make(map[string]map[string]platform.Reversibility),
+		classes:    make(map[string]platform.Reversibility),
+		owners:     make(map[string]string),
 	}
 	gov.Catalogue = b.catalogueFor
+	gov.Classify = b.classifyFor
+	b.ticketPath = filepath.Join(cfg.StateDir, "ticket.key")
 	if fi, err := os.Stat(cfg.PolicyPath); err == nil {
 		b.stamp = policyStamp{size: fi.Size(), mod: fi.ModTime()}
 	}
@@ -285,27 +307,51 @@ func (b *broker) serve(req Request, uid uint32) Response {
 			Started:    b.started.Format(time.RFC3339),
 		}}
 	case "register":
-		if len(req.Tools) == 0 {
-			return Response{Error: "register requires the tool names this agent exposes"}
+		if len(req.Catalog) == 0 {
+			return Response{Error: "register requires the tool names this agent exposes, with their classes"}
 		}
-		b.catalogues[agent] = append([]string(nil), req.Tools...)
-		unknown := b.policyToolsNotInLocked(req.Tools)
+		catalog := make(map[string]platform.Reversibility, len(req.Catalog))
+		for tool, class := range req.Catalog {
+			rev, err := parseReversibility(class)
+			if err != nil {
+				return Response{Error: fmt.Sprintf("%s: %v", tool, err)}
+			}
+			// A tool with two classes in one fleet is two answers to "can this be undone".
+			// The second one is refused rather than overwriting: whichever agent registered
+			// last would otherwise decide what the ledger claims about both.
+			if owner, ok := b.owners[tool]; ok && b.classes[tool] != rev && owner != agent {
+				return Response{Error: fmt.Sprintf("%s is %s for %s and %s for %s; one tool cannot have two classes — rename one of them",
+					tool, b.classes[tool], owner, rev, agent)}
+			}
+			catalog[tool] = rev
+			b.classes[tool] = rev
+			b.owners[tool] = agent
+		}
+		b.catalogues[agent] = catalog
+		tools := sortedCopy(keysOf(catalog))
+		unknown := b.policyToolsNotInLocked(tools)
+		var pure int
+		for _, rev := range catalog {
+			if rev == platform.Pure {
+				pure++
+			}
+		}
 		if b.verbose || len(unknown) > 0 {
-			log.Printf("gaapd: %s registered %d tools; policy names %d it does not have %v",
-				agent, len(req.Tools), len(unknown), unknown)
+			log.Printf("gaapd: %s registered %d tools (%d pure); policy names %d it does not have %v",
+				agent, len(catalog), pure, len(unknown), unknown)
 		}
 		return Response{OK: true, Revision: b.gov.Policy.Revision(),
-			Tools: len(req.Tools), UnknownPolicyTools: unknown}
+			Tools: len(catalog), UnknownPolicyTools: unknown}
 	}
 
 	// A tool the agent did not register is incoherent before it is policy: refusing here means
 	// the record says "asked for a tool it does not have" instead of a rule that would have
 	// allowed it if only the name had been right.
 	if cat, known := b.catalogues[agent]; known {
-		if !slices.Contains(cat, req.Tool) {
+		if _, has := cat[req.Tool]; !has {
 			d := b.gov.Refuse(agent, req.Tool, req.Args, "broker:unknown-tool",
 				fmt.Sprintf("this agent registered no tool named %q, so the policy was not consulted; its tools are: %s",
-					req.Tool, strings.Join(sortedCopy(cat), ", ")))
+					req.Tool, strings.Join(sortedCopy(keysOf(cat)), ", ")))
 			if b.verbose {
 				log.Printf("gaapd: uid=%d agent=%s tool=%s -> deny (unknown tool)", uid, agent, req.Tool)
 			}
@@ -327,6 +373,23 @@ func (b *broker) serve(req Request, uid uint32) Response {
 	if req.Parents != "" {
 		opts = append(opts, platform.WithParents(strings.Split(req.Parents, ",")...))
 	}
+	// A caller that asked for attestation gets a token or a refusal, never a quiet allow: the
+	// broker mints tickets from the key beside kill.json, creating it on first use so a ticket
+	// exists for the whole deployment rather than per process start.
+	if req.Ticket != nil {
+		if req.Ticket.EntryID == "" || req.Ticket.Resource == "" {
+			return Response{Error: "a ticket must name the observation and the resource it attests"}
+		}
+		if b.gov.Tickets == nil {
+			key, err := platform.LoadOrCreateTicketKey(b.ticketPath)
+			if err != nil {
+				return Response{Error: "ticket key: " + err.Error()}
+			}
+			b.gov.Tickets = key
+		}
+		opts = append(opts, platform.WithTicketFor(req.Ticket.EntryID, req.Ticket.Resource))
+	}
+
 	d := b.gov.Decide(agent, req.Tool, req.Args, opts...)
 	if b.verbose {
 		log.Printf("gaapd: uid=%d agent=%s tool=%s -> %s", uid, agent, req.Tool, d.Action)
@@ -336,7 +399,42 @@ func (b *broker) serve(req Request, uid uint32) Response {
 
 // catalogueFor reports an agent's registered tools to the governor, so a refusal can narrow
 // its "permitted alternatives" to names the agent can actually call. Called under b.mu.
-func (b *broker) catalogueFor(agentID string) []string { return b.catalogues[agentID] }
+func (b *broker) catalogueFor(agentID string) []string {
+	return sortedCopy(keysOf(b.catalogues[agentID]))
+}
+
+// classifyFor is the fleet's classifier: what the agents said their tools do. Absent means the
+// kernel's conservative answer (irreversible), never a guess that a name looks like a read.
+func (b *broker) classifyFor(tool string) platform.Reversibility {
+	if rev, ok := b.classes[tool]; ok {
+		return rev
+	}
+	return platform.Irreversible
+}
+
+// parseReversibility accepts only the classes this runtime can back. Reversible and compensable
+// are reserved: claiming an inverse the runtime does not hold is the unchecked-inverse error,
+// reproduced in an audit trail.
+func parseReversibility(class string) (platform.Reversibility, error) {
+	switch platform.Reversibility(class) {
+	case platform.Pure:
+		return platform.Pure, nil
+	case platform.Irreversible:
+		return platform.Irreversible, nil
+	case platform.Reversible, platform.Compensable:
+		return "", fmt.Errorf("class %q is reserved: no snapshot or compensation mechanism backs it yet, so recording it would claim an inverse that does not exist", class)
+	default:
+		return "", fmt.Errorf("class %q is not one of pure, irreversible", class)
+	}
+}
+
+func keysOf(m map[string]platform.Reversibility) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
 
 func (b *broker) policyToolsNotInLocked(tools []string) []string {
 	has := make(map[string]struct{}, len(tools))
