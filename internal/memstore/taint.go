@@ -137,49 +137,21 @@ func (s *Store) applyPromotions(resolved map[string]provenance) error {
 	}
 	in := placeholders(len(ids))
 
-	recorded := make(map[string]int, len(resolved))
-	rows, err := s.db.Query(`SELECT entry_id, distinct_roots FROM gov_promotion WHERE entry_id IN (`+in+`)`, ids...)
+	recorded, err := s.idCounts(`SELECT entry_id, distinct_roots FROM gov_promotion WHERE entry_id IN (`+in+`)`, ids...)
 	if err != nil {
-		return err
-	}
-	for rows.Next() {
-		var id string
-		var n int
-		if err := rows.Scan(&id, &n); err != nil {
-			_ = rows.Close()
-			return err
-		}
-		recorded[id] = n
-	}
-	_ = rows.Close()
-	if err := rows.Err(); err != nil {
 		return err
 	}
 	if len(recorded) == 0 {
 		return nil
 	}
 
-	live := make(map[string]int, len(recorded))
-	liveArgs := make([]any, 0, len(recorded))
+	liveIDs := make([]any, 0, len(recorded))
 	for id := range recorded {
-		liveArgs = append(liveArgs, id)
+		liveIDs = append(liveIDs, id)
 	}
-	rows, err = s.db.Query(`SELECT entry_id, COUNT(DISTINCT root_id) FROM gov_root
-		WHERE entry_id IN (`+placeholders(len(liveArgs))+`) GROUP BY entry_id`, liveArgs...)
+	live, err := s.idCounts(`SELECT entry_id, COUNT(DISTINCT root_id) FROM gov_root
+		WHERE entry_id IN (`+placeholders(len(liveIDs))+`) GROUP BY entry_id`, liveIDs...)
 	if err != nil {
-		return err
-	}
-	for rows.Next() {
-		var id string
-		var n int
-		if err := rows.Scan(&id, &n); err != nil {
-			_ = rows.Close()
-			return err
-		}
-		live[id] = n
-	}
-	_ = rows.Close()
-	if err := rows.Err(); err != nil {
 		return err
 	}
 
@@ -324,4 +296,26 @@ func orSelf(v, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+// idCounts runs a query returning (entry_id, count) and collects the answer. The two counts in
+// applyPromotions differ in SQL, not in how a row is read — and a scan loop written twice is a
+// loop where one copy forgets rows.Err().
+func (s *Store) idCounts(query string, args ...any) (map[string]int, error) {
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make(map[string]int)
+	for rows.Next() {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
 }
