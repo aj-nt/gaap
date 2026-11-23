@@ -133,6 +133,14 @@ func CompileMemoryGrants(grants []MemoryGrant, revision string) ([]Rule, error) 
 		if strings.TrimSpace(g.Scope) == "" {
 			return nil, fmt.Errorf("memory grant %q: scope is required; an unscoped grant is a grant to everyone", g.ID)
 		}
+		// "*" is documented as "all agents" but the predicate engine compares identity
+		// exactly, so a wildcard grant compiles and then matches nobody — every capability it
+		// was meant to open stays shut, silently. Refusing here turns a silent deny into a
+		// startup error. Whether a wildcard should exist at all (one grant covering agents
+		// that do not exist yet) is a separate decision about authority.
+		if strings.TrimSpace(g.Scope) == "*" {
+			return nil, fmt.Errorf("memory grant %q: wildcard scope \"*\" is not honoured (identity is matched exactly); name the agents explicitly", g.ID)
+		}
 		ttl := time.Duration(g.MaxTTL) * time.Second
 		if g.Capability == MemWrite {
 			// A write with no lifetime is a permanent entry, and permanence is the

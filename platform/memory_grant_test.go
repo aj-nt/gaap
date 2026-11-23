@@ -216,3 +216,16 @@ func TestCapabilityWireNames(t *testing.T) {
 		t.Error("an undeclared capability reports itself known")
 	}
 }
+
+// A wildcard scope reads like "all agents" and behaves like "no agents": Predicate.matches
+// compares identity exactly. Compiling it would silently leave every capability it named
+// closed, so the file is rejected instead.
+func TestWildcardScopeIsRefused(t *testing.T) {
+	_, err := CompileMemoryGrants([]MemoryGrant{{ID: "r", Capability: MemRead, Scope: "*"}}, "rev")
+	if err == nil {
+		t.Fatal("a wildcard scope compiled")
+	}
+	if !strings.Contains(err.Error(), "not honoured") || !strings.Contains(err.Error(), "explicitly") {
+		t.Fatalf("error = %q, want it to say the wildcard is not honoured and to name agents", err)
+	}
+}
