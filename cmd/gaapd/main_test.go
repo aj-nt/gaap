@@ -268,7 +268,7 @@ func TestSocketPeerIdentity(t *testing.T) {
 		if err != nil {
 			return
 		}
-		b.handle(conn, false)
+		b.handle(conn)
 	}()
 
 	conn, err := net.Dial("unix", sock)
@@ -288,5 +288,84 @@ func TestSocketPeerIdentity(t *testing.T) {
 	}
 	if resp.Revision == "" {
 		t.Fatal("response carries no policy revision")
+	}
+}
+
+// A register teaches the broker what the agent can actually call: an unregistered name is
+// refused as incoherent, and the policy's names that the agent lacks come back as a list the
+// operator can act on.
+func TestRegisterReportsPolicyNamesTheAgentLacks(t *testing.T) {
+	b := testBroker(t, `{"version": 1, "rules": [
+  {"id": "read", "tool": "FileRead", "action": "allow"},
+  {"id": "shell", "tool": "Shell", "action": "deny", "reason": "no shell"}
+]}`, twoAgentsOnOneLogin())
+
+	resp := b.serve(Request{Op: "register", Agent: "vagent-analyst", Tools: []string{"FileRead", "CodeRead"}}, 501)
+	if !resp.OK {
+		t.Fatalf("register: %+v", resp)
+	}
+	if resp.Tools != 2 {
+		t.Fatalf("tools = %d", resp.Tools)
+	}
+	if got := strings.Join(resp.UnknownPolicyTools, ","); got != "Shell" {
+		t.Fatalf("unknown policy tools = %q, want Shell: the policy names a tool no agent has", got)
+	}
+}
+
+func TestUnregisteredToolIsRefusedBeforeThePolicy(t *testing.T) {
+	b := testBroker(t, allowRead, twoAgentsOnOneLogin())
+	if resp := b.serve(Request{Op: "register", Agent: "vagent-analyst", Tools: []string{"FileRead"}}, 501); !resp.OK {
+		t.Fatalf("register: %+v", resp)
+	}
+
+	// The policy allows the tool; the agent said it does not have it. The agent's catalogue
+	// wins, because the alternative is a decision about a call that cannot happen.
+	resp := decide(t, b, 501, "vagent-analyst", "Execute")
+	if !resp.OK || resp.Decision == nil {
+		t.Fatalf("decide: %+v", resp)
+	}
+	if resp.Decision.Action != platform.ActionDeny || resp.Decision.RuleID != "broker:unknown-tool" {
+		t.Fatalf("decision = %+v, want broker:unknown-tool", resp.Decision)
+	}
+	if !strings.Contains(resp.Decision.Reason, "registered no tool named") {
+		t.Fatalf("reason = %q", resp.Decision.Reason)
+	}
+	if resp.Decision.Denial != nil {
+		t.Fatal("an unknown-tool refusal carried a policy denial class")
+	}
+	entries := b.ledger.Entries()
+	last := entries[len(entries)-1]
+	if last.RuleID != "broker:unknown-tool" || last.Outcome != platform.ActionDeny {
+		t.Fatalf("ledger entry = %+v", last)
+	}
+}
+
+// No catalogue is not an empty catalogue: a client that never registers keeps the policy-only
+// behaviour instead of having every call refused.
+func TestAnAgentThatNeverRegisteredKeepsThePolicyPath(t *testing.T) {
+	b := testBroker(t, allowRead, twoAgentsOnOneLogin())
+	resp := decide(t, b, 501, "vagent-worker", "Execute")
+	if !resp.OK || resp.Decision == nil || resp.Decision.Action != platform.ActionAllow {
+		t.Fatalf("unregistered agent: %+v", resp)
+	}
+}
+
+// The refusal text names only tools the agent has, because the policy's list included one it
+// does not — the failure a live run produced.
+func TestRefusalAlternativesAreFilteredToTheCatalogue(t *testing.T) {
+	b := testBroker(t, `{"version": 1, "rules": [
+  {"id": "read", "tool": "FileRead", "action": "allow"},
+  {"id": "write", "tool": "FileWrite", "action": "allow"},
+  {"id": "shell", "tool": "Execute", "action": "deny", "reason": "no shell"}
+]}`, twoAgentsOnOneLogin())
+	if resp := b.serve(Request{Op: "register", Agent: "vagent-analyst", Tools: []string{"FileRead", "Execute"}}, 501); !resp.OK {
+		t.Fatalf("register: %+v", resp)
+	}
+	resp := decide(t, b, 501, "vagent-analyst", "Execute")
+	if resp.Decision == nil || resp.Decision.Denial == nil {
+		t.Fatalf("no denial class: %+v", resp.Decision)
+	}
+	if got := strings.Join(resp.Decision.Denial.Permitted, ","); got != "FileRead" {
+		t.Fatalf("permitted = %q, want only FileRead: the agent has no FileWrite", got)
 	}
 }

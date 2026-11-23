@@ -29,6 +29,13 @@ type Governor struct {
 	// it. Zero disables the check: a governor that starts reviewing everything
 	// on the day it is installed is a governor nobody runs.
 	TrustFloor float64
+	// Catalogue reports the tool names an agent actually exposes. nil = unknown, and an
+	// unknown catalogue filters nothing: a kernel that guessed would hide a tool the agent
+	// has, which is how a refusal teaches the caller to stop trying something it can do.
+	//
+	// It exists because a refusal that lists "permitted alternatives" from the policy alone
+	// told a live agent to call a tool its own registry did not contain.
+	Catalogue func(agentID string) []string
 	// Classify maps a tool name to its reversibility class. Defaults to the
 	// kernel's conservative classifier (everything irreversible). A governed
 	// workload injects a classifier that knows its own read-only tools, so the
@@ -282,7 +289,7 @@ func (g *Governor) Decide(agentID, tool string, args map[string]any, opts ...Dec
 			Rule:          d.RuleID,
 			ActionClass:   g.actionClassFor(tool),
 			Forbidden:     tool,
-			Permitted:     g.Policy.PermittedFor(tool),
+			Permitted:     g.permittedFor(agentID, tool),
 			CorrelationID: NewCorrelationID(),
 		}
 		d.Denial = &dc
@@ -299,6 +306,48 @@ func (g *Governor) Decide(agentID, tool string, args map[string]any, opts ...Dec
 	}
 	if err := g.record(agentID, tool, args, d, do); err != nil {
 		return Deny("governor could not record the decision: " + err.Error())
+	}
+	return d
+}
+
+// permittedFor is the policy's list of alternatives, narrowed to what the agent can actually
+// call when a catalogue says. An unknown catalogue narrows nothing.
+func (g *Governor) permittedFor(agentID, tool string) []string {
+	permitted := g.Policy.PermittedFor(tool)
+	if g.Catalogue == nil {
+		return permitted
+	}
+	names := g.Catalogue(agentID)
+	if len(names) == 0 {
+		return permitted
+	}
+	has := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		has[n] = struct{}{}
+	}
+	out := permitted[:0]
+	for _, p := range permitted {
+		if _, ok := has[p]; ok {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// Refuse records a refusal the policy never saw — a tool the caller does not have, a broker
+// that cannot answer. It exists so those refusals reach the ledger through the same path as a
+// policy's, instead of a second implementation of record().
+//
+// No denial class is attached: the agent must not read this as a rule it could satisfy by
+// changing the call, because the problem is not the call's content.
+func (g *Governor) Refuse(agentID, tool string, args map[string]any, ruleID, reason string) Decision {
+	d := Deny(reason)
+	d.RuleID = ruleID
+	if g.Ledger == nil {
+		return d
+	}
+	if err := g.record(agentID, tool, args, d, DecideOpts{}); err != nil {
+		return Deny("governor could not record the refusal: " + err.Error())
 	}
 	return d
 }
