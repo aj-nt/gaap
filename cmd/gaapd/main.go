@@ -20,6 +20,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,12 +40,20 @@ type Request struct {
 	Args  map[string]any `json:"args,omitempty"`
 	// Floor is what the caller knows about its own justification and the broker cannot see.
 	Floor string `json:"floor,omitempty"`
+	// RunID and Parents are the caller's story about where this call came from. They are
+	// attribution, not identity, and the ledger records them as the caller's claim.
+	RunID   string `json:"run_id,omitempty"`
+	Parents string `json:"parents,omitempty"`
 }
 
 type Response struct {
 	OK       bool               `json:"ok"`
 	Error    string             `json:"error,omitempty"`
 	Decision *platform.Decision `json:"decision,omitempty"`
+	// Status answers a liveness question without recording anything: a client that wants to
+	// know whether it can rely on this broker must be able to ask without leaving a decision
+	// in the ledger it is asking about.
+	Status *Status `json:"status,omitempty"`
 	// Revision names the policy that produced this decision. A caller that logs only the
 	// verdict cannot tell "the rule I wrote refuses this" from "the rule I replaced an hour
 	// ago refuses this".
@@ -53,6 +62,14 @@ type Response struct {
 
 // grantsFile is the principals half of the memory grant file, so one file configures identity
 // for both brokers. A second file would be a second answer to "who is uid 501".
+// Status is what the broker says about itself. Deliberately small: everything here is a fact
+// the operator cannot otherwise see without reading the state directory.
+type Status struct {
+	PolicyPath string `json:"policy_path"`
+	Principals int    `json:"principals"`
+	Started    string `json:"started"`
+}
+
 type grantsFile struct {
 	Principals []struct {
 		UID   int    `json:"uid"`
@@ -88,6 +105,7 @@ type broker struct {
 	policyPath string
 	stamp      policyStamp
 	stateDir   string
+	started    time.Time
 }
 
 func newBroker(cfg config) (*broker, error) {
@@ -138,6 +156,7 @@ func newBroker(cfg config) (*broker, error) {
 		principals: principals,
 		policyPath: cfg.PolicyPath,
 		stateDir:   cfg.StateDir,
+		started:    time.Now().UTC(),
 	}
 	if fi, err := os.Stat(cfg.PolicyPath); err == nil {
 		b.stamp = policyStamp{size: fi.Size(), mod: fi.ModTime()}
@@ -171,10 +190,10 @@ func loadPrincipals(path string) (map[int]string, error) {
 
 // serve answers one request from a peer whose uid the transport established.
 func (b *broker) serve(req Request, uid uint32) Response {
-	if req.Op != "decide" {
-		return Response{Error: fmt.Sprintf("unknown op %q (want \"decide\")", req.Op)}
+	if req.Op != "decide" && req.Op != "status" {
+		return Response{Error: fmt.Sprintf("unknown op %q (want \"decide\" or \"status\")", req.Op)}
 	}
-	if req.Tool == "" {
+	if req.Op == "decide" && req.Tool == "" {
 		return Response{Error: "decide requires tool"}
 	}
 	agent, err := principal.Resolve(b.principals, uid, req.Agent)
@@ -194,6 +213,14 @@ func (b *broker) serve(req Request, uid uint32) Response {
 	defer b.mu.Unlock()
 	b.reloadLocked()
 
+	if req.Op == "status" {
+		return Response{OK: true, Revision: b.gov.Policy.Revision(), Status: &Status{
+			PolicyPath: b.policyPath,
+			Principals: len(b.principals),
+			Started:    b.started.Format(time.RFC3339),
+		}}
+	}
+
 	var opts []platform.DecideOpt
 	if req.Floor != "" {
 		class := platform.TaintClass(req.Floor)
@@ -201,6 +228,12 @@ func (b *broker) serve(req Request, uid uint32) Response {
 			return Response{Error: fmt.Sprintf("floor %q is not a provenance class", req.Floor)}
 		}
 		opts = append(opts, platform.WithFloor(class))
+	}
+	if req.RunID != "" {
+		opts = append(opts, platform.WithRun(req.RunID))
+	}
+	if req.Parents != "" {
+		opts = append(opts, platform.WithParents(strings.Split(req.Parents, ",")...))
 	}
 	d := b.gov.Decide(agent, req.Tool, req.Args, opts...)
 	return Response{OK: true, Decision: &d, Revision: b.gov.Policy.Revision()}
