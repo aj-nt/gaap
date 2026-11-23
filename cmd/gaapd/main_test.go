@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aj-nt/gaap/internal/principal"
 	"github.com/aj-nt/gaap/platform"
 )
 
@@ -21,28 +22,30 @@ const denyRead = `{"version": 1, "rules": [
   {"id": "read", "tool": "ReadFile", "action": "deny", "reason": "the fleet was told to stop reading"}
 ]}`
 
-func testBroker(t *testing.T, policy string) *broker {
+// testBroker writes a policy and a grant file in the shape a host actually has: one login,
+// several agents. The synthetic uid keeps the test independent of who runs it; the socket test
+// below is the one that has to use the real uid.
+func testBroker(t *testing.T, policy string, grants principal.Grants) *broker {
 	t.Helper()
 	dir := t.TempDir()
 	policyPath := filepath.Join(dir, "policy.json")
 	if err := os.WriteFile(policyPath, []byte(policy), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// Two synthetic agents, plus whatever uid the test itself runs as so the transport test
-	// can exercise the peer-credential path without depending on the CI user id.
-	principals := []map[string]any{{"uid": 501, "agent": "agent-a"}, {"uid": 502, "agent": "agent-b"}}
-	if u := os.Getuid(); u != 501 && u != 502 {
-		principals = append(principals, map[string]any{"uid": u, "agent": "agent-self"})
+
+	var principals []map[string]any
+	for uid, agents := range grants {
+		principals = append(principals, map[string]any{"uid": uid, "agents": agents})
 	}
 	raw, err := json.Marshal(map[string]any{"principals": principals})
 	if err != nil {
 		t.Fatal(err)
 	}
-	grants := string(raw)
 	grantsPath := filepath.Join(dir, "memory-grants.json")
-	if err := os.WriteFile(grantsPath, []byte(grants), 0o600); err != nil {
+	if err := os.WriteFile(grantsPath, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
+
 	b, err := newBroker(config{
 		StateDir:   filepath.Join(dir, "state"),
 		PolicyPath: policyPath,
@@ -55,23 +58,26 @@ func testBroker(t *testing.T, policy string) *broker {
 	return b
 }
 
+// twoAgentsOnOneLogin is the deployment shape the daemon exists for.
+func twoAgentsOnOneLogin() principal.Grants {
+	return principal.Grants{501: {"vagent-analyst", "vagent-worker"}}
+}
+
 func decide(t *testing.T, b *broker, uid uint32, claimed, tool string) Response {
 	t.Helper()
 	return b.serve(Request{Op: "decide", Agent: claimed, Tool: tool, Args: map[string]any{}}, uid)
 }
 
-// The whole point of the daemon: one policy, N agents, and an edit that lands on the next
-// call rather than at the next restart. Two identities, two allows, one file rewritten, two
-// denials — with nothing restarted between them.
+// The whole point of the daemon: one policy, N agents behind one login, and an edit that
+// lands on the next call rather than at the next restart.
 func TestOnePolicyFlipStopsEveryAgent(t *testing.T) {
-	b := testBroker(t, allowRead)
-	for _, c := range []struct {
-		uid  uint32
-		name string
-	}{{501, "agent-a"}, {502, "agent-b"}} {
-		resp := decide(t, b, c.uid, c.name, "ReadFile")
+	b := testBroker(t, allowRead, twoAgentsOnOneLogin())
+	agents := []string{"vagent-analyst", "vagent-worker"}
+
+	for _, name := range agents {
+		resp := decide(t, b, 501, name, "ReadFile")
 		if !resp.OK || resp.Decision == nil || resp.Decision.Action != platform.ActionAllow {
-			t.Fatalf("%s: %+v, want an allow", c.name, resp)
+			t.Fatalf("%s: %+v, want an allow", name, resp)
 		}
 	}
 
@@ -85,16 +91,13 @@ func TestOnePolicyFlipStopsEveryAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, c := range []struct {
-		uid  uint32
-		name string
-	}{{501, "agent-a"}, {502, "agent-b"}} {
-		resp := decide(t, b, c.uid, c.name, "ReadFile")
+	for _, name := range agents {
+		resp := decide(t, b, 501, name, "ReadFile")
 		if !resp.OK || resp.Decision == nil {
-			t.Fatalf("%s: %+v", c.name, resp)
+			t.Fatalf("%s: %+v", name, resp)
 		}
 		if resp.Decision.Action != platform.ActionDeny {
-			t.Fatalf("%s still allowed after the flip: %+v", c.name, resp.Decision)
+			t.Fatalf("%s still allowed after the flip: %+v", name, resp.Decision)
 		}
 		if resp.Decision.RuleID != "read" {
 			t.Fatalf("refusal does not name the rule that produced it: %q", resp.Decision.RuleID)
@@ -112,17 +115,76 @@ func TestOnePolicyFlipStopsEveryAgent(t *testing.T) {
 	if entries[0].PolicyRev == entries[2].PolicyRev {
 		t.Fatalf("both halves carry policy revision %q: the flip left no mark", entries[0].PolicyRev)
 	}
+	// Two agents behind one uid stay two subjects in the record — and the record does not
+	// name them: the commitment is keyed, the ref is opaque.
+	if entries[0].SubjectHash == entries[1].SubjectHash {
+		t.Fatal("both agents share one subject commitment")
+	}
+	if entries[0].SubjectRef == "" || entries[0].SubjectRef == entries[1].SubjectRef {
+		t.Fatalf("subject refs are missing or shared: %q / %q", entries[0].SubjectRef, entries[1].SubjectRef)
+	}
+	if entries[0].CommitAlgo == "" {
+		t.Fatal("the subject commitment is unkeyed: an agent id is low-entropy, so a plain hash is a re-identification oracle")
+	}
 }
 
-// Identity comes from the socket, not from the request. An agent that names itself is
-// asserting, not identifying — and an assertion is only worth the peer credentials behind it.
-func TestClaimedIdentityMustMatchThePeer(t *testing.T) {
-	b := testBroker(t, allowRead)
-	resp := b.serve(Request{Op: "decide", Agent: "agent-b", Tool: "ReadFile"}, 501)
-	if resp.OK {
-		t.Fatal("uid mapped to agent-a decided as agent-b")
+// A ledger shared by a fleet must not be readable as a roster. Two agents, four decisions, and
+// neither name appears on disk — while the rows stay groupable by subject.
+func TestTheLedgerDoesNotNameItsSubjects(t *testing.T) {
+	b := testBroker(t, allowRead, twoAgentsOnOneLogin())
+	for _, name := range []string{"vagent-analyst", "vagent-worker"} {
+		decide(t, b, 501, name, "ReadFile")
 	}
-	if !strings.Contains(resp.Error, "not authorised to act as") {
+	raw, err := os.ReadFile(filepath.Join(b.stateDir, "ledger.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"vagent-analyst", "vagent-worker"} {
+		if strings.Contains(string(raw), name) {
+			t.Fatalf("the ledger names %q in plaintext", name)
+		}
+	}
+	entries := b.ledger.Entries()
+	if len(entries) != 2 || entries[0].SubjectRef == "" || entries[0].SubjectRef == entries[1].SubjectRef {
+		t.Fatalf("rows are not attributable to distinct subjects: %+v", entries)
+	}
+}
+
+// One login, several agents, no claim: refused. Choosing for the caller would put a decision
+// on a workload that never asked for it.
+func TestOneLoginWithSeveralAgentsNeedsAClaim(t *testing.T) {
+	b := testBroker(t, allowRead, twoAgentsOnOneLogin())
+	resp := b.serve(Request{Op: "decide", Tool: "ReadFile"}, 501)
+	if resp.OK {
+		t.Fatal("an ambiguous peer was decided without naming an agent")
+	}
+	if !strings.Contains(resp.Error, "vagent-analyst") || !strings.Contains(resp.Error, "vagent-worker") {
+		t.Fatalf("refusal %q does not name the choices", resp.Error)
+	}
+	if n := len(b.ledger.Entries()); n != 0 {
+		t.Fatalf("an ambiguous request produced %d ledger entries", n)
+	}
+}
+
+// One agent on the login needs no claim: nothing is ambiguous, and demanding a name would be a
+// migration for callers that have nothing to disambiguate.
+func TestSingleAgentOnALoginNeedsNoClaim(t *testing.T) {
+	b := testBroker(t, allowRead, principal.Grants{502: {"vagent-admin"}})
+	resp := b.serve(Request{Op: "decide", Tool: "ReadFile"}, 502)
+	if !resp.OK || resp.Decision == nil || resp.Decision.Action != platform.ActionAllow {
+		t.Fatalf("single-agent login: %+v", resp)
+	}
+}
+
+// A claim outside the grant is impersonation: it writes nothing, and the error says which claim
+// was refused.
+func TestClaimedIdentityMustMatchTheGrant(t *testing.T) {
+	b := testBroker(t, allowRead, twoAgentsOnOneLogin())
+	resp := b.serve(Request{Op: "decide", Agent: "vagent-admin", Tool: "ReadFile"}, 501)
+	if resp.OK {
+		t.Fatal("a peer decided as an agent outside its grant")
+	}
+	if !strings.Contains(resp.Error, "not authorised to act as vagent-admin") {
 		t.Fatalf("error = %q, want it to name the claim", resp.Error)
 	}
 	if n := len(b.ledger.Entries()); n != 0 {
@@ -131,8 +193,8 @@ func TestClaimedIdentityMustMatchThePeer(t *testing.T) {
 }
 
 func TestUnmappedPeerIsRefused(t *testing.T) {
-	b := testBroker(t, allowRead)
-	resp := b.serve(Request{Op: "decide", Agent: "agent-a", Tool: "ReadFile"}, 999)
+	b := testBroker(t, allowRead, twoAgentsOnOneLogin())
+	resp := b.serve(Request{Op: "decide", Agent: "vagent-analyst", Tool: "ReadFile"}, 999)
 	if resp.OK {
 		t.Fatal("an unmapped uid was allowed to decide")
 	}
@@ -144,8 +206,8 @@ func TestUnmappedPeerIsRefused(t *testing.T) {
 // A policy file that stops parsing must not stop the fleet, and must not silently replace the
 // rules either: the last good policy stays in force and keeps reporting its own revision.
 func TestBrokenPolicyKeepsTheLastGoodOne(t *testing.T) {
-	b := testBroker(t, allowRead)
-	first := decide(t, b, 501, "agent-a", "ReadFile")
+	b := testBroker(t, allowRead, twoAgentsOnOneLogin())
+	first := decide(t, b, 501, "vagent-analyst", "ReadFile")
 	if !first.OK || first.Revision == "" {
 		t.Fatalf("baseline: %+v", first)
 	}
@@ -158,7 +220,7 @@ func TestBrokenPolicyKeepsTheLastGoodOne(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	second := decide(t, b, 501, "agent-a", "ReadFile")
+	second := decide(t, b, 501, "vagent-analyst", "ReadFile")
 	if !second.OK || second.Decision == nil || second.Decision.Action != platform.ActionAllow {
 		t.Fatalf("a broken policy file changed a decision: %+v", second)
 	}
@@ -169,8 +231,8 @@ func TestBrokenPolicyKeepsTheLastGoodOne(t *testing.T) {
 
 // The response has to be usable by a client that was not compiled against these structs.
 func TestDecisionSurvivesTheWire(t *testing.T) {
-	b := testBroker(t, allowRead)
-	resp := decide(t, b, 501, "agent-a", "ReadFile")
+	b := testBroker(t, allowRead, twoAgentsOnOneLogin())
+	resp := decide(t, b, 501, "vagent-analyst", "ReadFile")
 	encoded, err := json.Marshal(resp)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -184,10 +246,12 @@ func TestDecisionSurvivesTheWire(t *testing.T) {
 	}
 }
 
-// The transport, end to end: a real unix socket, a real peer uid, no claim in the request. The
-// daemon tests exercise the rule; this exercises the thing the client will actually talk to.
+// The transport, end to end: a real unix socket, a real peer uid, and the claim that the peer
+// credentials cannot supply — two agents share the uid, so the request has to say which.
 func TestSocketPeerIdentity(t *testing.T) {
-	b := testBroker(t, allowRead)
+	me := uint32(os.Getuid())
+	b := testBroker(t, allowRead, principal.Grants{int(me): {"vagent-analyst", "vagent-worker"}})
+
 	dir, err := os.MkdirTemp("", "gaapd")
 	if err != nil {
 		t.Fatal(err)
@@ -212,7 +276,7 @@ func TestSocketPeerIdentity(t *testing.T) {
 		t.Fatalf("dial: %v", err)
 	}
 	defer func() { _ = conn.Close() }()
-	if err := json.NewEncoder(conn).Encode(Request{Op: "decide", Tool: "ReadFile"}); err != nil {
+	if err := json.NewEncoder(conn).Encode(Request{Op: "decide", Agent: "vagent-worker", Tool: "ReadFile"}); err != nil {
 		t.Fatal(err)
 	}
 	var resp Response

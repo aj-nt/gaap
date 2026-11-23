@@ -14,6 +14,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -60,8 +61,6 @@ type Response struct {
 	Revision string `json:"revision,omitempty"`
 }
 
-// grantsFile is the principals half of the memory grant file, so one file configures identity
-// for both brokers. A second file would be a second answer to "who is uid 501".
 // Status is what the broker says about itself. Deliberately small: everything here is a fact
 // the operator cannot otherwise see without reading the state directory.
 type Status struct {
@@ -70,10 +69,17 @@ type Status struct {
 	Started    string `json:"started"`
 }
 
+// grantsFile is the principals half of the memory grant file, so one file configures identity
+// for both brokers. A second file would be a second answer to "who is uid 501".
+//
+// `agent` is the single form the memory broker uses, where a store is scoped to one agent;
+// `agents` is what a login that runs several agents needs. Both are read, and a principal that
+// names neither is a configuration error rather than an empty permission.
 type grantsFile struct {
 	Principals []struct {
-		UID   int    `json:"uid"`
-		Agent string `json:"agent"`
+		UID    int      `json:"uid"`
+		Agent  string   `json:"agent"`
+		Agents []string `json:"agents"`
 	} `json:"principals"`
 }
 
@@ -101,7 +107,7 @@ type broker struct {
 	mu         sync.Mutex
 	gov        *platform.Governor
 	ledger     *platform.Ledger
-	principals map[int]string
+	grants     principal.Grants
 	policyPath string
 	stamp      policyStamp
 	stateDir   string
@@ -131,13 +137,32 @@ func newBroker(cfg config) (*broker, error) {
 		_ = ledger.Close()
 		return nil, fmt.Errorf("open kill switch: %w", err)
 	}
+	// Keyed commitments, not plain hashes: a fleet ledger is shared by every agent, so an
+	// unkeyed hash of an agent id would be a re-identification oracle over low-entropy names.
+	// The key also gives each subject a ref, which is how a row is grouped with the rest of
+	// that agent's rows without the ledger ever naming it.
+	ring, err := platform.OpenFileKeyRing(filepath.Join(cfg.StateDir, "keys.json"))
+	if err != nil {
+		_ = ledger.Close()
+		return nil, fmt.Errorf("open key ring: %w", err)
+	}
+	refs, err := platform.OpenFileRefRegistry(filepath.Join(cfg.StateDir, "refs.json"))
+	if err != nil {
+		_ = ledger.Close()
+		return nil, fmt.Errorf("open ref registry: %w", err)
+	}
+	committer, err := platform.NewCommitter(ring)
+	if err != nil {
+		_ = ledger.Close()
+		return nil, fmt.Errorf("committer: %w", err)
+	}
 	denials, err := platform.OpenDenialCounter(filepath.Join(cfg.StateDir, "denials.json"),
 		platform.DefaultDenialWindow, platform.DefaultDenialThreshold)
 	if err != nil {
 		_ = ledger.Close()
 		return nil, fmt.Errorf("denial counter: %w", err)
 	}
-	principals, err := loadPrincipals(cfg.GrantsPath)
+	grants, err := loadGrants(cfg.GrantsPath)
 	if err != nil {
 		_ = ledger.Close()
 		return nil, err
@@ -146,6 +171,8 @@ func newBroker(cfg config) (*broker, error) {
 	gov := platform.NewGovernor()
 	gov.Policy = policy
 	gov.Ledger = ledger
+	gov.Committer = committer
+	gov.Refs = refs
 	gov.Kill = kill
 	gov.Denials = denials
 	gov.TrustFloor = cfg.TrustFloor
@@ -153,7 +180,7 @@ func newBroker(cfg config) (*broker, error) {
 	b := &broker{
 		gov:        gov,
 		ledger:     ledger,
-		principals: principals,
+		grants:     grants,
 		policyPath: cfg.PolicyPath,
 		stateDir:   cfg.StateDir,
 		started:    time.Now().UTC(),
@@ -166,7 +193,7 @@ func newBroker(cfg config) (*broker, error) {
 
 func (b *broker) Close() error { return b.ledger.Close() }
 
-func loadPrincipals(path string) (map[int]string, error) {
+func loadGrants(path string) (principal.Grants, error) {
 	if path == "" {
 		return nil, fmt.Errorf("gaapd needs a grants file: a broker with no principals cannot tell one agent from another")
 	}
@@ -178,12 +205,19 @@ func loadPrincipals(path string) (map[int]string, error) {
 	if err := json.Unmarshal(raw, &f); err != nil {
 		return nil, fmt.Errorf("gaapd: parse %s: %w", path, err)
 	}
-	out := make(map[int]string, len(f.Principals))
+	out := make(principal.Grants, len(f.Principals))
 	for _, p := range f.Principals {
-		if p.Agent == "" {
-			return nil, fmt.Errorf("gaapd: %s maps uid %d to no agent", path, p.UID)
+		agents := p.Agents
+		if len(agents) == 0 && p.Agent != "" {
+			agents = []string{p.Agent}
 		}
-		out[p.UID] = p.Agent
+		if len(agents) == 0 {
+			return nil, fmt.Errorf("gaapd: %s grants uid %d no agents", path, p.UID)
+		}
+		out[p.UID] = agents
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("gaapd: %s names no principals: a broker with no principals cannot tell one agent from another", path)
 	}
 	return out, nil
 }
@@ -196,14 +230,20 @@ func (b *broker) serve(req Request, uid uint32) Response {
 	if req.Op == "decide" && req.Tool == "" {
 		return Response{Error: "decide requires tool"}
 	}
-	agent, err := principal.Resolve(b.principals, uid, req.Agent)
+	agent, err := principal.Resolve(b.grants, uid, req.Agent)
 	if err != nil {
 		var unmapped principal.ErrUnmapped
-		if isUnmapped(err, &unmapped) {
+		var ambiguous principal.ErrAmbiguous
+		switch {
+		case errors.As(err, &unmapped):
 			log.Printf("gaapd: refused uid %d: %v", uid, err)
-		} else {
-			// The second kind is an attempt, and the log has to say so: a mapped peer
-			// naming another agent is not a misconfiguration.
+		case errors.As(err, &ambiguous):
+			// Not a misconfiguration and not an attempt: the peer holds several agents and
+			// did not say which, so the request is answerable only by the caller.
+			log.Printf("gaapd: ambiguous peer uid %d: %v", uid, err)
+		default:
+			// A mapped peer naming an agent it does not hold is an attempt, and the log
+			// has to say so.
 			log.Printf("gaapd: IMPERSONATION uid %d: %v", uid, err)
 		}
 		return Response{Error: err.Error()}
@@ -216,7 +256,7 @@ func (b *broker) serve(req Request, uid uint32) Response {
 	if req.Op == "status" {
 		return Response{OK: true, Revision: b.gov.Policy.Revision(), Status: &Status{
 			PolicyPath: b.policyPath,
-			Principals: len(b.principals),
+			Principals: len(b.grants),
 			Started:    b.started.Format(time.RFC3339),
 		}}
 	}
@@ -262,14 +302,6 @@ func (b *broker) reloadLocked() {
 	log.Printf("gaapd: reloaded %s, revision %s", b.policyPath, engine.Revision())
 }
 
-func isUnmapped(err error, target *principal.ErrUnmapped) bool {
-	if e, ok := err.(principal.ErrUnmapped); ok {
-		*target = e
-		return true
-	}
-	return false
-}
-
 func listen(path string) (net.Listener, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
@@ -310,7 +342,7 @@ func (b *broker) handle(conn net.Conn, verbose bool) {
 		if resp.OK && resp.Decision != nil {
 			outcome = string(resp.Decision.Action)
 		}
-		log.Printf("gaapd: uid=%d agent=%s tool=%s -> %s", uid, b.principals[int(uid)], req.Tool, outcome)
+		log.Printf("gaapd: uid=%d agent=%s tool=%s -> %s", uid, strings.Join(b.grants[int(uid)], ","), req.Tool, outcome)
 	}
 	b.reply(conn, resp)
 }
@@ -362,7 +394,7 @@ func main() {
 	defer func() { _ = ln.Close() }()
 
 	log.Printf("gaapd: serving %s (policy %s, revision %s, %d principals)",
-		cfg.Socket, cfg.PolicyPath, b.gov.Policy.Revision(), len(b.principals))
+		cfg.Socket, cfg.PolicyPath, b.gov.Policy.Revision(), len(b.grants))
 
 	for {
 		conn, err := ln.Accept()
