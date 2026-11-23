@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchAgent for the decision broker on a macOS dogfood host.
+
+  Install (per-user, survives reboot but needs the user logged in):
+
+    cp deploy/launchd/local.gaapd.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.gaapd.plist
+    launchctl kickstart -p gui/$(id -u)/local.gaapd
+
+  Stop (and keep it stopped — KeepAlive.SuccessfulExit=false means a clean exit is final):
+
+    launchctl bootout gui/$(id -u)/local.gaapd
+
+  Paths are absolute because launchd does not expand ~. Replace /Users/aj if this is not
+  that host: the state directory holds the ledger, the keys and the grants file.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>local.gaapd</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/gaapd</string>
+		<string>-state</string>
+		<string>/Users/aj/.gaap</string>
+		<string>-socket</string>
+		<string>/Users/aj/.gaap/govern.sock</string>
+		<string>-socket-mode</string>
+		<string>0600</string>
+		<string>-v</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<!-- Restart only on an unclean exit: a deliberate bootout must stay stopped. -->
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>StandardOutPath</key>
+	<string>/Users/aj/.gaap/gaapd.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/aj/.gaap/gaapd.log</string>
+</dict>
+</plist>

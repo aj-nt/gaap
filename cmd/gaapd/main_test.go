@@ -258,7 +258,7 @@ func TestSocketPeerIdentity(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	sock := filepath.Join(dir, "g.sock")
-	ln, err := listen(sock)
+	ln, err := listen(sock, 0o600)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -367,5 +367,93 @@ func TestRefusalAlternativesAreFilteredToTheCatalogue(t *testing.T) {
 	}
 	if got := strings.Join(resp.Decision.Denial.Permitted, ","); got != "FileRead" {
 		t.Fatalf("permitted = %q, want only FileRead: the agent has no FileWrite", got)
+	}
+}
+
+// The stop path: a listener that closes drains what is running and returns, so a supervisor's
+// SIGTERM cannot cut a decision in half after its row is already in the ledger.
+func TestServeLoopDrainsOnClose(t *testing.T) {
+	b := testBroker(t, allowRead, twoAgentsOnOneLogin())
+	dir, err := os.MkdirTemp("", "gaapd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "g.sock")
+	ln, err := listen(sock, 0o600)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		b.serveLoop(ln)
+		close(done)
+	}()
+
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	if err := json.NewEncoder(conn).Encode(Request{Op: "register", Agent: "vagent-analyst", Tools: []string{"FileRead"}}); err != nil {
+		t.Fatal(err)
+	}
+	var resp Response
+	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	_ = conn.Close()
+	if !resp.OK {
+		t.Fatalf("register: %+v", resp)
+	}
+
+	if err := ln.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("serveLoop did not return after the listener closed")
+	}
+	// Go's unix listener unlinks the socket when it closes, so a clean stop leaves no file
+	// behind — the stale-socket branch in listen() only covers a process that never got to
+	// close anything.
+	if _, err := os.Stat(sock); !os.IsNotExist(err) {
+		t.Fatalf("socket still present after a clean close: %v", err)
+	}
+}
+
+// A broken configuration must be distinguishable from a transient fault, or a supervisor
+// restarts it forever and the real message is buried. EX_CONFIG is that distinction.
+func TestBrokenConfigExitsWithEXCONFIG(t *testing.T) {
+	dir := t.TempDir()
+	// A policy file that cannot parse: present, so the failure is not "missing".
+	if err := os.WriteFile(filepath.Join(dir, "policy.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	grants := `{"principals": [{"uid": 501, "agents": ["a"]}]}`
+	if err := os.WriteFile(filepath.Join(dir, "memory-grants.json"), []byte(grants), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := run([]string{"-state", dir, "-socket", filepath.Join(dir, "s.sock")}); code != exitConfig {
+		t.Fatalf("exit code = %d, want %d (EX_CONFIG)", code, exitConfig)
+	}
+
+	// No grant file at all is the same class: the broker cannot tell one agent from another.
+	empty := t.TempDir()
+	if err := os.WriteFile(filepath.Join(empty, "policy.json"), []byte(allowRead), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := run([]string{"-state", empty, "-socket", filepath.Join(empty, "s.sock")}); code != exitConfig {
+		t.Fatalf("missing grants: exit code = %d, want %d", code, exitConfig)
+	}
+}
+
+func TestBadFlagIsAUsageError(t *testing.T) {
+	if code := run([]string{"-nope"}); code != exitUsage {
+		t.Fatalf("exit code = %d, want %d", code, exitUsage)
+	}
+	if code := run([]string{"-h"}); code != exitOK {
+		t.Fatalf("-h exit code = %d, want 0", code)
 	}
 }

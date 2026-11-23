@@ -1,0 +1,68 @@
+[Unit]
+Description=Gaap decision broker
+Documentation=https://github.com/aj-nt/gaap
+After=local-fs.target
+
+# The broker sits on the enforcement path for every agent that uses it. When it is not
+# running, those agents refuse their tool calls — that is the designed failure, so this unit
+# has no fallback to fall back to and must not pretend otherwise.
+#
+# Restart=on-failure, not always: `systemctl stop gaapd` has to mean "governance is off",
+# which is a legitimate operator action (the kill switch is the fleet-wide version). A unit
+# that restarted on a clean stop would silently undo it.
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/gaapd \
+    -state /var/lib/gaap \
+    -socket /run/gaap/govern.sock \
+    -socket-mode 0660 \
+    -v
+Restart=on-failure
+RestartSec=2s
+# The daemon exits 78 (EX_CONFIG) for a broken policy, grant or state directory. Those do not
+# get better by trying again, and a restart loop buries the one line that says what is wrong —
+# restarting also burns StartLimitBurst, so the unit lands in "failed" with the real error
+# several attempts behind it. Verified on a host with a missing policy file: without this the
+# unit retried every 2s; with it, the unit stops and the journal has one message.
+RestartPreventExitStatus=78
+
+# A dedicated account, because the identity the broker attests is a uid: if agents and the
+# broker shared one, the grants file could not tell a caller from the service itself.
+User=gaap
+Group=gaap
+StateDirectory=gaap
+StateDirectoryMode=0700
+RuntimeDirectory=gaap
+RuntimeDirectoryMode=0750
+UMask=0077
+
+# The socket is the only thing it needs: AF_UNIX and nothing else. It never opens a network
+# connection, never spawns a tool, and never needs a capability.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+# Deliberately absent: ExecReload and socket activation.
+#
+# Policy is re-read when the file's (size, mtime) changes, so there is nothing to signal —
+# the next decision already uses the new file, and the response carries the revision it was
+# decided under.
+#
+# Socket activation would resurrect a broker the operator stopped, on the first reconnect,
+# without saying so. The fail-closed property is the point; do not optimise it away.
+
+[Install]
+WantedBy=multi-user.target
