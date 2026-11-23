@@ -94,17 +94,6 @@ func Resolve(grants Grants, uid uint32, claimed string) (string, error) {
 	}
 }
 
-// FromSingle adapts a one-agent-per-uid grant — the memory broker's shape, where a store is
-// scoped to a single agent — into a set. It exists so the memory broker keeps its single-value
-// model without a second copy of the identity rule.
-func FromSingle(principals map[int]string) Grants {
-	out := make(Grants, len(principals))
-	for uid, agent := range principals {
-		out[uid] = []string{agent}
-	}
-	return out
-}
-
 func sorted(in []string) []string {
 	out := append([]string(nil), in...)
 	sort.Strings(out)

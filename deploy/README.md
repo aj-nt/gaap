@@ -27,6 +27,8 @@ so:
 | `keys.json`, `refs.json` | keyed commitments and opaque subject handles | created — **losing `keys.json` makes existing rows unverifiable against their commitments** |
 | `kill.json` | the fleet stop | created |
 | `denials.json` | the sustained-refusal counter | created |
+| `mem.db` | the memory store the broker serves (0600) | created empty — **this is the content, back it up with `keys.json`** |
+| `ticket.key` | mints and verifies gate tickets | created on first ticket; losing it invalidates in-flight tokens, not the record |
 
 Back up `keys.json` with the ledger or neither is worth much.
 

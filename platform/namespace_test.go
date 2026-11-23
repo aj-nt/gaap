@@ -45,11 +45,11 @@ func TestNamespaceSpecNeverPrivilegedOrSocket(t *testing.T) {
 func TestExtraMountsRenderReadOnly(t *testing.T) {
 	spec := NewNamespaceSpec(1001, "/srv/ws")
 	spec.ExtraMounts = []Mount{
-		{Source: "/run/govmem.sock", Target: "/run/govmem.sock", ReadOnly: true},
+		{Source: "/run/gaapd/govern.sock", Target: "/run/gaapd/govern.sock", ReadOnly: true},
 	}
 	args := strings.Join(spec.DockerRunArgs(), " ")
 
-	if !strings.Contains(args, "-v /run/govmem.sock:/run/govmem.sock:ro") {
+	if !strings.Contains(args, "-v /run/gaapd/govern.sock:/run/gaapd/govern.sock:ro") {
 		t.Fatalf("socket mount missing or writable: %s", args)
 	}
 	if !strings.Contains(args, "-v /srv/ws:/workspace:rw") {

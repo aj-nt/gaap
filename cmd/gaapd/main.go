@@ -14,6 +14,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -28,6 +30,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/aj-nt/gaap/internal/memstore"
 
 	"github.com/aj-nt/gaap/internal/peercred"
 	"github.com/aj-nt/gaap/internal/principal"
@@ -62,6 +66,15 @@ type Request struct {
 	// Ticket asks for an attestation covering one observation. Only a pure read can be
 	// attested, so asking for one on anything else is refused rather than served.
 	Ticket *TicketAsk `json:"ticket,omitempty"`
+	// PresentTicket is a token the caller already holds, presented to a memory write to
+	// claim provenance. Distinct from Ticket: one asks for an attestation, the other offers
+	// one that must verify.
+	PresentTicket string `json:"present_ticket,omitempty"`
+	// Memory ops.
+	Entry  *memstore.Entry `json:"entry,omitempty"`
+	Query  string          `json:"query,omitempty"`
+	ID     string          `json:"id,omitempty"`
+	Budget int             `json:"budget,omitempty"`
 }
 
 type Response struct {
@@ -77,6 +90,11 @@ type Response struct {
 	// without it the mistake surfaces as an agent flailing through refusals.
 	Tools              int      `json:"tools,omitempty"`
 	UnknownPolicyTools []string `json:"unknown_policy_tools,omitempty"`
+	// Memory responses.
+	Entries   []memstore.Entry `json:"entries,omitempty"`
+	Effective string           `json:"effective,omitempty"`
+	Block     string           `json:"block,omitempty"`
+	MemRev    string           `json:"mem_revision,omitempty"`
 	// Revision names the policy that produced this decision. A caller that logs only the
 	// verdict cannot tell "the rule I wrote refuses this" from "the rule I replaced an hour
 	// ago refuses this".
@@ -104,6 +122,9 @@ type grantsFile struct {
 		Agent  string   `json:"agent"`
 		Agents []string `json:"agents"`
 	} `json:"principals"`
+	// Grants are the memory capabilities, in the same file as the principals because both
+	// answer "what may this identity do" and splitting them is how the two drift apart.
+	Grants []platform.MemoryGrant `json:"grants"`
 }
 
 type config struct {
@@ -111,6 +132,9 @@ type config struct {
 	StateDir   string
 	PolicyPath string
 	GrantsPath string
+	// StorePath is the memory store this broker serves. One socket, because two daemons
+	// with two identity models and two state directories is two answers to "who is acting".
+	StorePath  string
 	TrustFloor float64
 }
 
@@ -146,7 +170,13 @@ type broker struct {
 	classes    map[string]platform.Reversibility
 	owners     map[string]string
 	ticketPath string
-	verbose    bool
+	// mem is the memory store this broker owns, and memRules the capabilities compiled from
+	// the same grant file. The store is reachable only through this socket: the agent
+	// process never opens the database.
+	mem      *memstore.Store
+	memRules *platform.PolicyEngine
+	memRev   string
+	verbose  bool
 }
 
 func newBroker(cfg config) (*broker, error) {
@@ -158,6 +188,9 @@ func newBroker(cfg config) (*broker, error) {
 	}
 	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
 		return nil, err
+	}
+	if cfg.StorePath == "" {
+		cfg.StorePath = filepath.Join(cfg.StateDir, "mem.db")
 	}
 	policy, err := platform.LoadPolicyFile(cfg.PolicyPath)
 	if err != nil {
@@ -197,10 +230,22 @@ func newBroker(cfg config) (*broker, error) {
 		_ = ledger.Close()
 		return nil, fmt.Errorf("denial counter: %w", err)
 	}
-	grants, err := loadGrants(cfg.GrantsPath)
+	grants, memRules, memRev, err := loadGrants(cfg.GrantsPath)
 	if err != nil {
 		_ = ledger.Close()
 		return nil, err
+	}
+	mem, err := memstore.Open(cfg.StorePath)
+	if err != nil {
+		_ = ledger.Close()
+		return nil, fmt.Errorf("open memory store: %w", err)
+	}
+	// The store is broker-only. 0600 owned by the broker's uid is the other half of "the
+	// agent cannot reach the store": the socket is the only door.
+	if err := os.Chmod(cfg.StorePath, 0o600); err != nil {
+		_ = mem.Close()
+		_ = ledger.Close()
+		return nil, fmt.Errorf("memory store perms: %w", err)
 	}
 
 	gov := platform.NewGovernor()
@@ -222,6 +267,9 @@ func newBroker(cfg config) (*broker, error) {
 		catalogues: make(map[string]map[string]platform.Reversibility),
 		classes:    make(map[string]platform.Reversibility),
 		owners:     make(map[string]string),
+		mem:        mem,
+		memRules:   memRules,
+		memRev:     memRev,
 	}
 	gov.Catalogue = b.catalogueFor
 	gov.Classify = b.classifyFor
@@ -232,19 +280,30 @@ func newBroker(cfg config) (*broker, error) {
 	return b, nil
 }
 
-func (b *broker) Close() error { return b.ledger.Close() }
+func (b *broker) Close() error {
+	if b.mem != nil {
+		_ = b.mem.Close()
+	}
+	return b.ledger.Close()
+}
 
-func loadGrants(path string) (principal.Grants, error) {
+func loadGrants(path string) (principal.Grants, *platform.PolicyEngine, string, error) {
 	if path == "" {
-		return nil, fmt.Errorf("gaapd needs a grants file: a broker with no principals cannot tell one agent from another")
+		return nil, nil, "", fmt.Errorf("gaapd needs a grants file: a broker with no principals cannot tell one agent from another")
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, "", err
 	}
 	var f grantsFile
 	if err := json.Unmarshal(raw, &f); err != nil {
-		return nil, fmt.Errorf("gaapd: parse %s: %w", path, err)
+		return nil, nil, "", fmt.Errorf("gaapd: parse %s: %w", path, err)
+	}
+	sum := sha256.Sum256(raw)
+	rev := hex.EncodeToString(sum[:])
+	rules, err := platform.CompileMemoryGrants(f.Grants, rev)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("gaapd: %s: %w", path, err)
 	}
 	out := make(principal.Grants, len(f.Principals))
 	for _, p := range f.Principals {
@@ -253,20 +312,21 @@ func loadGrants(path string) (principal.Grants, error) {
 			agents = []string{p.Agent}
 		}
 		if len(agents) == 0 {
-			return nil, fmt.Errorf("gaapd: %s grants uid %d no agents", path, p.UID)
+			return nil, nil, "", fmt.Errorf("gaapd: %s grants uid %d no agents", path, p.UID)
 		}
 		out[p.UID] = agents
 	}
 	if len(out) == 0 {
-		return nil, fmt.Errorf("gaapd: %s names no principals: a broker with no principals cannot tell one agent from another", path)
+		return nil, nil, "", fmt.Errorf("gaapd: %s names no principals: a broker with no principals cannot tell one agent from another", path)
 	}
-	return out, nil
+	return out, platform.GrantsEngine(rules), rev, nil
 }
 
 // serve answers one request from a peer whose uid the transport established.
 func (b *broker) serve(req Request, uid uint32) Response {
-	if req.Op != "decide" && req.Op != "status" && req.Op != "register" {
-		return Response{Error: fmt.Sprintf("unknown op %q (want \"decide\", \"status\" or \"register\")", req.Op)}
+	_, isMem := memoryCapability(req.Op)
+	if !isMem && req.Op != "decide" && req.Op != "status" && req.Op != "register" {
+		return Response{Error: fmt.Sprintf("unknown op %q (want \"decide\", \"status\", \"register\" or a memory op)", req.Op)}
 	}
 	if req.Op == "decide" && req.Tool == "" {
 		return Response{Error: "decide requires tool"}
@@ -293,6 +353,12 @@ func (b *broker) serve(req Request, uid uint32) Response {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.reloadLocked()
+
+	// Memory ops go through the same identity rule as decisions, which is the point of one
+	// socket: a second daemon would be a second answer to who is acting.
+	if isMem {
+		return b.serveMemory(agent, req)
+	}
 
 	switch req.Op {
 	case "status":
@@ -587,7 +653,8 @@ func run(args []string) int {
 		socketPath = fs.String("socket", "", "unix socket (default <state>/govern.sock)")
 		stateDir   = fs.String("state", "/var/lib/gaapd", "state directory: ledger, keys, policy, grants (never the workload runtime's data root)")
 		policyPath = fs.String("policy", "", "policy file (default <state>/policy.json)")
-		grantsPath = fs.String("grants", "", "grant file with principals (default <state>/memory-grants.json)")
+		grantsPath = fs.String("grants", "", "grant file with principals and memory grants (default <state>/memory-grants.json)")
+		storePath  = fs.String("store", "", "memory store (default <state>/mem.db)")
 		socketMode = fs.Uint("socket-mode", 0o666, "permissions on the unix socket (an install that uses a group wants 0660)")
 		trustFloor = fs.Float64("trust-floor", 0, "escalate allows to review below this trust score")
 		verbose    = fs.Bool("v", false, "log one line per decision")
@@ -605,6 +672,7 @@ func run(args []string) int {
 		StateDir:   *stateDir,
 		PolicyPath: *policyPath,
 		GrantsPath: *grantsPath,
+		StorePath:  *storePath,
 		TrustFloor: *trustFloor,
 	}
 	if cfg.Socket == "" {
@@ -615,6 +683,9 @@ func run(args []string) int {
 	}
 	if cfg.GrantsPath == "" {
 		cfg.GrantsPath = filepath.Join(cfg.StateDir, "memory-grants.json")
+	}
+	if cfg.StorePath == "" {
+		cfg.StorePath = filepath.Join(cfg.StateDir, "mem.db")
 	}
 
 	// The policy file this daemon hot-reloads must not live where the governed workloads can
@@ -659,4 +730,127 @@ func run(args []string) int {
 	_ = os.Remove(cfg.Socket)
 	log.Printf("gaapd: stopped")
 	return exitOK
+}
+
+// memoryCapability maps a wire op to the capability the grant file must open. It is a table
+// rather than a cast because the op names and the capability vocabulary are not the same list:
+// "search" is a read of the store, and casting it to a capability called "search" — which no
+// grant can name, because the compiler rejects unknown capabilities — is a door that looks
+// open and refuses every caller. That is what the standalone broker did.
+func memoryCapability(op string) (platform.MemoryCapability, bool) {
+	switch op {
+	case "read", "search":
+		return platform.MemRead, true
+	case "write":
+		return platform.MemWrite, true
+	case "tombstone":
+		return platform.MemTombstone, true
+	case "resolve":
+		return platform.MemResolve, true
+	case "injectable":
+		return platform.MemInjectable, true
+	}
+	return "", false
+}
+
+// serveMemory answers the memory ops the standalone broker used to serve on its own socket.
+//
+// One socket, one identity, one store: the identity rule above is the same one every decision
+// uses, so "who is acting" has a single answer, and the store sits in the broker's state
+// directory with the ledger that records what was done to it.
+func (b *broker) serveMemory(agent string, req Request) Response {
+	cap, _ := memoryCapability(req.Op)
+	tool := platform.MemoryTool(cap)
+	if b.memRules != nil {
+		d := b.memRules.Evaluate(tool, map[string]any{"identity": agent})
+		if d.Action != platform.ActionAllow {
+			if b.verbose {
+				log.Printf("gaapd: deny %s agent=%s rule=%s", tool, agent, d.RuleID)
+			}
+			return Response{Error: fmt.Sprintf("%s refused for %s (rule %s)", tool, agent, d.RuleID), MemRev: b.memRev}
+		}
+	}
+
+	resp := b.memory(req, agent)
+	if b.verbose {
+		log.Printf("gaapd: %s agent=%s ok=%v", tool, agent, resp.OK)
+	}
+	resp.MemRev = b.memRev
+	return resp
+}
+
+// memory is the op body. It returns errors rather than refusals: authorization happened
+// above, so anything here is a malformed request or a store failure.
+func (b *broker) memory(req Request, agent string) Response {
+	switch req.Op {
+	case "read":
+		if req.ID == "" {
+			return Response{Error: "read requires id"}
+		}
+		e, err := b.mem.Get(req.ID)
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		_, eff, err := b.mem.EffectiveTaint(req.ID)
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true, Entries: []memstore.Entry{e}, Effective: eff}
+
+	case "search":
+		entries, err := b.mem.Search(req.Query)
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true, Entries: entries}
+
+	case "write":
+		if req.Entry == nil {
+			return Response{Error: "write requires entry"}
+		}
+		if req.PresentTicket != "" {
+			return b.appendAttested(req, agent)
+		}
+		if err := b.mem.Append(*req.Entry); err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true}
+
+	case "tombstone":
+		if err := b.mem.Tombstone(req.ID); err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true}
+
+	case "resolve":
+		if err := b.mem.Resolve(req.ID, "confirmed", agent, "via broker"); err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true}
+
+	case "injectable":
+		entries, err := b.mem.Injectable(req.Budget)
+		if err != nil {
+			return Response{Error: err.Error()}
+		}
+		return Response{OK: true, Block: memstore.RenderInjectable(entries)}
+	}
+	return Response{Error: "unknown op " + req.Op}
+}
+
+// appendAttested turns a presented ticket into an internal append: verify, then write. A
+// refusal here is a refusal — the content is not quietly appended as external instead, because
+// a caller that believes it holds an attestation must not be served as though it did.
+func (b *broker) appendAttested(req Request, agent string) Response {
+	if b.gov.Tickets == nil {
+		return Response{Error: "a ticket was presented but this broker has no ticket key; refusing rather than recording the content as external"}
+	}
+	t, err := b.gov.Tickets.Verify(req.PresentTicket, req.Entry.ID, agent, req.Entry.SourceRef)
+	if err != nil {
+		return Response{Error: "ticket refused: " + err.Error()}
+	}
+	if err := b.mem.AppendWithTicket(t.ID, *req.Entry); err != nil {
+		return Response{Error: err.Error()}
+	}
+	return Response{OK: true, Effective: memstore.TaintInternal}
 }
