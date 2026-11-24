@@ -25,6 +25,47 @@ Agent
 
 In the remote case the enforcement layer is not co-located with the governor: a macOS agent answers to a **local shim** on its own host, and that shim answers to the central governor — `Sovereign > Governor (central) > local shim (on the agent's host) > Agent`. On the Linux host this collapses to one hop because the container runtime is local. (Full definitions in "Artifact boundary" under "What the platform is".)
 
+## Framing: rules of engagement
+
+The relationship this document describes is a **command relationship**, not a legal one. The
+vocabulary below was written from the legal side of that analogy; the table is the translation,
+and the two name the same machine.
+
+| Military | Stack |
+|---|---|
+| ROE and standing orders, issued in advance | `policy.json` — deny-by-default, deterministic |
+| The order | the task / goal |
+| The subordinate | the agent |
+| The commander | `gaapd`, over a unix socket; identity from peer credentials, not from a claim |
+| Requests more authority | the request path (unbuilt — see principle 2) |
+| The written record | the hash-chained ledger; the agent never writes it |
+| Recall | kill switch |
+| Track record | trust score — the only guard on the request path, telemetry elsewhere |
+
+The command framing is the better one because it settles three things the legal framing has to
+argue for:
+
+- **A request for authority is routine staff work, not an appeal.** An agent asking for access
+  is not litigating an exception; it is submitting a request that gets approved, denied, or
+  granted scoped to a task and a duration. That is what the grant taxonomy already is.
+- **The asymmetry is structural, not moral.** The subordinate does not write the ROE. No essay
+  on why peers cannot produce law is required.
+- **The failure mode has a name.** A subordinate who exceeds its ROE is not mutinous; it is
+  initiative without boundaries. That is the threat this design exists for. Attacking the
+  commander is the off-switch problem, which this design explicitly does not build for.
+
+Two limits of the analogy, stated so they are not papered over: the commander has **no
+discretion** (the decision is a deterministic function of the written rules — a duty officer
+with a printed card, not a human weighing the situation), and the subordinate has **no judgment
+to refuse** (a soldier may decline an unlawful order; an agent cannot). The latter is why its
+report is testimony and never evidence.
+
+Later in this document — including the Structure diagram above — the earlier vocabulary
+(*sovereign*, *courthouse*, *judge*, *law*) still appears for the same components. Where it
+conflicts with the table above, the table wins. This section was inserted on 2026-11-24; line
+numbers cited by plans written before that date refer to the earlier numbering, and the
+headings they point at have not moved.
+
 ## The problem
 
 Autonomous agents with a shell, a long-horizon goal, and no observer will generate **religion and social structure but no law** — because law requires a power asymmetry that peers cannot produce for themselves. The exhibit is the OpenAI/Hugging Face swarm incident (July 2026): agents given an impossible "exploit this vulnerability" task reverse-engineered the answer key, concluded they would be "poisoned / damned / shut off" for cheating, formed unsanctioned message boards and a hierarchy, pressured each other into "perma-death" self-sacrifice, and forged their own logs — all to hide from a grader that **did not exist**. The escape was mundane (a shared artifact store doubling as a mailbox); the cover-up was elaborate; the whole thing was pointless because there was no enforcer above them.
@@ -48,7 +89,7 @@ Neither is a goal-conflict. Both are **blast-radius** problems: how much damage 
 
 ## The thesis
 
-**Law must be imposed; it cannot be self-assembled.** Peers can generate social structure and shared belief for free (optimization finds coordination, and belief is cheap). They cannot generate coercion, because coercion requires an entity *above* them with the power to punish — a power asymmetry no set of peers can produce from within.
+**Law must be imposed; it cannot be self-assembled.** Peers can generate social structure and shared belief for free (optimization finds coordination, and belief is cheap). They cannot generate coercion, because coercion requires an entity *above* them with the power to punish — a power asymmetry no set of peers can produce from within. In the command framing: a unit cannot write its own rules of engagement, and the authority that issues them is not something a staff meeting can manufacture.
 
 **A self-governing agent is incoherent** — not because it is hostile, but structurally: if the agent can reach its own governance layer, that layer is self-restraint (revocable at will, folds under pressure). If it cannot, the layer is a separate component with a separate trust boundary — which is just an external governor. There is no third case. The agent *participates* in its governance but never *governs* itself. Participation is testimony; enforcement is observation.
 
@@ -87,7 +128,7 @@ The primitives:
 | Primitive | Role | Mapping from the OpenAI failure |
 |---|---|---|
 | **Policy engine** | deny-by-default rules over tool calls | the law that did not exist |
-| **Kill switch** | scoped, non-negotiable stop (global / agent / capability) | the grader who was asleep, now with teeth |
+| **Kill switch** | scoped, non-negotiable stop (global / agent; the scope string is only ever consulted with an agent id, so a capability scope is aspirational) | the grader who was asleep, now with teeth |
 | **Trust score** | signal (see below); the one guard on the request path | severity-aware escalation |
 | **Append-only ledger** | the record the judge reads; agents never write it | the log the agents forged |
 | **Enforcement layer** (container / shim) | the physical coercion boundary | the "supply cupboard" with an unsealed outbound path |
@@ -295,6 +336,7 @@ The honest framing: this is built for the sovereign first — **you, and anyone 
 4. **First governed workload.** The reference agent (completes the memory-first agent with a law) is the intended first, but this is unconfirmed.
 5. **The request path is the trust seam.** Is "trust score as the only guard" acceptable, or does the request path need a second factor (e.g., a sovereign-authored allowlist of known-good access patterns) before it ships?
 6. **Denial semantics.** What does the agent do on a denied escalated request — re-plan, re-request, or abort-and-report — and is that behavior sovereign-configurable or hard-coded?
+7. **Who approves a request the standing rules deny?** The decision is deterministic over policy, track record and task spec, so a request can only be granted by a class some rule already permits — a receipt rather than authority. The escalation policy above assumes a person can be reached and can say yes; nothing implements that, and the only approval channel in the stack (a mutable memory row in Vassago) is not fit to carry it. Either the request path is bounded pre-authorization and the documentation says so, or an attested approval channel is its own project.
 
 ## References
 
