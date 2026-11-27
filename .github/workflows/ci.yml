@@ -35,6 +35,19 @@ jobs:
       - name: Check build
         run: go build ./...
 
+      # The workspace maps platform/ and protocol/ to this checkout, which is right for
+      # development and wrong for the thing users install: a consumer gets the published
+      # tags. Without this step, drift between the tree and the tags is first discovered
+      # by somebody's `go get`.
+      - name: Consumer view (published tags, no workspace)
+        env:
+          GOWORK: "off"
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+          go build ./...
+          go vet ./...
+
       # The kernel is a separate module, so the `./...` above does NOT reach it.
       # Without these steps the split would silently drop the governance kernel
       # from CI entirely — and the code with the guarantees is the code most worth
