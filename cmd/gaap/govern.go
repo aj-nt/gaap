@@ -151,6 +151,12 @@ func buildGovernor(policyPath, stateDir string, trustFloor float64, readTools st
 	}
 	g := platform.NewGovernor()
 	g.Policy = policy
+	// Same refusal as gaapd: a deletion-declaring rule needs a pre-state capturer,
+	// and none exists yet, so say so before the run instead of refusing per call.
+	if err := policy.CheckPreState(g.PreState != nil); err != nil {
+		_ = state.Close()
+		return nil, nil, err
+	}
 	g.Ledger = state.ledger
 	g.Committer = committer
 	g.Refs = state.refs

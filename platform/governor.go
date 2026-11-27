@@ -22,8 +22,6 @@ type Governor struct {
 	Kill   KillReader
 	Trust  *TrustManager
 	Ledger *Ledger
-	// Enforcer applies the decision to the world. nil = noop.
-	Enforcer Enforcer
 	// TrustFloor escalates an allow to review while the trust score sits below
 	// it. Zero disables the check: a governor that starts reviewing everything
 	// on the day it is installed is a governor nobody runs.
@@ -108,11 +106,10 @@ type Governor struct {
 // process.
 func NewGovernor() *Governor {
 	return &Governor{
-		Policy:   NewPolicyEngine(),
-		Kill:     NewKillSwitch(),
-		Trust:    NewTrustManager(500),
-		Ledger:   NewLedger(),
-		Enforcer: &NoopEnforcer{},
+		Policy: NewPolicyEngine(),
+		Kill:   NewKillSwitch(),
+		Trust:  NewTrustManager(500),
+		Ledger: NewLedger(),
 		// Content is not decoration: without it a decision is recorded with a
 		// commitment that points at nothing, and an erasure is a no-op that
 		// still reports success. The default governor stores what it decided on.
@@ -328,16 +325,10 @@ func (g *Governor) record(agentID, tool string, args map[string]any, d Decision,
 		DenialClass:   denialClassOf(d),
 		CorrelationID: correlationOf(d),
 
-		ArtifactType:      artifactTypeOf(d),
-		ArtifactClass:     g.artifactClassFor(d),
-		ArtifactTTL:       artifactTTLOf(d),
-		ArtifactCeiling:   artifactCeilingOf(d),
-		ArtifactScope:     artifactScopeOf(d),
-		ArtifactLocatable: d.Artifact != nil && d.Artifact.Locatable,
-		ArtifactPreState:  d.PreState,
-		PolicyRev:         g.Policy.Revision(),
-		RunID:             o.RunID,
-		ParentTasks:       o.ParentTasks,
+		ArtifactType:  artifactTypeOf(d),
+		ArtifactClass: g.artifactClassFor(d),
+		ArtifactTTL:   artifactTTLOf(d),
+		PolicyRev:     g.Policy.Revision(),
 	}); err != nil {
 		return err
 	}
@@ -415,20 +406,6 @@ func artifactTTLOf(d Decision) string {
 		return ""
 	}
 	return d.Artifact.Lifetime.String()
-}
-
-func artifactCeilingOf(d Decision) string {
-	if d.Artifact == nil || d.Artifact.Ceiling <= 0 {
-		return ""
-	}
-	return d.Artifact.Ceiling.String()
-}
-
-func artifactScopeOf(d Decision) string {
-	if d.Artifact == nil {
-		return ""
-	}
-	return d.Artifact.Scope
 }
 
 // actionClassFor resolves the class of a refused call: what the rule declared,

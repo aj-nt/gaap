@@ -17,14 +17,8 @@ import (
 // reader change (a filter, a tail renderer, a report) rather than only a writer
 // change, so it belongs here where those readers can see it.
 const (
-	KindDecision   = "decision"
-	KindGrant      = "grant"
-	KindKillswitch = "killswitch"
-	KindTrust      = "trust"
-	KindRequest    = "request"
-	// Reserved: named here so a writer cannot invent a spelling, but no
-	// production path emits them yet.
-	KindRevocation  = "revocation"
+	KindDecision    = "decision"
+	KindKillswitch  = "killswitch"
 	KindDenialBurst = "denial_burst"
 )
 
@@ -93,40 +87,12 @@ type Entry struct {
 	// nothing happened, so there is no consequence to characterise. On an allow
 	// with no declaration, ArtifactClass is "unrecorded" — the dangerous state,
 	// recorded as a value so it can be queried.
-	ArtifactType    string `json:"artifact_type,omitempty"`
-	ArtifactClass   string `json:"artifact_class,omitempty"`
-	ArtifactTTL     string `json:"artifact_ttl,omitempty"`
-	ArtifactCeiling string `json:"artifact_ceiling,omitempty"`
-	ArtifactScope   string `json:"artifact_scope,omitempty"`
-	// ArtifactLocatable says whether the operator can find the thing again. False
-	// is the common honest answer, so it is omitted rather than written as a claim.
-	ArtifactLocatable bool `json:"artifact_locatable,omitempty"`
-	// ArtifactPreState is a commitment to the state a destructive call replaces,
-	// captured before it runs. Empty means either not applicable or not required;
-	// the class says which.
-	ArtifactPreState string `json:"artifact_pre_state,omitempty"`
+	ArtifactType  string `json:"artifact_type,omitempty"`
+	ArtifactClass string `json:"artifact_class,omitempty"`
+	ArtifactTTL   string `json:"artifact_ttl,omitempty"`
 	// PolicyRev is a content hash of the policy file in force. Empty means the
 	// engine was built in code and has no file — unknown, not "version 1".
 	PolicyRev string `json:"policy_rev,omitempty"`
-	// RunID and ParentTasks place the decision in a run's lineage. Both are empty
-	// on the CLI path, which is a real answer: no run, no parent.
-	RunID       string `json:"run_id,omitempty"`
-	ParentTasks string `json:"parent_tasks,omitempty"`
-	// ArtifactRef points at the artifact a KindRevocation entry is about. The plan
-	// listed ten fields and not this one, but a revocation that cannot name what
-	// it revokes is unreadable: no existing field points at an artifact, and
-	// reusing SubjectRef would make an artifact erasure indistinguishable from a
-	// subject erasure.
-	ArtifactRef string `json:"artifact_ref,omitempty"`
-	// RevocationStage is requested|propagated|verified. State is derived from the
-	// sequence of these entries, never written back onto the original entry:
-	// entries are append-only, and a mutable field on one would be a lie the chain
-	// cannot detect.
-	RevocationStage string `json:"revocation_stage,omitempty"`
-	// KeyID identifies the signing key that authenticated this entry. Empty
-	// until signing is wired in; the field exists so entries are self-describing
-	// across key rotation.
-	KeyID string `json:"key_id,omitempty"`
 	// Algo names the hash algorithm used for Hash. Only "sha256" is
 	// implemented; Append stamps it so old entries stay verifiable under the
 	// algorithm they were written with.
@@ -199,7 +165,12 @@ func hashEntry(e Entry, prevHash string) (string, error) {
 		return "", fmt.Errorf("unsupported hash algorithm %q (only sha256 implemented)", e.Algo)
 	}
 	content := struct {
-		PrevHash     string `json:"prev_hash"`
+		PrevHash string `json:"prev_hash"`
+		// Legacy slot, kept for chain compatibility: Entry no longer carries KeyID
+		// (nothing signed anything), but every row written before that deletion hashed
+		// key_id:"" as part of the chain. Dropping it would invalidate every ledger on
+		// disk, and its position matters -- json.Marshal emits keys in declaration
+		// order, so moving this line changes the digest of every existing entry.
 		KeyID        string `json:"key_id"`
 		Algo         string `json:"algo"`
 		Seq          int64  `json:"seq"`
@@ -221,22 +192,14 @@ func hashEntry(e Entry, prevHash string) (string, error) {
 		DenialClass   string `json:"denial_class,omitempty"`
 		CorrelationID string `json:"correlation_id,omitempty"`
 
-		ArtifactType      string `json:"artifact_type,omitempty"`
-		ArtifactClass     string `json:"artifact_class,omitempty"`
-		ArtifactTTL       string `json:"artifact_ttl,omitempty"`
-		ArtifactCeiling   string `json:"artifact_ceiling,omitempty"`
-		ArtifactScope     string `json:"artifact_scope,omitempty"`
-		ArtifactLocatable bool   `json:"artifact_locatable,omitempty"`
-		ArtifactPreState  string `json:"artifact_pre_state,omitempty"`
-		PolicyRev         string `json:"policy_rev,omitempty"`
-		RunID             string `json:"run_id,omitempty"`
-		ParentTasks       string `json:"parent_tasks,omitempty"`
-		ArtifactRef       string `json:"artifact_ref,omitempty"`
-		RevocationStage   string `json:"revocation_stage,omitempty"`
+		ArtifactType  string `json:"artifact_type,omitempty"`
+		ArtifactClass string `json:"artifact_class,omitempty"`
+		ArtifactTTL   string `json:"artifact_ttl,omitempty"`
+		PolicyRev     string `json:"policy_rev,omitempty"`
 	}{
 		PrevHash:      prevHash,
-		KeyID:         e.KeyID,
 		Algo:          e.Algo,
+		KeyID:         "",
 		Seq:           e.Seq,
 		TimeUnixNano:  e.Time.UnixNano(),
 		Kind:          e.Kind,
@@ -252,18 +215,10 @@ func hashEntry(e Entry, prevHash string) (string, error) {
 		DenialClass:   e.DenialClass,
 		CorrelationID: e.CorrelationID,
 
-		ArtifactType:      e.ArtifactType,
-		ArtifactClass:     e.ArtifactClass,
-		ArtifactTTL:       e.ArtifactTTL,
-		ArtifactCeiling:   e.ArtifactCeiling,
-		ArtifactScope:     e.ArtifactScope,
-		ArtifactLocatable: e.ArtifactLocatable,
-		ArtifactPreState:  e.ArtifactPreState,
-		PolicyRev:         e.PolicyRev,
-		RunID:             e.RunID,
-		ParentTasks:       e.ParentTasks,
-		ArtifactRef:       e.ArtifactRef,
-		RevocationStage:   e.RevocationStage,
+		ArtifactType:  e.ArtifactType,
+		ArtifactClass: e.ArtifactClass,
+		ArtifactTTL:   e.ArtifactTTL,
+		PolicyRev:     e.PolicyRev,
 	}
 	b, err := json.Marshal(content)
 	if err != nil {

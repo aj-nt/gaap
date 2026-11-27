@@ -76,9 +76,6 @@ var Allow = protocol.Allow
 // Deny returns a deny decision with a reason.
 func Deny(reason string) Decision { return protocol.Deny(reason) }
 
-// WithRun attributes the decision to a run.
-func WithRun(id string) DecideOpt { return protocol.WithRun(id) }
-
 // WithFloor supplies the justification's provenance floor.
 func WithFloor(floor TaintClass) DecideOpt { return protocol.WithFloor(floor) }
 
@@ -86,6 +83,3 @@ func WithFloor(floor TaintClass) DecideOpt { return protocol.WithFloor(floor) }
 func WithTicketFor(entryID, resource string) DecideOpt {
 	return protocol.WithTicketFor(entryID, resource)
 }
-
-// WithParents attributes the decision to the tasks it descends from.
-func WithParents(ids ...string) DecideOpt { return protocol.WithParents(ids...) }

@@ -61,8 +61,6 @@ type Request struct {
 	Catalog map[string]string `json:"catalog,omitempty"`
 	// RunID and Parents are the caller's story about where this call came from. They are
 	// attribution, not identity, and the ledger records them as the caller's claim.
-	RunID   string `json:"run_id,omitempty"`
-	Parents string `json:"parents,omitempty"`
 	// Ticket asks for an attestation covering one observation. Only a pure read can be
 	// attested, so asking for one on anything else is refused rather than served.
 	Ticket *TicketAsk `json:"ticket,omitempty"`
@@ -250,6 +248,13 @@ func newBroker(cfg config) (*broker, error) {
 
 	gov := platform.NewGovernor()
 	gov.Policy = policy
+	// A rule whose artifact is a deletion can only be honoured with a pre-state
+	// capturer, and none is wired yet. Refusing at startup names the rules instead
+	// of accepting a permission that every call then turns into a refusal.
+	if err := policy.CheckPreState(gov.PreState != nil); err != nil {
+		_ = ledger.Close()
+		return nil, err
+	}
 	gov.Ledger = ledger
 	gov.Committer = committer
 	gov.Refs = refs
@@ -464,12 +469,6 @@ func (b *broker) serveDecideLocked(uid uint32, agent string, req Request) Respon
 			return Response{Error: fmt.Sprintf("floor %q is not a provenance class", req.Floor)}
 		}
 		opts = append(opts, platform.WithFloor(class))
-	}
-	if req.RunID != "" {
-		opts = append(opts, platform.WithRun(req.RunID))
-	}
-	if req.Parents != "" {
-		opts = append(opts, platform.WithParents(strings.Split(req.Parents, ",")...))
 	}
 	// A caller that asked for attestation gets a token or a refusal, never a quiet allow: the
 	// broker mints tickets from the key beside kill.json, creating it on first use so a ticket

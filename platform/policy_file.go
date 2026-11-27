@@ -257,11 +257,12 @@ func parseAction(name string) (Action, error) {
 	case ActionAllow, ActionDeny, ActionReview:
 		return Action(name), nil
 	case ActionRateLimit:
-		// Accepted. M0.1 refused this at load because nothing counted anything
-		// and dispatch had no case for it, so the rule silently became a block.
-		// M8.2 supplies the counter and M8.3 supplies the dispatch case; keeping
-		// the rejection now would leave the branch unreachable and the feature
-		// unconfigurable while its tests passed.
+		// Accepted, and it is a block: a matching call is refused and the refusal
+		// reports the cooldown, with no threshold compared first. M0.1 refused the
+		// name at load because nothing counted anything and dispatch had no case,
+		// which made the rule a silent block; M8.2 supplied the counter and M8.3 the
+		// dispatch case, and reversing that is off the table. What is left is to say
+		// plainly what an operator is writing: a refusal, not a queue with a budget.
 		return ActionRateLimit, nil
 	case "":
 		return "", fmt.Errorf("missing action")

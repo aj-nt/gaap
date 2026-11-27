@@ -4,9 +4,15 @@ package protocol
 type Action string
 
 const (
-	ActionAllow     Action = "allow"
-	ActionDeny      Action = "deny"
-	ActionReview    Action = "review"
+	ActionAllow  Action = "allow"
+	ActionDeny   Action = "deny"
+	ActionReview Action = "review"
+	// ActionRateLimit refuses the call. It is a block with a cooldown, not a
+	// throttle: nothing compares a count against a threshold before refusing, so
+	// the first call that matches the rule is refused and the refusal reports the
+	// refusal-burst counter. The name is the wire format and is kept for
+	// compatibility with written policy files; the behavior is stated here and in
+	// the policy loader rather than implied by the name.
 	ActionRateLimit Action = "rate_limit"
 )
 

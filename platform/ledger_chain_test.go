@@ -42,22 +42,18 @@ func TestLedgerVerifyDetectsTamper(t *testing.T) {
 	}
 }
 
-func TestLedgerStampsKeyIDAndAlgo(t *testing.T) {
+func TestLedgerStampsAlgo(t *testing.T) {
 	l := NewLedger()
-	_, _ = l.Append(Entry{Kind: "decision", KeyID: "k1"})
-	e := l.Entries()[0]
-	if e.KeyID != "k1" {
-		t.Fatalf("KeyID = %q, want k1", e.KeyID)
-	}
-	if e.Algo != "sha256" {
+	_, _ = l.Append(Entry{Kind: "decision"})
+	if e := l.Entries()[0]; e.Algo != "sha256" {
 		t.Fatalf("Algo = %q, want sha256", e.Algo)
 	}
 }
 
 func TestLedgerSaveLoadRoundTrip(t *testing.T) {
 	l := NewLedger()
-	_, _ = l.Append(Entry{Kind: "decision", SubjectHash: "a", Reason: "allow", KeyID: "k1"})
-	_, _ = l.Append(Entry{Kind: "decision", SubjectHash: "b", Reason: "deny", KeyID: "k1"})
+	_, _ = l.Append(Entry{Kind: "decision", SubjectHash: "a", Reason: "allow"})
+	_, _ = l.Append(Entry{Kind: "decision", SubjectHash: "b", Reason: "deny"})
 
 	path := filepath.Join(t.TempDir(), "ledger.json")
 	if err := l.Save(path); err != nil {

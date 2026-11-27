@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"fmt"
 	"sort"
 	"sync"
 )
@@ -116,6 +117,41 @@ func (e *PolicyEngine) AddRule(r Rule) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.rules = append(e.rules, r)
+}
+
+// RequiringPreState names the rules whose declared artifact is a deletion. Such a
+// call cannot be honoured without a pre-state capturer, and the honest place to say
+// so is when the policy is loaded, not when the call arrives: a rule that can only
+// ever be refused is configuration that reads as a permission.
+func (e *PolicyEngine) RequiringPreState() []string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	var ids []string
+	for _, r := range e.rules {
+		if r.Artifact != nil && r.Artifact.Type == ArtifactDelete {
+			id := r.ID
+			if id == "" {
+				id = "(unnamed rule for " + r.Tool + ")"
+			}
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// CheckPreState reports whether the policy can be honoured with the capturer that
+// is actually configured. It is called at startup rather than per call: a rule
+// that declares a deletion and cannot be satisfied is configuration that reads as
+// a permission and behaves as a refusal, and the operator should hear about it
+// once, by name, before the first call.
+func (e *PolicyEngine) CheckPreState(capturerSet bool) error {
+	if capturerSet {
+		return nil
+	}
+	if ids := e.RequiringPreState(); len(ids) > 0 {
+		return fmt.Errorf("policy declares deletions that need a pre-state capturer, and none is configured: %v", ids)
+	}
+	return nil
 }
 
 // Evaluate returns the decision for a tool call. The returned decision carries

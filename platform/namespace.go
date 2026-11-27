@@ -20,11 +20,6 @@ type NamespaceSpec struct {
 	GID       int    // per-agent gid
 	Workspace string // host path mounted rw into /workspace
 	ReadOnly  bool   // container root fs read-only (default true)
-	// ExtraMounts carries the narrow exceptions: the broker socket, mounted :ro.
-	// It exists because DockerRunArgs hardcoded exactly one -v, so a container could
-	// reach its workspace and nothing else — which is the right default, and useless
-	// for a workload that needs one file.
-	ExtraMounts []Mount
 }
 
 // NewNamespaceSpec returns the deny-by-default spec for one agent.
@@ -44,12 +39,5 @@ func (s *NamespaceSpec) DockerRunArgs() []string {
 	}
 	args = append(args, "-w", "/workspace")
 	args = append(args, "-v", fmt.Sprintf("%s:/workspace:rw", s.Workspace))
-	for _, m := range s.ExtraMounts {
-		mode := "rw"
-		if m.ReadOnly {
-			mode = "ro"
-		}
-		args = append(args, "-v", fmt.Sprintf("%s:%s:%s", m.Source, m.Target, mode))
-	}
 	return args
 }

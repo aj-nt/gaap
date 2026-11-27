@@ -23,7 +23,6 @@ func goldenEntry() Entry {
 		InputHash:     "input-hash",
 		Reason:        "no shell",
 		Reversibility: Irreversible,
-		KeyID:         "",
 		Algo:          "sha256",
 	}
 }
@@ -90,11 +89,9 @@ func TestEntryAndHashStructAgree(t *testing.T) {
 		"Seq": true, "Time": true, "Kind": true, "SubjectHash": true,
 		"SubjectRef": true, "CommitAlgo": true, "Tool": true, "RuleID": true,
 		"Outcome": true, "InputHash": true, "Reason": true, "Reversibility": true,
-		"KeyID": true, "Algo": true, "DenialClass": true, "CorrelationID": true,
+		"Algo": true, "DenialClass": true, "CorrelationID": true,
 		"ArtifactType": true, "ArtifactClass": true, "ArtifactTTL": true,
-		"ArtifactCeiling": true, "ArtifactScope": true, "ArtifactLocatable": true,
-		"ArtifactPreState": true, "PolicyRev": true, "RunID": true, "ParentTasks": true,
-		"ArtifactRef": true, "RevocationStage": true,
+		"PolicyRev": true,
 	}
 	// Fields deliberately outside the chain, with the reason.
 	notHashed := map[string]string{

@@ -386,16 +386,6 @@ func (e *DockerEnforcer) Stop(ctx context.Context, handle string) error {
 	return err
 }
 
-// Grant applies a path grant. Docker cannot add a mount to a running container,
-// so this is a placeholder until the re-spawn flow. For now it only chowns the
-// granted path (the part that is valid standalone).
-func (e *DockerEnforcer) Grant(ctx context.Context, handle string, g PathGrant) error {
-	if err := g.Validate(time.Now()); err != nil {
-		return err
-	}
-	return e.chown(ctx, g.UID, g.Path)
-}
-
 // shortID derives a stable, sanitized container name from a command string.
 func shortID(command string) string {
 	const max = 12
