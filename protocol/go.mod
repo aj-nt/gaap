@@ -8,4 +8,4 @@
 // which made a stable wire look unstable. Here the version means what it says.
 module github.com/aj-nt/gaap/protocol
 
-go 1.27.2
+go 1.27.4

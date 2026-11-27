@@ -1,6 +1,6 @@
 module github.com/aj-nt/gaap
 
-go 1.27.2
+go 1.27.4
 
 require (
 	github.com/aj-nt/gaap/platform v0.16.0

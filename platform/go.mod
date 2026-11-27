@@ -8,7 +8,7 @@
 // module now rather than a directory inside the root one.
 module github.com/aj-nt/gaap/platform
 
-go 1.27.2
+go 1.27.4
 
 require github.com/aj-nt/gaap/protocol v0.1.0
 

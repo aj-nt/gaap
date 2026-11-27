@@ -1,4 +1,4 @@
-go 1.27.2
+go 1.27.4
 
 // The kernel and the wire are developed in this tree and released on their own
 // cadence. A workspace is how that happens without a replace directive: the root
