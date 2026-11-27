@@ -9,21 +9,22 @@ through shared memory (Vassago).
 
 ## Governance
 
-Gaap also hosts a governance layer for autonomous agents: the missing legal layer that sits
-above an agent and enforces what it's allowed to touch. Agents self-assemble belief and social
-structure, but not law, because law needs a power asymmetry peers can't produce. It has to be
-imposed from outside.
+Gaap hosts the command layer for autonomous agents: the standing rules an agent executes under
+and cannot edit. A unit does not write its own rules of engagement, because no set of peers can
+produce the authority that issues them. It has to come from above.
 
 | Primitive | Role |
 |---|---|
-| Policy engine | deny-by-default rules over tool calls |
-| Kill switch | scoped, irreversible stop (global / agent), tripped from code |
-| Trust score | written on every non-allow decision; nothing reads it yet — the request path it informs is not built |
-| Append-only ledger | the record the governor reads; agents never write it |
-| Enforcement layer | container spec (no network, no capabilities, read-only root, per-agent uid); applied by the workload, not by the governor |
+| Rules of engagement | deny-by-default rules over tool calls (`policy.json`) |
+| Recall | scoped, irreversible stop (global / agent), tripped by the operator |
+| Track record | written on every non-allow decision; the only guard on the request path, telemetry elsewhere |
+| The record | append-only, hash-chained; the agent never writes it |
+| Containment | container spec (no network, no capabilities, read-only root, per-agent uid); applied by the workload, not by the governor |
+| Request for authority | **not built** — the path by which an agent asks for access beyond its standing rules |
 
-The agent participates in its governance and never governs itself. The allow/deny decision is
-deterministic, and the LLM enters only as data, never as the judge.
+The agent participates in its governance and never governs itself. The decision is
+deterministic, and the LLM enters only as data, never as the judge. Its own report is
+testimony, never evidence, for what it did.
 
 The primitives live in `platform/`. See [Design: Governance-as-a-Platform](docs/design/governance-as-a-platform.md).
 
