@@ -3,6 +3,8 @@
 
 BINARY := gaap
 CMD_DIR := cmd/gaap
+BROKER := gaapd
+BROKER_DIR := cmd/gaapd
 GO := go
 GOFLAGS := -ldflags="-s -w"
 
@@ -11,12 +13,16 @@ GOFLAGS := -ldflags="-s -w"
 build:
 	$(GO) build $(GOFLAGS) -o $(BINARY) ./$(CMD_DIR)/
 
+.PHONY: build-broker
+build-broker:
+	$(GO) build $(GOFLAGS) -o $(BROKER) ./$(BROKER_DIR)/
+
 .PHONY: build-linux
 build-linux:
 	GOOS=linux GOARCH=amd64 $(GO) build $(GOFLAGS) -o $(BINARY)-linux-amd64 ./$(CMD_DIR)/
 
 .PHONY: build-all
-build-all: build build-linux
+build-all: build build-broker build-linux
 
 # Test targets
 .PHONY: test
