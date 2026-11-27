@@ -45,13 +45,25 @@ jobs:
 
       # `go get` only proves the zip validates; this proves a user can install the broker.
       # It can only run on a tag, because the tag is what the module path resolves to.
+      #
+      # The proxy lags a fresh tag by seconds to minutes, and an install that races it
+      # fails with "unknown revision", which is indistinguishable from a broken release.
+      # Retry rather than teach everyone to ignore a red release run.
       - name: go install the broker from a clean module
         run: |
           tmp=$(mktemp -d)
           cd "$tmp"
           go mod init installcheck >/dev/null
-          GOBIN="$tmp/bin" go install "github.com/aj-nt/gaap/cmd/gaapd@${GITHUB_REF_NAME}"
-          "$tmp/bin/gaapd" -version
+          for attempt in $(seq 1 12); do
+            if GOBIN="$tmp/bin" go install "github.com/aj-nt/gaap/cmd/gaapd@${GITHUB_REF_NAME}"; then
+              "$tmp/bin/gaapd" -version
+              exit 0
+            fi
+            echo "attempt $attempt: proxy does not serve ${GITHUB_REF_NAME} yet; retrying in 30s"
+            sleep 30
+          done
+          echo "::error::the proxy never served ${GITHUB_REF_NAME}; the tag exists but is not installable"
+          exit 1
 
   release:
     name: Release
