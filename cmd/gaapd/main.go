@@ -665,6 +665,28 @@ const (
 	exitConfig = 78 // sysexits.h EX_CONFIG
 )
 
+// Version, Commit and BuildDate are set at build time by -ldflags "-X main.Version=...".
+// A binary built by plain `go build` has no release identity, and "dev" is the honest
+// answer: printing an empty string reads as a version that failed to render.
+var (
+	Version   = "dev"
+	Commit    = ""
+	BuildDate = ""
+)
+
+// versionInfo is what `gaapd -version` prints. The commit and build date are omitted when
+// absent rather than rendered as empty parens.
+func versionInfo() string {
+	s := "gaapd version " + Version
+	if Commit != "" {
+		s += " (" + Commit + ")"
+	}
+	if BuildDate != "" {
+		s += " built " + BuildDate
+	}
+	return s
+}
+
 func main() { os.Exit(run(os.Args[1:])) }
 
 // isWithin reports whether path is root or sits under it.
@@ -691,6 +713,7 @@ func run(args []string) int {
 		socketMode = fs.Uint("socket-mode", 0o666, "permissions on the unix socket (an install that uses a group wants 0660)")
 		trustFloor = fs.Float64("trust-floor", 0, "escalate allows to review below this trust score")
 		verbose    = fs.Bool("v", false, "log one line per decision")
+		showVer    = fs.Bool("version", false, "print version and exit")
 	)
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -698,6 +721,11 @@ func run(args []string) int {
 		}
 		fmt.Fprintf(os.Stderr, "gaapd: %v\n", err)
 		return exitUsage
+	}
+
+	if *showVer {
+		fmt.Println(versionInfo())
+		return exitOK
 	}
 
 	cfg := config{

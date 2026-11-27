@@ -729,3 +729,24 @@ func TestARefusedRegisterLeavesNoTrace(t *testing.T) {
 		}
 	}
 }
+
+// The release pipeline stamps these three via -ldflags. An -X against a symbol that does
+// not exist is silently ignored, so the guard is that the string actually carries the value.
+func TestVersionInfoCarriesBuildIdentity(t *testing.T) {
+	old, oldCommit, oldDate := Version, Commit, BuildDate
+	defer func() { Version, Commit, BuildDate = old, oldCommit, oldDate }()
+
+	Version, Commit, BuildDate = "v9.9.9", "abc1234", "2026-11-26T00:00:00Z"
+	got := versionInfo()
+	for _, want := range []string{"v9.9.9", "abc1234", "2026-11-26"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("versionInfo() = %q, missing %q", got, want)
+		}
+	}
+}
+
+func TestVersionFlagExitsClean(t *testing.T) {
+	if got := run([]string{"-version"}); got != exitOK {
+		t.Fatalf("gaapd -version exit = %d, want %d", got, exitOK)
+	}
+}
