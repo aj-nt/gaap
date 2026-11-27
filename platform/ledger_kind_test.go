@@ -6,13 +6,13 @@ import "testing"
 // record: a tail filtered on "decision" stops matching rows written before the
 // rename, and nothing reports it. These literals are therefore pinned.
 func TestLedgerKindConstants(t *testing.T) {
+	// Only the kinds a production path actually writes. Grant, trust, request and
+	// revocation were declared and never emitted, so no row on disk carries them
+	// and deleting the constants splits nothing; the phase that writes them
+	// re-adds each with its writer.
 	want := map[string]string{
 		KindDecision:    "decision",
 		KindKillswitch:  "killswitch",
-		KindGrant:       "grant",
-		KindTrust:       "trust",
-		KindRequest:     "request",
-		KindRevocation:  "revocation",
 		KindDenialBurst: "denial_burst",
 	}
 	for got, expected := range want {

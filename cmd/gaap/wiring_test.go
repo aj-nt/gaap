@@ -84,6 +84,3 @@ func (f *fakeEnforcer) Stage(context.Context, *platform.NamespaceSpec, string, s
 func (f *fakeEnforcer) Wait(context.Context, string) (string, error)        { return "", nil }
 func (f *fakeEnforcer) Status(context.Context, string) (string, int, error) { return "", 0, nil }
 func (f *fakeEnforcer) Stop(context.Context, string) error                  { return nil }
-func (f *fakeEnforcer) Grant(context.Context, string, platform.PathGrant) error {
-	return nil
-}

@@ -3,7 +3,7 @@ module github.com/aj-nt/gaap
 go 1.27.4
 
 require (
-	github.com/aj-nt/gaap/platform v0.16.0
+	github.com/aj-nt/gaap/platform v0.17.0
 	github.com/aj-nt/vassago-sdk v0.5.0
 	github.com/google/uuid v1.6.0
 	golang.org/x/sys v0.49.0

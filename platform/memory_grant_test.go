@@ -1,12 +1,32 @@
 package platform
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+// compileGrantFile compiles the grants half of a grant file. The loader that used
+// to do the reading lived in platform and was deleted with the rest of the inert
+// surface -- the broker parses this file itself (cmd/gaapd), and its tests cover
+// the file-level behaviour. What is tested here is rule compilation.
+func compileGrantFile(t *testing.T, path string) ([]Rule, error) {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file struct {
+		Grants []MemoryGrant `json:"grants"`
+	}
+	if err := json.Unmarshal(raw, &file); err != nil {
+		return nil, err
+	}
+	return CompileMemoryGrants(file.Grants, "rev")
+}
 
 func writeGrantFile(t *testing.T, body string) string {
 	t.Helper()
@@ -28,7 +48,7 @@ const grantsJSON = `{
 
 // Deny-first: every capability is closed, and a grant opens exactly one.
 func TestUngrantedCapabilityIsDenied(t *testing.T) {
-	rules, _, err := LoadMemoryGrants(writeGrantFile(t, grantsJSON))
+	rules, err := compileGrantFile(t, writeGrantFile(t, grantsJSON))
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -55,7 +75,7 @@ func TestUngrantedCapabilityIsDenied(t *testing.T) {
 // Every compiled rule names itself: a refusal that cannot say which rule produced it
 // is the M6.1 defect.
 func TestEveryRuleHasAStaticID(t *testing.T) {
-	rules, _, err := LoadMemoryGrants(writeGrantFile(t, grantsJSON))
+	rules, err := compileGrantFile(t, writeGrantFile(t, grantsJSON))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +85,7 @@ func TestEveryRuleHasAStaticID(t *testing.T) {
 		}
 	}
 	// Derived ids are stable across loads, not sequence-dependent.
-	rules2, _, err := LoadMemoryGrants(writeGrantFile(t, grantsJSON))
+	rules2, err := compileGrantFile(t, writeGrantFile(t, grantsJSON))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +99,7 @@ func TestEveryRuleHasAStaticID(t *testing.T) {
 // A write grant carries its lifetime, and the lifetime goes through the same ceiling
 // as every other artifact: memory does not get its own private rules.
 func TestWriteGrantCarriesLifetimeWithinCeiling(t *testing.T) {
-	rules, _, err := LoadMemoryGrants(writeGrantFile(t, grantsJSON))
+	rules, err := compileGrantFile(t, writeGrantFile(t, grantsJSON))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,14 +122,14 @@ func TestWriteGrantCarriesLifetimeWithinCeiling(t *testing.T) {
 
 func TestWriteGrantRequiresTTL(t *testing.T) {
 	const bad = `{"version":1,"grants":[{"capability":"write","scope":"agent-7"}]}`
-	if _, _, err := LoadMemoryGrants(writeGrantFile(t, bad)); err == nil {
+	if _, err := compileGrantFile(t, writeGrantFile(t, bad)); err == nil {
 		t.Fatal("a write grant with no lifetime was accepted; an entry with no expiry is permanent")
 	}
 }
 
 func TestWriteGrantOverCeilingRefused(t *testing.T) {
 	const bad = `{"version":1,"grants":[{"capability":"write","scope":"agent-7","max_ttl_seconds":31536000}]}`
-	_, _, err := LoadMemoryGrants(writeGrantFile(t, bad))
+	_, err := compileGrantFile(t, writeGrantFile(t, bad))
 	if err == nil {
 		t.Fatal("a one-year memory lifetime was accepted")
 	}
@@ -120,45 +140,20 @@ func TestWriteGrantOverCeilingRefused(t *testing.T) {
 
 func TestUnscopedGrantRefused(t *testing.T) {
 	const bad = `{"version":1,"grants":[{"capability":"read","scope":""}]}`
-	if _, _, err := LoadMemoryGrants(writeGrantFile(t, bad)); err == nil {
+	if _, err := compileGrantFile(t, writeGrantFile(t, bad)); err == nil {
 		t.Fatal("an unscoped grant was accepted")
 	}
 }
 
 func TestUnknownCapabilityRefused(t *testing.T) {
 	const bad = `{"version":1,"grants":[{"capability":"admin","scope":"agent-7"}]}`
-	if _, _, err := LoadMemoryGrants(writeGrantFile(t, bad)); err == nil {
+	if _, err := compileGrantFile(t, writeGrantFile(t, bad)); err == nil {
 		t.Fatal("an unknown capability was accepted")
 	}
 }
 
 // The revision is the file's content, so it changes when a grant does and does not
 // when the format version string is left alone.
-func TestRevisionIsContentHash(t *testing.T) {
-	_, rev1, err := LoadMemoryGrants(writeGrantFile(t, grantsJSON))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, rev2, err := LoadMemoryGrants(writeGrantFile(t, grantsJSON))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rev1 != rev2 {
-		t.Fatal("the same file produced two revisions")
-	}
-	changed := strings.Replace(grantsJSON, `"agent-7"`, `"agent-9"`, 1)
-	_, rev3, err := LoadMemoryGrants(writeGrantFile(t, changed))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rev3 == rev1 {
-		t.Fatal("a changed grant produced the same revision")
-	}
-	if rev1 == "1" || len(rev1) != 64 {
-		t.Fatalf("revision %q is not a sha256 hex digest", rev1)
-	}
-}
-
 // Every declared capability must carry its own deny rule and its own wire name.
 //
 // Both are derived from allCapabilities, and this is what makes that safe: adding a
@@ -166,7 +161,7 @@ func TestRevisionIsContentHash(t *testing.T) {
 // was a tool the engine refuses by fallthrough with an empty RuleID — a refusal nobody
 // can attribute, which is the M6.1 defect the static ids were introduced to close.
 func TestEveryDeclaredCapabilityIsClosed(t *testing.T) {
-	rules, _, err := LoadMemoryGrants(writeGrantFile(t, grantsJSON))
+	rules, err := compileGrantFile(t, writeGrantFile(t, grantsJSON))
 	if err != nil {
 		t.Fatal(err)
 	}

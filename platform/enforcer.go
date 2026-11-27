@@ -2,7 +2,6 @@ package platform
 
 import (
 	"context"
-	"time"
 )
 
 // Enforcer applies the sovereign's decisions by running the agent's arbitrary
@@ -42,34 +41,4 @@ type Enforcer interface {
 
 	// Stop terminates and removes a detached container.
 	Stop(ctx context.Context, handle string) error
-
-	// Grant applies a host-access grant (chown + mount for a path). In practice
-	// this means re-spawn with the grant present (docker can't add mounts to a
-	// running container); the request flow that triggers it is a later milestone.
-	Grant(ctx context.Context, handle string, g PathGrant) error
-}
-
-// NoopEnforcer is a fake that does nothing. For unit tests and dry runs.
-type NoopEnforcer struct{}
-
-func (NoopEnforcer) Ensure(context.Context) error { return nil }
-func (NoopEnforcer) Run(context.Context, *NamespaceSpec, string, string) (string, error) {
-	return "noop", nil
-}
-func (NoopEnforcer) Start(context.Context, *NamespaceSpec, string, string) (string, error) {
-	return "noop", nil
-}
-func (NoopEnforcer) Logs(context.Context, string) (string, error) { return "", nil }
-func (NoopEnforcer) Stage(context.Context, *NamespaceSpec, string, string) error {
-	return nil
-}
-func (NoopEnforcer) Wait(context.Context, string) (string, error) { return "", nil }
-func (NoopEnforcer) Status(context.Context, string) (string, int, error) {
-	return "exited", 0, nil
-}
-func (NoopEnforcer) Stop(context.Context, string) error { return nil }
-func (NoopEnforcer) Grant(_ context.Context, _ string, g PathGrant) error {
-	// The no-op fake still enforces the grant's own contract: a fake that
-	// accepts an expired grant hides the bug in every test that uses it.
-	return g.Validate(time.Now())
 }

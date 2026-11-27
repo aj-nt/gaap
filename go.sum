@@ -1,5 +1,5 @@
-github.com/aj-nt/gaap/platform v0.16.0 h1:jcFcZxBYnhmkHG6/MzJV0b0nozBFeokTJsO+rdVSrQE=
-github.com/aj-nt/gaap/platform v0.16.0/go.mod h1:qdXXUXCDgqmnQ+d+eBYjDnzZ0ioyr4IhiqRbTTyRHAI=
+github.com/aj-nt/gaap/platform v0.17.0 h1:y8dmytB17FUMv/ScjibwLZyAxqnvSnFnAxpFG8+T+zs=
+github.com/aj-nt/gaap/platform v0.17.0/go.mod h1:CS5AaEMabEjpExCDnm0AleXUcuBUAHPYFbbvku691dI=
 github.com/aj-nt/gaap/protocol v0.1.0 h1:X5P9rBTUfSh/gVZxG48vwCJfV4zRibBJdtfEv0WF3BU=
 github.com/aj-nt/gaap/protocol v0.1.0/go.mod h1:PVvL9d0XwnHnVCDtbSjns1L8GtnwvpWER8TIGelv14U=
 github.com/aj-nt/vassago-sdk v0.5.0 h1:GpyXWXeXW/71VdRWrQ2B+1OF/4ZPEORPdr4DpemR5f0=

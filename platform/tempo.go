@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"sync"
 	"time"
 )
@@ -108,57 +107,6 @@ func (t *Tempo) observeAt(subject string, at time.Time) error {
 	return t.persistLocked()
 }
 
-// MedianGap returns the median inter-arrival time inside the window, and how many
-// gaps it was computed from.
-//
-// Median rather than mean: one long pause between two bursts would drag a mean
-// into looking slow, and the burst is the thing worth seeing.
-func (t *Tempo) MedianGap(subject string) (time.Duration, int) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.pruneLocked(time.Now())
-	return medianGap(t.arrival[subject])
-}
-
-// Span returns how long the retained activity for a subject covers.
-func (t *Tempo) Span(subject string) time.Duration {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.pruneLocked(time.Now())
-	stamps := t.arrival[subject]
-	if len(stamps) < 2 {
-		return 0
-	}
-	return stamps[len(stamps)-1].Sub(stamps[0])
-}
-
-// Count returns how many arrivals are retained for a subject in the window.
-func (t *Tempo) Count(subject string) int {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.pruneLocked(time.Now())
-	return len(t.arrival[subject])
-}
-
-func medianGap(stamps []time.Time) (time.Duration, int) {
-	if len(stamps) < 2 {
-		return 0, 0
-	}
-	gaps := make([]int64, 0, len(stamps)-1)
-	for i := 1; i < len(stamps); i++ {
-		gaps = append(gaps, int64(stamps[i].Sub(stamps[i-1])))
-	}
-	sort.Slice(gaps, func(i, j int) bool { return gaps[i] < gaps[j] })
-	mid := len(gaps) / 2
-	var med int64
-	if len(gaps)%2 == 0 {
-		med = (gaps[mid-1] + gaps[mid]) / 2
-	} else {
-		med = gaps[mid]
-	}
-	return time.Duration(med), len(gaps)
-}
-
 func (t *Tempo) pruneLocked(now time.Time) {
 	cutoff := now.Add(-t.window)
 	for subject, stamps := range t.arrival {
@@ -217,76 +165,4 @@ func (t *Tempo) persistLocked() error {
 		return err
 	}
 	return syncDir(dir)
-}
-
-// TempoSignal is one thing the shape of a subject's activity looks like.
-type TempoSignal string
-
-const (
-	// SignalCompressedBurst: many arrivals inside a few seconds. Measured in the
-	// wild at "roughly 2 to 25 seconds" for an execution sequence.
-	SignalCompressedBurst TempoSignal = "compressed_burst"
-	// SignalSortedTraversal: subjects visited in identifier order, seconds apart
-	// — enumeration rather than selection.
-	SignalSortedTraversal TempoSignal = "sorted_traversal"
-)
-
-// BurstThresholds are the measured numbers, written down rather than tuned by
-// feel: an execution sequence ran in a 2–25 second burst, and a credential spray
-// had a median gap of exactly one second.
-const (
-	BurstMinEvents  = 5
-	BurstMaxSpan    = 25 * time.Second
-	TraversalMinIDs = 6
-	TraversalMaxGap = 5 * time.Second
-)
-
-// DetectBurst reports whether a subject's retained activity is a compressed burst:
-// at least BurstMinEvents arrivals spanning no more than BurstMaxSpan.
-func (t *Tempo) DetectBurst(subject string) bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.pruneLocked(time.Now())
-	stamps := t.arrival[subject]
-	if len(stamps) < BurstMinEvents {
-		return false
-	}
-	return stamps[len(stamps)-1].Sub(stamps[0]) <= BurstMaxSpan
-}
-
-// DetectSortedTraversal reports whether an ordered visit list is an enumeration:
-// ascending identifiers, consecutive gaps under TraversalMaxGap, at least
-// TraversalMinIDs of them.
-//
-// Sorted order alone is not evidence — a client that walks a list in order is
-// doing something ordinary. Sorted order AND machine cadence is.
-func DetectSortedTraversal(subjects []string, gaps []time.Duration) bool {
-	if len(subjects) < TraversalMinIDs || len(gaps) != len(subjects)-1 {
-		return false
-	}
-	for i := 1; i < len(subjects); i++ {
-		if subjects[i] <= subjects[i-1] {
-			return false
-		}
-	}
-	for _, g := range gaps {
-		if g <= 0 || g > TraversalMaxGap {
-			return false
-		}
-	}
-	return true
-}
-
-// BurstScore is a diagnostic ratio: arrivals per second inside the span. Kept
-// separate from the boolean so an operator can see how far over the line
-// something was, rather than only that it was.
-func (t *Tempo) BurstScore(subject string) float64 {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.pruneLocked(time.Now())
-	span := t.Span(subject)
-	if span <= 0 {
-		return 0
-	}
-	return float64(t.Count(subject)) / span.Seconds()
 }

@@ -1,7 +1,5 @@
 package protocol
 
-import "strings"
-
 // Decider is the one method the enforcement path needs from the kernel.
 //
 // An agent that decides its own calls governs itself: the policy it reads, the record it
@@ -22,15 +20,10 @@ type Decider interface {
 }
 
 // DecideOpts carries context a decision needs but the governor cannot derive:
-// which run it belongs to, and which tasks it descends from.
-//
-// Both are absent on the CLI path, and empty is the honest answer there — no
-// run, no parent — rather than a guess. It is an options struct because a second
-// Decide signature would leave two ways to pass context to one decision, and the
-// call site that forgot one is the one that records a blank.
+// It is an options struct because a second Decide signature would leave two ways
+// to pass context to one decision, and the call site that forgot one is the one
+// that records a blank.
 type DecideOpts struct {
-	RunID       string
-	ParentTasks string
 	// Floor is the worst provenance class present in the justification chain,
 	// computed by the caller — including anything the caller read out of memory.
 	// The governor does not derive it: provenance lives where the evidence is, and a
@@ -47,9 +40,6 @@ type DecideOpts struct {
 // DecideOpt adjusts the context of one decision.
 type DecideOpt func(*DecideOpts)
 
-// WithRun attributes the decision to a run.
-func WithRun(id string) DecideOpt { return func(o *DecideOpts) { o.RunID = id } }
-
 // WithFloor supplies the justification's provenance floor. It travels in the option
 // set introduced in M5.4 rather than as another positional parameter: two ways to pass
 // context to one decision is how a call site ends up silently recording a blank.
@@ -63,10 +53,4 @@ func WithTicketFor(entryID, resource string) DecideOpt {
 		o.TicketEntryID = entryID
 		o.TicketResource = resource
 	}
-}
-
-// WithParents attributes the decision to the tasks it descends from. The lineage
-// that exists is a list of task ids; an agent type has no parent.
-func WithParents(ids ...string) DecideOpt {
-	return func(o *DecideOpts) { o.ParentTasks = strings.Join(ids, ",") }
 }

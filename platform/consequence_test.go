@@ -91,8 +91,8 @@ func TestCallClassAndArtifactClassAreIndependent(t *testing.T) {
 	if e.ArtifactClass != string(ArtifactBounded) {
 		t.Fatalf("artifact class = %q, want bounded", e.ArtifactClass)
 	}
-	if e.ArtifactType != "credential" || e.ArtifactScope != "tenant" {
-		t.Fatalf("artifact = %q/%q, want credential/tenant", e.ArtifactType, e.ArtifactScope)
+	if e.ArtifactType != "credential" {
+		t.Fatalf("artifact type = %q, want credential", e.ArtifactType)
 	}
 	if e.ArtifactTTL != "1h0m0s" {
 		t.Fatalf("ttl = %q, want 1h0m0s", e.ArtifactTTL)
@@ -242,31 +242,6 @@ func TestHandBuiltEngineHasNoRevision(t *testing.T) {
 	}
 }
 
-func TestRunIDAndParentsRecorded(t *testing.T) {
-	g := NewGovernor()
-	g.Policy.AddRule(Rule{ID: "any", Tool: "*", Decision: Allow})
-	g.Decide("agent-1", "T", nil, WithRun("run-42"), WithParents("T1", "T2"))
-	e := g.Ledger.Entries()[0]
-	if e.RunID != "run-42" {
-		t.Fatalf("run_id = %q", e.RunID)
-	}
-	if e.ParentTasks != "T1,T2" {
-		t.Fatalf("parent_tasks = %q", e.ParentTasks)
-	}
-}
-
-// The CLI path passes no options, and empty is the true answer there — not a
-// placeholder that later reads as a run called "".
-func TestNoOptionsRecordsEmptyLineage(t *testing.T) {
-	g := NewGovernor()
-	g.Policy.AddRule(Rule{ID: "any", Tool: "*", Decision: Allow})
-	g.Decide("agent-1", "T", nil)
-	e := g.Ledger.Entries()[0]
-	if e.RunID != "" || e.ParentTasks != "" {
-		t.Fatalf("lineage = %q/%q, want empty", e.RunID, e.ParentTasks)
-	}
-}
-
 // Two halves of the same hazard. Empty new fields must hash exactly as before
 // (the literal is pinned in ledger_golden_test.go); populated ones must change
 // the digest, or a tampered artifact declaration is undetectable.
@@ -280,7 +255,6 @@ func TestOmitemptyFieldsPreserveHash(t *testing.T) {
 	withArtifact.ArtifactClass = "bounded"
 	withArtifact.ArtifactTTL = "1h0m0s"
 	withArtifact.PolicyRev = "abc123"
-	withArtifact.RunID = "run-42"
 	populated, err := hashEntry(withArtifact, goldenPrevHash)
 	if err != nil {
 		t.Fatalf("hashEntry: %v", err)

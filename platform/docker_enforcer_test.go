@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestDockerEnforcerRunChownsThenRuns(t *testing.T) {
@@ -165,23 +164,6 @@ func TestDockerEnforcerEnsureIdempotentWhenUp(t *testing.T) {
 	}
 	if launches != 0 {
 		t.Errorf("Ensure must not launch when the daemon is already up (launched %d times)", launches)
-	}
-}
-
-func TestDockerEnforcerGrantChowns(t *testing.T) {
-	var calls []string
-	e := &DockerEnforcer{
-		ChownCommand: "chown",
-		run: func(ctx context.Context, name string, args ...string) ([]byte, error) {
-			calls = append(calls, name+" "+strings.Join(args, " "))
-			return nil, nil
-		},
-	}
-	if err := e.Grant(context.Background(), "c1", PathGrant{Path: "/data/foo", Mode: "rw", UID: 10001, ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
-		t.Fatalf("Grant: %v", err)
-	}
-	if len(calls) != 1 || !strings.Contains(calls[0], "chown 10001:10001 /data/foo") {
-		t.Errorf("Grant should chown the path: %v", calls)
 	}
 }
 
