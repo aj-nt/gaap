@@ -11,15 +11,10 @@ require (
 	modernc.org/sqlite v1.62.0
 )
 
-// The kernel is developed in-tree and released on its own cadence. Consumers see
-// the tag (`platform/vX.Y.Z`); this replace is for local work and CI only, and is
-// ignored by anyone who depends on gaap.
-replace github.com/aj-nt/gaap/platform => ./platform
-
-// The kernel now depends on the protocol module, and a replace inside a dependency is
-// ignored: the root module needs its own.
-replace github.com/aj-nt/gaap/protocol => ./protocol
-
+// In-tree development of the kernel uses go.work (see WORKSPACE NOTE at the bottom);
+// nothing in this file may redirect a module, because `go install pkg@version`
+// refuses any module whose go.mod carries a replace directive. That rule is why the
+// broker could not be installed from its own tag.
 require (
 	github.com/aj-nt/gaap/protocol v0.1.0 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
@@ -34,3 +29,9 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )
+
+// WORKSPACE NOTE: `go.work` maps platform/ and protocol/ to this checkout for local
+// work and for CI's default run. A consumer never sees it — a downloaded module's
+// go.work is ignored — so the published artefact builds against the published tags.
+// CI runs `GOWORK=off` as well, so drift between the tree and the tags fails there
+// rather than at a user's `go get`.

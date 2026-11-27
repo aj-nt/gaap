@@ -1,3 +1,7 @@
+github.com/aj-nt/gaap/platform v0.16.0 h1:jcFcZxBYnhmkHG6/MzJV0b0nozBFeokTJsO+rdVSrQE=
+github.com/aj-nt/gaap/platform v0.16.0/go.mod h1:qdXXUXCDgqmnQ+d+eBYjDnzZ0ioyr4IhiqRbTTyRHAI=
+github.com/aj-nt/gaap/protocol v0.1.0 h1:X5P9rBTUfSh/gVZxG48vwCJfV4zRibBJdtfEv0WF3BU=
+github.com/aj-nt/gaap/protocol v0.1.0/go.mod h1:PVvL9d0XwnHnVCDtbSjns1L8GtnwvpWER8TIGelv14U=
 github.com/aj-nt/vassago-sdk v0.5.0 h1:GpyXWXeXW/71VdRWrQ2B+1OF/4ZPEORPdr4DpemR5f0=
 github.com/aj-nt/vassago-sdk v0.5.0/go.mod h1:rduQI2IWz+iOS+yRyOAjUzzDjb9gy48d0K6+3XUIYu8=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=

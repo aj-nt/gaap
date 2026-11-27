@@ -1,0 +1,15 @@
+go 1.27.2
+
+// The kernel and the wire are developed in this tree and released on their own
+// cadence. A workspace is how that happens without a replace directive: the root
+// go.mod must stay replace-free, because `go install pkg@version` refuses a module
+// that redirects its own dependencies.
+//
+// A consumer never sees this file — a downloaded module's go.work is ignored — so
+// the published artefact builds against the published tags. CI runs one job with
+// GOWORK=off to prove exactly that, which is also what catches pin drift.
+use (
+	.
+	./platform
+	./protocol
+)
